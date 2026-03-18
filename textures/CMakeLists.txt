@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+add_library(HaackTextures STATIC src/texture_replacer.cpp)
+target_include_directories(HaackTextures PUBLIC include)
+find_package(PNG QUIET)
+if(PNG_FOUND)
+    target_compile_definitions(HaackTextures PRIVATE HAACK_PNG)
+    target_link_libraries(HaackTextures PRIVATE PNG::PNG)
+endif()

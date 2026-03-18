@@ -1,0 +1,8 @@
+#pragma once
+#define HAACK_VERSION_MAJOR @HaackStation_VERSION_MAJOR@
+#define HAACK_VERSION_MINOR @HaackStation_VERSION_MINOR@
+#define HAACK_VERSION_PATCH @HaackStation_VERSION_PATCH@
+#define HAACK_VERSION_STRING "@HaackStation_VERSION@"
+#define HAACK_APP_NAME      "HaackStation"
+#define HAACK_CORE_NAME     "Beetle PSX HW"
+#define HAACK_CORE_LICENSE  "GPLv2"
