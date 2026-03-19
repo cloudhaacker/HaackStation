@@ -68,6 +68,22 @@ telling openly.
 
 ---
 
+## Assets & Attributions
+
+| Asset | Credit | Source |
+|---|---|---|
+| Project logo | Generated with Google Gemini, directed by the project author | AI-generated |
+| UI typography | Zrnic font by Apostrophic Labs | [DaFont](https://www.dafont.com/zrnic.font) |
+| Emulation core | Beetle PSX HW team & libretro contributors | [GitHub](https://github.com/libretro/beetle-psx-libretro) |
+| Frontend code | Claude (Anthropic AI) | AI-assisted |
+
+**Font licence note:** Zrnic is listed as free for personal use on DaFont.
+If HaackStation is ever distributed commercially the font licence should be
+reviewed. For open-source community distribution it is used in good faith
+with full credit given here.
+
+---
+
 ## License
 
 **GPLv2** — inherited from Beetle PSX HW.
@@ -88,8 +104,8 @@ You may NOT use this project to distribute copyrighted BIOS files or game ROMs.
 
 ### Windows (Visual Studio / MSVC)
 ```bash
-git clone https://github.com/haackstation/haackstation
-cd haackstation
+git clone https://github.com/cloudhaacker/HaackStation
+cd HaackStation
 git submodule update --init --recursive
 mkdir build && cd build
 cmake .. -G "Visual Studio 17 2022"
@@ -99,8 +115,8 @@ cmake --build . --config Release
 ### Linux
 ```bash
 sudo apt install cmake libsdl2-dev libpng-dev libvorbis-dev
-git clone https://github.com/haackstation/haackstation
-cd haackstation
+git clone https://github.com/cloudhaacker/HaackStation
+cd HaackStation
 git submodule update --init --recursive
 mkdir build && cd build
 cmake ..
@@ -123,7 +139,7 @@ or `~/.config/haackstation/bios/` (Linux)
 ## Community
 
 - Issues and suggestions: GitHub Issues
-- Development diary: See `docs/dev_diary.md`
+- Development diary: See `docs/HaackStation_DevDiary.docx`
 
 ---
 

@@ -87,11 +87,17 @@ void SettingsScreen::buildTabs() {
     about.items.push_back({ "core",    "Emulation Core",  SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr, "Beetle PSX HW (libretro)" });
     about.items.push_back({ "license", "License",         SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr, "GNU General Public License v2" });
     about.items.push_back({ "sep1", "", "", SettingType::SEPARATOR });
-    about.items.push_back({ "credits", "Credits",         SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             "Core: libretro team  |  Frontend: HaackStation contributors  |  AI tooling: Claude (Anthropic)" });
+    about.items.push_back({ "core_credit", "Emulation Core",  SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
+                             "Beetle PSX HW — libretro team & contributors" });
+    about.items.push_back({ "code_credit", "Frontend Code",   SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
+                             "Claude (Anthropic AI) — directed by the project author" });
+    about.items.push_back({ "logo_credit", "Project Logo",    SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
+                             "Generated with Google Gemini — directed by the project author" });
+    about.items.push_back({ "font_credit", "UI Font",         SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
+                             "Zrnic by Apostrophic Labs — dafont.com/zrnic.font" });
     about.items.push_back({ "sep2", "", "", SettingType::SEPARATOR });
     about.items.push_back({ "github", "Source Code",      SettingType::LABEL, nullptr, {}, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             "github.com/haackstation/haackstation" });
+                             "github.com/cloudhaacker/HaackStation" });
     m_tabs.push_back(about);
 }
 

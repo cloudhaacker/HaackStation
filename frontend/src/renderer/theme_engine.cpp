@@ -6,6 +6,9 @@
 
 // ─── Built-in font fallback path list ─────────────────────────────────────────
 static const char* FONT_PATHS[] = {
+    // HaackStation bundled font (Zrnic by Apostrophic Labs — dafont.com/zrnic.font)
+    "assets/fonts/zrnic.ttf",
+    "assets/fonts/Zrnic.ttf",
     // Windows
     "C:\\Windows\\Fonts\\segoeui.ttf",
     "C:\\Windows\\Fonts\\arial.ttf",
