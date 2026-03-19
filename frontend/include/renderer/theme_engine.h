@@ -95,10 +95,17 @@ public:
 
     // ── Text rendering ────────────────────────────────────────────────────────
     // Returns the width of rendered text in pixels
-    int  drawText(const std::string& text, int x, int y, SDL_Color c, FontSize size);
-    int  drawTextCentered(const std::string& text, int cx, int y, SDL_Color c, FontSize size);
+    // useDisplayFont=true uses Zrnic (splash screen title only)
+    // useDisplayFont=false uses the clean UI font (all menus, cards, settings)
+    int  drawText(const std::string& text, int x, int y, SDL_Color c, FontSize size,
+                  bool useDisplayFont = false);
+    int  drawTextCentered(const std::string& text, int cx, int y, SDL_Color c, FontSize size,
+                          bool useDisplayFont = false);
     int  drawTextTruncated(const std::string& text, int x, int y, int maxW, SDL_Color c, FontSize size);
-    void measureText(const std::string& text, FontSize size, int& w, int& h);
+    void measureText(const std::string& text, FontSize size, int& w, int& h,
+                     bool useDisplayFont = false);
+
+    bool hasDisplayFont() const { return m_displayFontPath.empty() == false; }
 
     // ── Game card drawing ─────────────────────────────────────────────────────
     // Draws a full game card (cover art placeholder + title + badges)
@@ -126,17 +133,22 @@ public:
     void onWindowResize(int w, int h) { m_layout.recalculate(w, h); }
 
 private:
-    TTF_Font* getFont(FontSize size);
+    TTF_Font* getFont(FontSize size, bool displayFont = false);
     SDL_Texture* renderTextToTexture(const std::string& text, TTF_Font* font, SDL_Color c);
 
     SDL_Renderer* m_renderer = nullptr;
     Palette       m_palette;
     Layout        m_layout;
 
-    std::unordered_map<int, TTF_Font*> m_fonts;  // size -> font
+    // UI font — clean, readable, used everywhere in menus/cards/settings
+    std::unordered_map<int, TTF_Font*> m_fonts;
     std::string    m_fontPath;
 
-    // Texture cache for frequently drawn strings (header title, hints etc.)
+    // Display font — Zrnic, used ONLY on the splash screen title
+    std::unordered_map<int, TTF_Font*> m_displayFonts;
+    std::string    m_displayFontPath;
+
+    // Texture cache for frequently drawn strings
     struct CachedText {
         SDL_Texture* tex = nullptr;
         int w = 0, h = 0;

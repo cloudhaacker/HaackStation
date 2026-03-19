@@ -5,10 +5,16 @@
 #include <algorithm>
 
 // ─── Built-in font fallback path list ─────────────────────────────────────────
-static const char* FONT_PATHS[] = {
-    // HaackStation bundled font (Zrnic by Apostrophic Labs — dafont.com/zrnic.font)
+// Display font search paths (Zrnic — splash screen title only)
+static const char* DISPLAY_FONT_PATHS[] = {
+    "assets/fonts/zrnic.otf",
+    "assets/fonts/Zrnic.otf",
     "assets/fonts/zrnic.ttf",
-    "assets/fonts/Zrnic.ttf",
+    nullptr
+};
+
+// UI font search paths (clean readable font for all menus, cards, settings)
+static const char* FONT_PATHS[] = {
     // Windows
     "C:\\Windows\\Fonts\\segoeui.ttf",
     "C:\\Windows\\Fonts\\arial.ttf",
@@ -30,16 +36,30 @@ ThemeEngine::ThemeEngine(SDL_Renderer* renderer)
         std::cerr << "[ThemeEngine] TTF_Init failed: " << TTF_GetError() << "\n";
     }
 
-    // Find a usable font
+    // Find display font (Zrnic — splash screen only)
+    for (int i = 0; DISPLAY_FONT_PATHS[i]; ++i) {
+        if (SDL_RWops* rw = SDL_RWFromFile(DISPLAY_FONT_PATHS[i], "r")) {
+            SDL_RWclose(rw);
+            m_displayFontPath = DISPLAY_FONT_PATHS[i];
+            std::cout << "[ThemeEngine] Display font (splash): " << m_displayFontPath << "\n";
+            break;
+        }
+    }
+    if (m_displayFontPath.empty()) {
+        std::cout << "[ThemeEngine] Zrnic not found — splash will use UI font\n";
+    }
+
+    // Find UI font (clean readable, used everywhere else)
     for (int i = 0; FONT_PATHS[i]; ++i) {
-        if (SDL_RWFromFile(FONT_PATHS[i], "r")) {
+        if (SDL_RWops* rw = SDL_RWFromFile(FONT_PATHS[i], "r")) {
+            SDL_RWclose(rw);
             m_fontPath = FONT_PATHS[i];
-            std::cout << "[ThemeEngine] Font: " << m_fontPath << "\n";
+            std::cout << "[ThemeEngine] UI font: " << m_fontPath << "\n";
             break;
         }
     }
     if (m_fontPath.empty()) {
-        std::cerr << "[ThemeEngine] WARNING: No system font found. Text may not render.\n";
+        std::cerr << "[ThemeEngine] WARNING: No UI font found. Text may not render.\n";
     }
 
     // Pre-load common sizes
@@ -50,26 +70,36 @@ ThemeEngine::ThemeEngine(SDL_Renderer* renderer)
 
 ThemeEngine::~ThemeEngine() {
     clearTextCache();
-    for (auto& [size, font] : m_fonts) {
+    for (auto& [size, font] : m_fonts)
         if (font) TTF_CloseFont(font);
-    }
+    for (auto& [size, font] : m_displayFonts)
+        if (font) TTF_CloseFont(font);
     TTF_Quit();
 }
 
 // ─── Font loading ─────────────────────────────────────────────────────────────
-TTF_Font* ThemeEngine::getFont(FontSize size) {
+TTF_Font* ThemeEngine::getFont(FontSize size, bool displayFont) {
     int pt = static_cast<int>(size);
-    auto it = m_fonts.find(pt);
-    if (it != m_fonts.end()) return it->second;
+    auto& map  = displayFont ? m_displayFonts : m_fonts;
+    auto& path = displayFont ? m_displayFontPath : m_fontPath;
+
+    // Fall back to UI font if display font not available
+    if (displayFont && path.empty())
+        return getFont(size, false);
+
+    auto it = map.find(pt);
+    if (it != map.end()) return it->second;
 
     TTF_Font* font = nullptr;
-    if (!m_fontPath.empty()) {
-        font = TTF_OpenFont(m_fontPath.c_str(), pt);
+    if (!path.empty()) {
+        font = TTF_OpenFont(path.c_str(), pt);
     }
     if (!font) {
-        std::cerr << "[ThemeEngine] Could not load font size " << pt << "\n";
+        std::cerr << "[ThemeEngine] Could not load "
+                  << (displayFont ? "display" : "UI")
+                  << " font size " << pt << "\n";
     }
-    m_fonts[pt] = font;
+    map[pt] = font;
     return font;
 }
 
@@ -168,13 +198,12 @@ SDL_Texture* ThemeEngine::renderTextToTexture(const std::string& text, TTF_Font*
     return tex;
 }
 
-int ThemeEngine::drawText(const std::string& text, int x, int y, SDL_Color c, FontSize size) {
-    TTF_Font* font = getFont(size);
+int ThemeEngine::drawText(const std::string& text, int x, int y, SDL_Color c,
+                           FontSize size, bool useDisplayFont) {
+    TTF_Font* font = getFont(size, useDisplayFont);
     if (!font) return 0;
-
     SDL_Texture* tex = renderTextToTexture(text, font, c);
     if (!tex) return 0;
-
     int w, h;
     SDL_QueryTexture(tex, nullptr, nullptr, &w, &h);
     SDL_Rect dst = { x, y, w, h };
@@ -183,12 +212,13 @@ int ThemeEngine::drawText(const std::string& text, int x, int y, SDL_Color c, Fo
     return w;
 }
 
-int ThemeEngine::drawTextCentered(const std::string& text, int cx, int y, SDL_Color c, FontSize size) {
-    TTF_Font* font = getFont(size);
+int ThemeEngine::drawTextCentered(const std::string& text, int cx, int y, SDL_Color c,
+                                   FontSize size, bool useDisplayFont) {
+    TTF_Font* font = getFont(size, useDisplayFont);
     if (!font) return 0;
     int w, h;
     TTF_SizeUTF8(font, text.c_str(), &w, &h);
-    return drawText(text, cx - w/2, y, c, size);
+    return drawText(text, cx - w/2, y, c, size, useDisplayFont);
 }
 
 int ThemeEngine::drawTextTruncated(const std::string& text, int x, int y, int maxW,
@@ -217,8 +247,9 @@ int ThemeEngine::drawTextTruncated(const std::string& text, int x, int y, int ma
     return drawText(truncated, x, y, c, size);
 }
 
-void ThemeEngine::measureText(const std::string& text, FontSize size, int& w, int& h) {
-    TTF_Font* font = getFont(size);
+void ThemeEngine::measureText(const std::string& text, FontSize size,
+                               int& w, int& h, bool useDisplayFont) {
+    TTF_Font* font = getFont(size, useDisplayFont);
     if (!font) { w = 0; h = 0; return; }
     TTF_SizeUTF8(font, text.c_str(), &w, &h);
 }
