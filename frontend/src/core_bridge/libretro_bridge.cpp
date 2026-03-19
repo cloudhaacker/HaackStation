@@ -164,11 +164,18 @@ bool LibretroBridge::loadGame(const std::string& gamePath) {
 
     std::cout << "[Bridge] Game loaded — "
               << m_fbWidth << "x" << m_fbHeight
-              << " @ " << avInfo.timing.fps << "fps\n";
+              << " @ " << avInfo.timing.fps << "fps"
+              << " audio: " << avInfo.timing.sample_rate << "Hz\n";
 
-    // Set up controller ports (DualShock / Digital pad)
+    // Set up controller ports
     m_retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
     m_retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+
+    // Initialize audio with the sample rate the core told us about
+    shutdownAudio();  // Close any previous device
+    if (!initAudio()) {
+        std::cerr << "[Bridge] Warning: Audio initialization failed\n";
+    }
 
     m_gameLoaded = true;
     return true;
@@ -405,17 +412,11 @@ bool LibretroBridge::cb_environment(unsigned cmd, void* data) {
         }
 
         case RETRO_ENVIRONMENT_SET_HW_RENDER: {
-            // Hardware renderer request (OpenGL/Vulkan)
-            // For now we acknowledge it — full HW renderer setup in Phase 3
-            auto* hw = (retro_hw_render_callback*)data;
-            hw->get_current_framebuffer = []() -> uintptr_t {
-                return RETRO_HW_FRAME_BUFFER_VALID;
-            };
-            hw->get_proc_address = [](const char* sym) -> void* {
-                return SDL_GL_GetProcAddress(sym);
-            };
-            std::cout << "[Bridge] HW render requested: type=" << hw->context_type << "\n";
-            return true;
+            // Hardware renderer request — return false to decline
+            // This tells the core to fall back to software rendering
+            // Full HW renderer (OpenGL context setup) is Phase 3
+            std::cout << "[Bridge] HW render requested — using software fallback\n";
+            return false;
         }
 
         case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:

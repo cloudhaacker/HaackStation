@@ -192,13 +192,21 @@ std::vector<std::string> GameScanner::defaultPaths() {
     std::vector<std::string> paths;
 
 #if defined(_WIN32)
-    // Windows: check common locations
     if (const char* appdata = std::getenv("APPDATA")) {
         paths.push_back(std::string(appdata) + "\\HaackStation\\roms");
     }
+    // Common emulation folder structures
+    paths.push_back("C:\\Emulation\\roms\\psx");
+    paths.push_back("C:\\Emulation\\roms\\ps1");
+    paths.push_back("C:\\Emulation\\PS1");
     paths.push_back("C:\\Games\\PS1");
     paths.push_back("C:\\ROMs\\PS1");
     paths.push_back("C:\\ROMs\\PlayStation");
+    // Also check all drive letters D-F for external drives
+    for (char drive = 'D'; drive <= 'F'; drive++) {
+        paths.push_back(std::string(1, drive) + ":\\Emulation\\roms\\psx");
+        paths.push_back(std::string(1, drive) + ":\\ROMs\\PS1");
+    }
 
 #elif defined(__ANDROID__)
     // Android: standard external storage locations

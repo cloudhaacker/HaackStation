@@ -8,12 +8,13 @@
 #include "game_scanner.h"
 #include "theme_engine.h"
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <stdexcept>
 #include <iostream>
 
-static constexpr int   DEFAULT_W  = 1280;
-static constexpr int   DEFAULT_H  = 720;
-static constexpr float FRAME_MS   = 1000.f / 60.f;
+static constexpr int   DEFAULT_W = 1280;
+static constexpr int   DEFAULT_H = 720;
+static constexpr float FRAME_MS  = 1000.f / 60.f;
 
 HaackApp::HaackApp()  { init(); }
 HaackApp::~HaackApp() { shutdown(); }
@@ -21,6 +22,8 @@ HaackApp::~HaackApp() { shutdown(); }
 void HaackApp::init() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) != 0)
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
+
+    IMG_Init(IMG_INIT_PNG);
 
     m_window = SDL_CreateWindow(
         "HaackStation",
@@ -31,19 +34,36 @@ void HaackApp::init() {
     if (!m_window)
         throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
 
+    // ── Set window icon ───────────────────────────────────────────────────────
+    SDL_Surface* icon = IMG_Load("assets/icons/icon.png");
+    if (!icon) icon = SDL_LoadBMP("assets/icons/icon.bmp");
+    if (icon) {
+        SDL_SetWindowIcon(m_window, icon);
+        SDL_FreeSurface(icon);
+    }
+
     m_renderer = SDL_CreateRenderer(m_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!m_renderer)
         throw std::runtime_error(std::string("SDL_CreateRenderer: ") + SDL_GetError());
 
-    m_theme   = std::make_unique<ThemeEngine>(m_renderer);
-    m_nav     = std::make_unique<ControllerNav>();
-    m_scanner = std::make_unique<GameScanner>();
-    m_core    = std::make_unique<LibretroBridge>();
+    m_theme    = std::make_unique<ThemeEngine>(m_renderer);
+    m_nav      = std::make_unique<ControllerNav>();
+    m_scanner  = std::make_unique<GameScanner>();
+    m_core     = std::make_unique<LibretroBridge>();
 
     m_core->setRenderer(m_renderer);
     m_core->setBiosPath("bios/");
     m_core->setSavePath("saves/");
+
+    // Core options for Beetle PSX HW
+    // Use software renderer for now — hardware renderer needs OpenGL context setup
+    // which is Phase 3. Software renderer is still highly accurate.
+    m_core->setCoreOption("beetle_psx_hw_renderer",           "software");
+    m_core->setCoreOption("beetle_psx_hw_internal_resolution","1x(native)");
+    m_core->setCoreOption("beetle_psx_hw_filter",             "nearest");
+    m_core->setCoreOption("beetle_psx_hw_dither_mode",        "internal resolution");
+    m_core->setCoreOption("beetle_psx_hw_display_vram",       "disabled");
 
     m_browser  = std::make_unique<GameBrowser>(m_renderer, m_theme.get(), m_nav.get());
     m_settings = std::make_unique<SettingsScreen>(m_renderer, m_theme.get(),
@@ -57,7 +77,8 @@ void HaackApp::init() {
     m_state   = AppState::STARTUP;
     m_running = true;
 
-    std::cout << "[HaackStation] Ready\n";
+    std::cout << "[HaackStation] Ready — "
+              << m_scanner->getLibrary().size() << " games found\n";
 }
 
 void HaackApp::shutdown() {
@@ -69,6 +90,7 @@ void HaackApp::shutdown() {
     m_scanner.reset();
     m_nav.reset();
     m_theme.reset();
+    IMG_Quit();
     if (m_renderer) { SDL_DestroyRenderer(m_renderer); m_renderer = nullptr; }
     if (m_window)   { SDL_DestroyWindow(m_window);     m_window   = nullptr; }
     SDL_Quit();
@@ -96,7 +118,9 @@ void HaackApp::handleEvents() {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
-            case SDL_QUIT: m_running = false; return;
+            case SDL_QUIT:
+                m_running = false;
+                return;
             case SDL_WINDOWEVENT:
                 if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
                     m_browser->onWindowResize(e.window.data1, e.window.data2);
@@ -109,6 +133,10 @@ void HaackApp::handleEvents() {
                     else if (m_state == AppState::SETTINGS) setState(AppState::GAME_BROWSER);
                 }
                 if (e.key.keysym.sym == SDLK_F11) toggleFullscreen();
+                // Keyboard shortcut: Enter opens settings from empty shelf
+                if (e.key.keysym.sym == SDLK_RETURN &&
+                    m_state == AppState::GAME_BROWSER)
+                    setState(AppState::SETTINGS);
                 break;
             case SDL_CONTROLLERDEVICEADDED:
                 m_nav->onControllerAdded(e.cdevice.which);
@@ -116,8 +144,31 @@ void HaackApp::handleEvents() {
             case SDL_CONTROLLERDEVICEREMOVED:
                 m_nav->onControllerRemoved(e.cdevice.which);
                 break;
+            case SDL_CONTROLLERBUTTONDOWN:
+                // Start button always opens settings regardless of library state
+                if (m_state == AppState::GAME_BROWSER &&
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    setState(AppState::SETTINGS);
+                    continue;  // Don't pass this event to the browser
+                }
+                // Start+Select together opens in-game menu / quits to shelf
+                // Select alone is passed through to the game (needed for many PS1 games)
+                if (m_state == AppState::IN_GAME &&
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
+                    // Check if Start is also held
+                    SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
+                        SDL_JoystickGetDeviceInstanceID(0));
+                    if (ctrl && SDL_GameControllerGetButton(
+                            ctrl, SDL_CONTROLLER_BUTTON_START)) {
+                        stopGame();  // Start+Select = quit to shelf
+                    }
+                    // Otherwise Select passes through to the game normally
+                }
+                break;
             default: break;
         }
+
+        // Route events to active screen AFTER app-level handling
         switch (m_state) {
             case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
             case AppState::SETTINGS:     m_settings->handleEvent(e); break;
@@ -140,10 +191,30 @@ void HaackApp::update(float deltaMs) {
             break;
         case AppState::IN_GAME:
             m_core->runFrame();
+            // Throttle to ~60fps (NTSC PS1 runs at 59.94fps)
+            // The frame cap in the main loop only applies outside of IN_GAME
+            // so we add our own delay here
+            {
+                static Uint32 lastFrameTime = 0;
+                static constexpr Uint32 FRAME_TARGET_MS = 16; // ~60fps
+                Uint32 now2 = SDL_GetTicks();
+                Uint32 elapsed = now2 - lastFrameTime;
+                if (elapsed < FRAME_TARGET_MS)
+                    SDL_Delay(FRAME_TARGET_MS - elapsed);
+                lastFrameTime = SDL_GetTicks();
+            }
             break;
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
-            if (m_settings->wantsClose()) setState(AppState::GAME_BROWSER);
+            if (m_settings->wantsClose()) {
+                // If user set a new ROM path, rescan
+                if (!m_haackSettings.romsPath.empty()) {
+                    m_scanner->addSearchPath(m_haackSettings.romsPath);
+                    m_scanner->rescan();
+                    m_browser->setLibrary(m_scanner->getLibrary());
+                }
+                setState(AppState::GAME_BROWSER);
+            }
             break;
         default: break;
     }
@@ -153,10 +224,10 @@ void HaackApp::render() {
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
     SDL_RenderClear(m_renderer);
     switch (m_state) {
-        case AppState::STARTUP:      m_splash->render();              break;
-        case AppState::GAME_BROWSER: m_browser->render();             break;
+        case AppState::STARTUP:      m_splash->render();                  break;
+        case AppState::GAME_BROWSER: m_browser->render();                 break;
         case AppState::IN_GAME:      m_core->blitFramebuffer(m_renderer); break;
-        case AppState::SETTINGS:     m_settings->render();            break;
+        case AppState::SETTINGS:     m_settings->render();                break;
         default: break;
     }
     SDL_RenderPresent(m_renderer);
@@ -172,7 +243,7 @@ void HaackApp::launchGame(const std::string& path) {
         m_core->setBiosPath(m_haackSettings.biosPath);
     if (!m_core->loadGame(path)) {
         std::cerr << "[HaackStation] Failed to load game.\n";
-        std::cerr << "  Ensure BIOS files (scph1001.bin etc) are in: bios/\n";
+        std::cerr << "  Ensure BIOS files are in: bios/\n";
     } else {
         setState(AppState::IN_GAME);
     }
@@ -185,15 +256,21 @@ void HaackApp::stopGame() {
 
 void HaackApp::toggleFullscreen() {
     Uint32 flags = SDL_GetWindowFlags(m_window);
-    bool   isFs  = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
     SDL_SetWindowFullscreen(m_window, isFs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
     m_haackSettings.fullscreen = !isFs;
 }
 
 void HaackApp::updateGameInput() {
-    SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
-        SDL_JoystickGetDeviceInstanceID(0));
+    SDL_GameController* ctrl = nullptr;
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        if (SDL_IsGameController(i)) {
+            ctrl = SDL_GameControllerOpen(i);
+            break;
+        }
+    }
     if (!ctrl) return;
+
     auto btn = [&](SDL_GameControllerButton b) -> bool {
         return SDL_GameControllerGetButton(ctrl, b) != 0;
     };
@@ -217,4 +294,5 @@ void HaackApp::updateGameInput() {
     if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
     if (r2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);
     m_core->setButtonState(0, mask);
+    SDL_GameControllerClose(ctrl);
 }
