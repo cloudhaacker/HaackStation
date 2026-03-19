@@ -56,14 +56,27 @@ void HaackApp::init() {
     m_core->setBiosPath("bios/");
     m_core->setSavePath("saves/");
 
-    // Core options for Beetle PSX HW
-    // Use software renderer for now — hardware renderer needs OpenGL context setup
-    // which is Phase 3. Software renderer is still highly accurate.
-    m_core->setCoreOption("beetle_psx_hw_renderer",           "software");
-    m_core->setCoreOption("beetle_psx_hw_internal_resolution","1x(native)");
-    m_core->setCoreOption("beetle_psx_hw_filter",             "nearest");
-    m_core->setCoreOption("beetle_psx_hw_dither_mode",        "internal resolution");
-    m_core->setCoreOption("beetle_psx_hw_display_vram",       "disabled");
+    // ── Beetle PSX HW core options ────────────────────────────────────────────
+    // Renderer: software for now (HW renderer / OpenGL setup is Phase 3)
+    m_core->setCoreOption("beetle_psx_hw_renderer",              "software");
+    m_core->setCoreOption("beetle_psx_hw_internal_resolution",   "1x(native)");
+    m_core->setCoreOption("beetle_psx_hw_filter",                "nearest");
+    m_core->setCoreOption("beetle_psx_hw_dither_mode",           "internal resolution");
+    m_core->setCoreOption("beetle_psx_hw_display_vram",          "disabled");
+
+    // BIOS: prefer scph1001 (v2.2) for US games — best compatibility
+    // The core auto-detects region and picks from the bios/ folder
+    // Having all four files (scph1001, scph5500, scph5501, scph5502) gives
+    // full region support. scph1001 is used for NTSC-U by default.
+    m_core->setCoreOption("beetle_psx_hw_use_mednafen_memcard0_method", "libretro");
+
+    // Audio: enable SPU for accurate sound
+    m_core->setCoreOption("beetle_psx_hw_spu_reverb",            "enabled");
+    m_core->setCoreOption("beetle_psx_hw_spu_interpolation",     "gaussian");
+
+    // CD: accurate seek timing (important for games like Valkyrie Profile)
+    m_core->setCoreOption("beetle_psx_hw_cd_access_method",      "sync");
+    m_core->setCoreOption("beetle_psx_hw_cd_fastload",           "disabled");
 
     m_browser  = std::make_unique<GameBrowser>(m_renderer, m_theme.get(), m_nav.get());
     m_settings = std::make_unique<SettingsScreen>(m_renderer, m_theme.get(),
@@ -191,25 +204,37 @@ void HaackApp::update(float deltaMs) {
             break;
         case AppState::IN_GAME:
             {
-                // Throttle to core-reported FPS (59.94 NTSC, 50.0 PAL)
-                // We track frame start time and sleep the remainder
-                static Uint32 lastFrameTime = 0;
-                Uint32 frameStart = SDL_GetTicks();
+                // High-resolution frame timing using performance counter
+                // SDL_GetTicks has only 1ms resolution — too coarse for 60fps
+                static Uint64 lastPerfCount = 0;
+                Uint64 perfFreq = SDL_GetPerformanceFrequency();
+                Uint64 frameStart = SDL_GetPerformanceCounter();
 
                 m_core->runFrame();
 
-                // Calculate target frame duration from core timing
-                // Default to 59.94fps (NTSC) if core hasn't reported yet
+                // Target FPS from core (59.94 NTSC, 50.0 PAL)
                 double fps = m_core->getTargetFps();
                 if (fps <= 0.0) fps = 59.94;
-                Uint32 frameTargetMs = (Uint32)(1000.0 / fps);
+                double targetSeconds = 1.0 / fps;
+                Uint64 targetCounts  = (Uint64)(targetSeconds * perfFreq);
 
-                Uint32 elapsed = SDL_GetTicks() - frameStart;
-                if (elapsed < frameTargetMs)
-                    SDL_Delay(frameTargetMs - elapsed);
-
-                lastFrameTime = SDL_GetTicks();
-                (void)lastFrameTime;
+                // Spin-wait the last fraction of a millisecond for precision
+                // Sleep most of the remaining time, busy-wait the last bit
+                Uint64 elapsed = SDL_GetPerformanceCounter() - frameStart;
+                if (elapsed < targetCounts) {
+                    Uint64 remaining = targetCounts - elapsed;
+                    // Sleep if we have more than 2ms remaining
+                    Uint64 twoMs = perfFreq / 500;
+                    if (remaining > twoMs) {
+                        Uint32 sleepMs = (Uint32)(
+                            (double)(remaining - twoMs) / perfFreq * 1000.0);
+                        if (sleepMs > 0) SDL_Delay(sleepMs);
+                    }
+                    // Busy-wait the final fraction
+                    while (SDL_GetPerformanceCounter() - frameStart < targetCounts) {}
+                }
+                lastPerfCount = SDL_GetPerformanceCounter();
+                (void)lastPerfCount;
             }
             break;
         case AppState::SETTINGS:

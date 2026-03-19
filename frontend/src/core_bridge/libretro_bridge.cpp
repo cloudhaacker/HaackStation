@@ -495,7 +495,7 @@ bool LibretroBridge::initAudio() {
     want.freq     = (int)m_timing.sample_rate;
     want.format   = AUDIO_S16SYS;
     want.channels = 2;
-    want.samples  = 512;
+    want.samples  = 2048;  // Larger buffer prevents crackling
     want.callback = nullptr;  // We use SDL_QueueAudio
 
     m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &got, 0);
