@@ -53,6 +53,7 @@ public:
     void setTextureReplacer(TextureReplacer* t) { m_textureReplacer = t; }
 
     bool     isCoreLoaded() const { return m_coreLoaded; }
+    double   getTargetFps()  const { return m_timing.fps; }
     bool     isGameLoaded() const { return m_gameLoaded; }
     CoreInfo getCoreInfo()  const { return m_coreInfo; }
 

@@ -190,18 +190,26 @@ void HaackApp::update(float deltaMs) {
                 launchGame(m_browser->consumeLaunchPath());
             break;
         case AppState::IN_GAME:
-            m_core->runFrame();
-            // Throttle to ~60fps (NTSC PS1 runs at 59.94fps)
-            // The frame cap in the main loop only applies outside of IN_GAME
-            // so we add our own delay here
             {
+                // Throttle to core-reported FPS (59.94 NTSC, 50.0 PAL)
+                // We track frame start time and sleep the remainder
                 static Uint32 lastFrameTime = 0;
-                static constexpr Uint32 FRAME_TARGET_MS = 16; // ~60fps
-                Uint32 now2 = SDL_GetTicks();
-                Uint32 elapsed = now2 - lastFrameTime;
-                if (elapsed < FRAME_TARGET_MS)
-                    SDL_Delay(FRAME_TARGET_MS - elapsed);
+                Uint32 frameStart = SDL_GetTicks();
+
+                m_core->runFrame();
+
+                // Calculate target frame duration from core timing
+                // Default to 59.94fps (NTSC) if core hasn't reported yet
+                double fps = m_core->getTargetFps();
+                if (fps <= 0.0) fps = 59.94;
+                Uint32 frameTargetMs = (Uint32)(1000.0 / fps);
+
+                Uint32 elapsed = SDL_GetTicks() - frameStart;
+                if (elapsed < frameTargetMs)
+                    SDL_Delay(frameTargetMs - elapsed);
+
                 lastFrameTime = SDL_GetTicks();
+                (void)lastFrameTime;
             }
             break;
         case AppState::SETTINGS:
@@ -251,6 +259,7 @@ void HaackApp::launchGame(const std::string& path) {
 
 void HaackApp::stopGame() {
     m_core->unloadGame();
+    m_browser->resetAfterGame();
     setState(AppState::GAME_BROWSER);
 }
 

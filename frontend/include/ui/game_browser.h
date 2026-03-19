@@ -43,6 +43,7 @@ public:
     // ── Launch pending ─────────────────────────────────────────────────────────
     // app.cpp polls these after each update()
     bool        hasPendingLaunch()   const { return m_pendingLaunch; }
+    void        resetAfterGame();          // Call when returning from in-game
     std::string consumeLaunchPath();       // Returns path and clears flag
 
     // Window resize notification

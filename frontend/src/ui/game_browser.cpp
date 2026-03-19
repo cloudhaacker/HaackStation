@@ -368,6 +368,18 @@ std::string GameBrowser::consumeLaunchPath() {
     return m_launchPath;
 }
 
+void GameBrowser::resetAfterGame() {
+    // Called when returning from in-game back to the shelf
+    // Clears the launch animation and restores browsing state
+    m_launchAnim    = 0.f;
+    m_selectionAnim = 1.f;
+    m_pendingLaunch = false;
+    if (m_games.empty())
+        m_state = BrowserState::EMPTY;
+    else
+        m_state = BrowserState::BROWSING;
+}
+
 // ─── Cover art ────────────────────────────────────────────────────────────────
 SDL_Texture* GameBrowser::getCoverArt(int gameIndex) {
     auto it = m_coverArtCache.find(gameIndex);

@@ -317,9 +317,9 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         // Work on a mutable copy so the replacer can modify it
         std::vector<int16_t> buf(data, data + frames * 2);
         s_instance->m_audioReplacer->processAudioFrame(buf.data(), (int)frames);
-        SDL_QueueAudio(1, buf.data(), (Uint32)(frames * 2 * sizeof(int16_t)));
+        SDL_QueueAudio(s_instance->m_audioDevice, buf.data(), (Uint32)(frames * 2 * sizeof(int16_t)));
     } else {
-        SDL_QueueAudio(1, data, (Uint32)(frames * 2 * sizeof(int16_t)));
+        SDL_QueueAudio(s_instance->m_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
     }
 
     return frames;
