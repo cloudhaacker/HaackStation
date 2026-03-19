@@ -11,7 +11,7 @@
 //   - Animated loading bar at bottom
 //   - "Built on Beetle PSX HW" credit line
 
-#include "renderer/theme_engine.h"
+#include "theme_engine.h"
 #include <SDL2/SDL.h>
 #include <string>
 

@@ -1,7 +1,7 @@
-#include "core_bridge/libretro_bridge.h"
-#include "core_bridge/libretro_types.h"
-#include "audio/audio_replacer.h"
-#include "textures/texture_replacer.h"
+#include "libretro_bridge.h"
+#include "libretro_types.h"
+#include "audio_replacer.h"
+#include "texture_replacer.h"
 #include <iostream>
 #include <cstring>
 #include <cstdarg>
@@ -230,11 +230,13 @@ void LibretroBridge::setButtonState(int port, int buttonMask) {
 // ─── Default core path ────────────────────────────────────────────────────────
 std::string LibretroBridge::defaultCorePath() {
 #ifdef _WIN32
-    return "core/beetle_psx_hw_libretro.dll";
+    // Beetle PSX HW is distributed as mednafen_psx_hw on the libretro buildbot
+    // Both names refer to the exact same core — same code, same accuracy
+    return "core/mednafen_psx_hw_libretro.dll";
 #elif defined(__ANDROID__)
-    return "core/beetle_psx_hw_libretro_android.so";
+    return "core/mednafen_psx_hw_libretro_android.so";
 #else
-    return "core/beetle_psx_hw_libretro.so";
+    return "core/mednafen_psx_hw_libretro.so";
 #endif
 }
 

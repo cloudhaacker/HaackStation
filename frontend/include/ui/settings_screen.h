@@ -1,59 +1,29 @@
 #pragma once
-// settings_screen.h
-// The settings UI — fully navigable by controller.
-//
-// Settings are grouped into tabs:
-//   General   — ROMs paths, BIOS path, language
-//   Video     — Renderer, resolution, shader pack
-//   Audio     — Volume, audio replacement enable/disable
-//   Textures  — Texture pack, AI upscaling toggle
-//   Controls  — Button remapping (Phase 3)
-//   About     — Credits, version, acknowledgements
-
-#include "ui/controller_nav.h"
-#include "renderer/theme_engine.h"
+#include "controller_nav.h"
+#include "theme_engine.h"
 #include <SDL2/SDL.h>
 #include <string>
 #include <vector>
 #include <functional>
 
-// ─── Setting item types ───────────────────────────────────────────────────────
 enum class SettingType {
-    TOGGLE,     // On / Off
-    CHOICE,     // Pick from a list of strings
-    PATH,       // File/folder path (opens path picker)
-    SLIDER,     // Integer range
-    ACTION,     // Triggers a callback (e.g. "Rescan library")
-    SEPARATOR,  // Visual divider, not interactive
-    LABEL,      // Read-only info line
+    TOGGLE, CHOICE, PATH, SLIDER, ACTION, SEPARATOR, LABEL
 };
 
 struct SettingItem {
-    std::string       id;
-    std::string       label;
-    std::string       description;
-    SettingType       type;
-
-    // TOGGLE
-    bool*             toggleValue = nullptr;
-
-    // CHOICE
+    std::string  id;
+    std::string  label;
+    std::string  description;
+    SettingType  type        = SettingType::LABEL;
+    bool*        toggleValue = nullptr;
     std::vector<std::string> choices;
-    int*              choiceIndex = nullptr;
-
-    // SLIDER
-    int*              sliderValue = nullptr;
-    int               sliderMin   = 0;
-    int               sliderMax   = 100;
-
-    // PATH
-    std::string*      pathValue   = nullptr;
-
-    // ACTION
+    int*         choiceIndex = nullptr;
+    int*         sliderValue = nullptr;
+    int          sliderMin   = 0;
+    int          sliderMax   = 100;
+    std::string* pathValue   = nullptr;
     std::function<void()> action;
-
-    // LABEL
-    std::string       labelValue;
+    std::string  labelValue;
 };
 
 struct SettingTab {
@@ -61,38 +31,23 @@ struct SettingTab {
     std::vector<SettingItem> items;
 };
 
-// ─── HaackSettings ────────────────────────────────────────────────────────────
-// The actual settings values, owned here and passed to subsystems
 struct HaackSettings {
-    // General
-    std::string romsPath       = "";
-    std::string biosPath       = "";
-
-    // Video
-    int  rendererChoice        = 0;    // 0=OpenGL, 1=Vulkan
-    int  internalRes           = 1;    // 0=1x, 1=2x, 2=4x, 3=8x
-    int  shaderChoice          = 0;    // index into shader list
-    bool vsync                 = true;
-    bool fullscreen            = false;
-    bool showFps               = false;
-
-    // Audio
-    int  audioVolume           = 100;
-    bool audioReplacement      = true;
-    bool audioReplacementLog   = false;
-
-    // Textures
-    bool textureReplacement    = true;
-    bool aiUpscaling           = false;
-    int  aiUpscaleScale        = 2;    // 2x or 4x
-
-    // System
-    bool overclock             = false;
-    bool cdFastBoot            = false;
-    bool saveStates            = true;
+    std::string romsPath;
+    std::string biosPath;
+    bool fullscreen         = false;
+    bool vsync              = true;
+    bool showFps            = false;
+    int  rendererChoice     = 0;
+    int  internalRes        = 1;
+    int  shaderChoice       = 0;
+    int  audioVolume        = 100;
+    bool audioReplacement   = true;
+    bool audioReplacementLog= false;
+    bool textureReplacement = true;
+    bool aiUpscaling        = false;
+    int  aiUpscaleScale     = 0;
 };
 
-// ─── SettingsScreen ──────────────────────────────────────────────────────────
 class SettingsScreen {
 public:
     SettingsScreen(SDL_Renderer* renderer, ThemeEngine* theme,
@@ -118,17 +73,15 @@ private:
     HaackSettings* m_settings = nullptr;
 
     std::vector<SettingTab> m_tabs;
-    int m_activeTab   = 0;
-    int m_activeItem  = 0;
-    int m_scrollOffset= 0;
+    int  m_activeTab    = 0;
+    int  m_activeItem   = 0;
+    int  m_scrollOffset = 0;
+    bool m_wantsClose   = false;
+    int  m_windowW      = 1280;
+    int  m_windowH      = 720;
 
-    bool m_wantsClose = false;
-
-    int m_windowW = 1280;
-    int m_windowH = 720;
-
-    static constexpr int TAB_BAR_H  = 56;
-    static constexpr int ITEM_H     = 52;
-    static constexpr int PANEL_X    = 60;
-    static constexpr int PANEL_Y    = 80 + TAB_BAR_H;
+    static constexpr int TAB_BAR_H = 56;
+    static constexpr int ITEM_H    = 52;
+    static constexpr int PANEL_X   = 60;
+    static constexpr int PANEL_Y   = 80 + TAB_BAR_H;
 };

@@ -1,4 +1,4 @@
-#include "ui/controller_nav.h"
+#include "controller_nav.h"
 #include <iostream>
 
 ControllerNav::ControllerNav() {

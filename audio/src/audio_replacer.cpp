@@ -1,5 +1,4 @@
-#include "audio_replacer.h"
-// Audio replacement implementation - Phase 3
+#include "../include/audio_replacer.h"
 AudioReplacer::AudioReplacer()  {}
 AudioReplacer::~AudioReplacer() {}
 bool AudioReplacer::loadPackForGame(const std::string&) { return false; }

@@ -1,4 +1,4 @@
-#include "ui/game_browser.h"
+#include "game_browser.h"
 #include <iostream>
 #include <algorithm>
 #include <cmath>

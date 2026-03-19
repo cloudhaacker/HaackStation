@@ -1,5 +1,4 @@
-#include "texture_replacer.h"
-// Texture replacement implementation - Phase 3
+#include "../include/texture_replacer.h"
 TextureReplacer::TextureReplacer()  {}
 TextureReplacer::~TextureReplacer() {}
 bool TextureReplacer::loadPackForGame(const std::string&) { return false; }

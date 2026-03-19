@@ -1,6 +1,4 @@
-#include "shader_manager.h"
-#include <filesystem>
-// Shader manager implementation - Phase 3
+#include "../include/shader_manager.h"
 ShaderManager::ShaderManager()  {}
 ShaderManager::~ShaderManager() {}
 void ShaderManager::scanShaderPacks(const std::string&) {}

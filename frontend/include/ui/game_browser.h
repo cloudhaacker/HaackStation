@@ -19,9 +19,9 @@
 //   Y/Options  — open per-game options menu
 //   Start/Menu — open main menu / settings
 
-#include "library/game_scanner.h"
-#include "ui/controller_nav.h"
-#include "renderer/theme_engine.h"
+#include "game_scanner.h"
+#include "controller_nav.h"
+#include "theme_engine.h"
 #include <SDL2/SDL.h>
 #include <vector>
 #include <string>

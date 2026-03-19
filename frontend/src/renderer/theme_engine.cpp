@@ -1,4 +1,4 @@
-#include "renderer/theme_engine.h"
+#include "theme_engine.h"
 #include <SDL2/SDL_ttf.h>
 #include <cmath>
 #include <iostream>

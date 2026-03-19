@@ -14,7 +14,7 @@
 //   bridge.runFrame();
 //   bridge.blitFramebuffer(renderer);
 
-#include "core_bridge/libretro_types.h"
+#include "libretro_types.h"
 #include <string>
 #include <unordered_map>
 #include <vector>

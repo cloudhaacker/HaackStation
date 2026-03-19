@@ -1,5 +1,5 @@
-#include "library/game_scanner.h"
-#include "library/disc_formats.h"
+#include "game_scanner.h"
+#include "disc_formats.h"
 #include <filesystem>
 #include <algorithm>
 #include <iostream>

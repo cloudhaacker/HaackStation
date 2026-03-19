@@ -1,4 +1,4 @@
-#include "ui/splash_screen.h"
+#include "splash_screen.h"
 #include <SDL2/SDL_image.h>
 #include <iostream>
 #include <cmath>
