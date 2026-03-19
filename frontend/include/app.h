@@ -1,76 +1,78 @@
 #pragma once
-
 #include <SDL2/SDL.h>
 #include <memory>
 #include <string>
-#include <functional>
 
-// ─── Forward declarations ──────────────────────────────────────────────────────
 class GameBrowser;
-class MenuSystem;
 class ControllerNav;
 class LibretroBridge;
 class GameScanner;
 class ThemeEngine;
-class AudioReplacer;
-class TextureReplacer;
-class ShaderManager;
+class SettingsScreen;
 class SplashScreen;
+struct HaackSettings;
 
-// ─── App states ───────────────────────────────────────────────────────────────
 enum class AppState {
-    STARTUP,        // Splash / loading
-    GAME_BROWSER,   // Main shelf — picking a game
-    IN_GAME,        // Running a game
-    SETTINGS,       // Settings screen
-    ABOUT,          // Credits / about
-    SHUTDOWN        // Clean exit
+    STARTUP,       // Splash screen
+    GAME_BROWSER,  // Main game shelf
+    IN_GAME,       // Running a game
+    SETTINGS,      // Settings screen
+    SHUTDOWN
 };
 
-// ─── HaackApp ─────────────────────────────────────────────────────────────────
-// Central application class. Owns all subsystems, drives the main loop.
+// Forward-declared here, defined in settings_screen.h
+// Included by app.cpp where needed
+struct HaackSettings;
+
 class HaackApp {
 public:
     HaackApp();
     ~HaackApp();
-
-    // Returns exit code
     int run();
 
-    // Called by subsystems to trigger a state change
     void setState(AppState next);
     AppState getState() const { return m_state; }
 
-    // Launch a game by file path (ISO, BIN/CUE, CHD, M3U)
     void launchGame(const std::string& path);
     void stopGame();
+    void toggleFullscreen();
 
 private:
     void init();
     void shutdown();
-    void mainLoop();
-
     void handleEvents();
     void update(float deltaMs);
     void render();
+    void updateGameInput();   // Translates SDL controller to libretro bitmask
 
-    // SDL
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
     bool          m_running  = false;
+    AppState      m_state    = AppState::STARTUP;
 
-    // App state
-    AppState m_state = AppState::STARTUP;
+    std::unique_ptr<ThemeEngine>     m_theme;
+    std::unique_ptr<ControllerNav>   m_nav;
+    std::unique_ptr<GameScanner>     m_scanner;
+    std::unique_ptr<LibretroBridge>  m_core;
+    std::unique_ptr<GameBrowser>     m_browser;
+    std::unique_ptr<SettingsScreen>  m_settings;
+    std::unique_ptr<SplashScreen>    m_splash;
 
-    // Subsystems (owned)
-    std::unique_ptr<GameBrowser>    m_browser;
-    std::unique_ptr<MenuSystem>     m_menu;
-    std::unique_ptr<ControllerNav>  m_nav;
-    std::unique_ptr<LibretroBridge> m_core;
-    std::unique_ptr<GameScanner>    m_scanner;
-    std::unique_ptr<ThemeEngine>    m_theme;
-    std::unique_ptr<AudioReplacer>  m_audio;
-    std::unique_ptr<TextureReplacer>m_textures;
-    std::unique_ptr<ShaderManager>  m_shaders;
-    std::unique_ptr<SplashScreen>   m_splash;
+    // Settings values (owned here, passed by pointer to SettingsScreen)
+    // We include the full struct inline to avoid a forward-declare headache
+    struct HaackSettingsLocal {
+        std::string romsPath;
+        std::string biosPath;
+        bool fullscreen     = false;
+        bool vsync          = true;
+        bool showFps        = false;
+        int  rendererChoice = 0;
+        int  internalRes    = 1;
+        int  shaderChoice   = 0;
+        int  audioVolume    = 100;
+        bool audioReplacement = true;
+        bool textureReplacement = true;
+        bool aiUpscaling    = false;
+        int  aiUpscaleScale = 2;
+    } m_haackSettings;
 };

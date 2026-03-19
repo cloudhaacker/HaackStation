@@ -10,6 +10,7 @@ set(FRONTEND_SOURCES
     src/library/game_scanner.cpp
     src/library/disc_formats.cpp
     src/renderer/theme_engine.cpp
+    src/core_bridge/libretro_bridge.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})
