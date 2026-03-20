@@ -54,6 +54,11 @@ SettingsScreen::SettingsScreen(SDL_Renderer* renderer, ThemeEngine* theme,
     buildTabs();
 }
 
+void SettingsScreen::onWindowResize(int w, int h) {
+    m_windowW = w;
+    m_windowH = h;
+}
+
 void SettingsScreen::buildTabs() {
     m_tabs.clear();
 
@@ -68,6 +73,10 @@ void SettingsScreen::buildTabs() {
     general.items.push_back(makeAction("rescan", "Rescan Library",
         "Re-scan ROMs folder for new games",
         []() { std::cout << "[Settings] Rescan triggered\n"; }));
+    general.items.push_back(makeSep());
+    general.items.push_back(makeAction("quit", "Quit HaackStation",
+        "Exit the application",
+        [this]() { m_wantsQuit = true; }));
     m_tabs.push_back(general);
 
     // ── Video ─────────────────────────────────────────────────────────────────
@@ -136,6 +145,10 @@ void SettingsScreen::buildTabs() {
     about.items.push_back(makeSep());
     about.items.push_back(makeLabel("github", "Source Code",
         "github.com/cloudhaacker/HaackStation"));
+    about.items.push_back(makeSep());
+    about.items.push_back(makeAction("quit", "Quit HaackStation",
+        "Exit the application",
+        [this]() { m_wantsQuit = true; }));
     m_tabs.push_back(about);
 }
 
@@ -196,6 +209,12 @@ void SettingsScreen::activateCurrentItem() {
         case SettingType::ACTION:
             if (item.action) { item.action(); m_nav->rumbleConfirm(); }
             break;
+        case SettingType::PATH:
+            // PATH fields: A button confirms the current value
+            // In Phase 3 this will open a folder browser
+            // For now, rumble to acknowledge
+            m_nav->rumbleConfirm();
+            break;
         default: break;
     }
 }
@@ -203,6 +222,9 @@ void SettingsScreen::activateCurrentItem() {
 void SettingsScreen::update(float /*deltaMs*/) {}
 
 void SettingsScreen::render() {
+    // Always get current output size — handles fullscreen transitions
+    SDL_GetRendererOutputSize(m_renderer, &m_windowW, &m_windowH);
+
     const auto& pal = m_theme->palette();
     SDL_SetRenderDrawColor(m_renderer, pal.bg.r, pal.bg.g, pal.bg.b, 255);
     SDL_RenderClear(m_renderer);

@@ -31,6 +31,7 @@ public:
     void launchGame(const std::string& path);
     void stopGame();
     void toggleFullscreen();
+    void applySettings();
 
 private:
     void init();

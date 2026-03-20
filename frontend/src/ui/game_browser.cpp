@@ -207,6 +207,10 @@ void GameBrowser::ensureSelectionVisible() {
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 void GameBrowser::render() {
+    // Always get current output size — handles fullscreen transitions
+    SDL_GetRendererOutputSize(m_renderer, &m_windowW, &m_windowH);
+    m_theme->layout().recalculate(m_windowW, m_windowH);
+
     const auto& pal = m_theme->palette();
 
     // Background

@@ -2,6 +2,7 @@
 #include "game_browser.h"
 #include "controller_nav.h"
 #include "settings_screen.h"
+#include "settings_manager.h"
 #include "splash_screen.h"
 #include "libretro_bridge.h"
 #include "libretro_types.h"
@@ -20,6 +21,10 @@ HaackApp::HaackApp()  { init(); }
 HaackApp::~HaackApp() { shutdown(); }
 
 void HaackApp::init() {
+    // Load persisted settings first
+    SettingsManager settingsMgr;
+    settingsMgr.load(m_haackSettings);
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) != 0)
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
 
@@ -34,7 +39,7 @@ void HaackApp::init() {
     if (!m_window)
         throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
 
-    // ── Set window icon ───────────────────────────────────────────────────────
+    // ---
     SDL_Surface* icon = IMG_Load("assets/icons/icon.png");
     if (!icon) icon = SDL_LoadBMP("assets/icons/icon.bmp");
     if (icon) {
@@ -55,10 +60,13 @@ void HaackApp::init() {
     m_core     = std::make_unique<LibretroBridge>();
 
     m_core->setRenderer(m_renderer);
-    m_core->setBiosPath("bios/");
+    // Use saved BIOS path or fall back to local bios/ folder
+    std::string biosPath = m_haackSettings.biosPath.empty()
+                           ? "bios/" : m_haackSettings.biosPath;
+    m_core->setBiosPath(biosPath);
     m_core->setSavePath("saves/");
 
-    // ── Beetle PSX HW core options ────────────────────────────────────────────
+    // ---
     // Renderer: software for now (HW renderer / OpenGL setup is Phase 3)
     m_core->setCoreOption("beetle_psx_hw_renderer",              "software");
     m_core->setCoreOption("beetle_psx_hw_internal_resolution",   "1x(native)");
@@ -85,6 +93,9 @@ void HaackApp::init() {
                                                    m_nav.get(), &m_haackSettings);
     m_splash   = std::make_unique<SplashScreen>(m_renderer, m_theme.get());
 
+    // Add user-configured ROM path if set
+    if (!m_haackSettings.romsPath.empty())
+        m_scanner->addSearchPath(m_haackSettings.romsPath);
     m_scanner->scanDefaultPaths();
     m_browser->setLibrary(m_scanner->getLibrary());
     m_splash->onScanComplete();
@@ -102,6 +113,10 @@ void HaackApp::init() {
 }
 
 void HaackApp::shutdown() {
+    // Save settings before shutting down
+    SettingsManager settingsMgr;
+    settingsMgr.save(m_haackSettings);
+
     if (m_core && m_core->isGameLoaded()) m_core->unloadGame();
     m_splash.reset();
     m_settings.reset();
@@ -170,9 +185,13 @@ void HaackApp::handleEvents() {
                 m_running = false;
                 return;
             case SDL_WINDOWEVENT:
-                if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
-                    m_browser->onWindowResize(e.window.data1, e.window.data2);
-                    m_theme->onWindowResize(e.window.data1, e.window.data2);
+                if (e.window.event == SDL_WINDOWEVENT_RESIZED ||
+                    e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                    int w, h;
+                    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+                    m_browser->onWindowResize(w, h);
+                    m_settings->onWindowResize(w, h);
+                    m_theme->onWindowResize(w, h);
                 }
                 break;
             case SDL_KEYDOWN:
@@ -183,8 +202,10 @@ void HaackApp::handleEvents() {
                 if (e.key.keysym.sym == SDLK_F11) toggleFullscreen();
                 // Keyboard shortcut: Enter opens settings from empty shelf
                 if (e.key.keysym.sym == SDLK_RETURN &&
-                    m_state == AppState::GAME_BROWSER)
+                    m_state == AppState::GAME_BROWSER) {
+                    m_settings->resetClose();
                     setState(AppState::SETTINGS);
+                }
                 break;
             case SDL_CONTROLLERDEVICEADDED:
                 m_nav->onControllerAdded(e.cdevice.which);
@@ -196,21 +217,26 @@ void HaackApp::handleEvents() {
                 // Start button always opens settings regardless of library state
                 if (m_state == AppState::GAME_BROWSER &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    m_settings->resetClose();  // Clear any stale close flag
                     setState(AppState::SETTINGS);
                     continue;  // Don't pass this event to the browser
                 }
-                // Start+Select together opens in-game menu / quits to shelf
-                // Select alone is passed through to the game (needed for many PS1 games)
+                // Start+Select quits game to shelf
                 if (m_state == AppState::IN_GAME &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-                    // Check if Start is also held
                     SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
                         SDL_JoystickGetDeviceInstanceID(0));
                     if (ctrl && SDL_GameControllerGetButton(
                             ctrl, SDL_CONTROLLER_BUTTON_START)) {
-                        stopGame();  // Start+Select = quit to shelf
+                        stopGame();
                     }
-                    // Otherwise Select passes through to the game normally
+                }
+                // Guide/Home button opens settings from game browser
+                if (m_state == AppState::GAME_BROWSER &&
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) {
+                    m_settings->resetClose();
+                    setState(AppState::SETTINGS);
+                    continue;
                 }
                 break;
             default: break;
@@ -243,13 +269,11 @@ void HaackApp::update(float deltaMs) {
             break;
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
-            if (m_settings->wantsClose()) {
-                // If user set a new ROM path, rescan
-                if (!m_haackSettings.romsPath.empty()) {
-                    m_scanner->addSearchPath(m_haackSettings.romsPath);
-                    m_scanner->rescan();
-                    m_browser->setLibrary(m_scanner->getLibrary());
-                }
+            if (m_settings->wantsQuit()) {
+                applySettings();
+                m_running = false;  // Quit the application
+            } else if (m_settings->wantsClose()) {
+                applySettings();
                 setState(AppState::GAME_BROWSER);
             }
             break;
@@ -284,6 +308,52 @@ void HaackApp::launchGame(const std::string& path) {
     } else {
         setState(AppState::IN_GAME);
     }
+}
+
+void HaackApp::applySettings() {
+    // ---
+    if (!m_haackSettings.romsPath.empty()) {
+        m_scanner->addSearchPath(m_haackSettings.romsPath);
+        m_scanner->rescan();
+        m_browser->setLibrary(m_scanner->getLibrary());
+    }
+
+    // ---
+    if (!m_haackSettings.biosPath.empty()) {
+        m_core->setBiosPath(m_haackSettings.biosPath);
+    }
+
+    // ---
+    {
+        Uint32 flags = SDL_GetWindowFlags(m_window);
+        bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+        if (m_haackSettings.fullscreen != isFs) {
+            SDL_SetWindowFullscreen(m_window,
+                m_haackSettings.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+        }
+    }
+
+    // ---
+    static const char* resOptions[] = {
+        "1x(native)", "2x", "4x", "8x", "16x"
+    };
+    int resIdx = m_haackSettings.internalRes;
+    if (resIdx >= 0 && resIdx < 5) {
+        m_core->setCoreOption("beetle_psx_hw_internal_resolution",
+                              resOptions[resIdx]);
+    }
+
+    // ---
+    // SDL_MixAudio volume is 0-128, our setting is 0-100
+    // We apply this by adjusting the SDL audio stream volume
+    // For now stored in settings and will be applied when audio system expands
+    std::cout << "[Settings] Volume: " << m_haackSettings.audioVolume << "%\n";
+
+    // ---
+    SettingsManager mgr;
+    mgr.save(m_haackSettings);
+
+    std::cout << "[Settings] Applied and saved\n";
 }
 
 void HaackApp::stopGame() {

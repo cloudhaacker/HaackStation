@@ -11,9 +11,16 @@ set(FRONTEND_SOURCES
     src/library/disc_formats.cpp
     src/renderer/theme_engine.cpp
     src/core_bridge/libretro_bridge.cpp
+    src/settings_manager.cpp
+    src/per_game_settings.cpp
+    src/memcard_manager.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})
+
+# Explicit lib paths for MSVC — variables from root CMakeLists
+set(SDL2_TTF_LIB   "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
+set(SDL2_IMAGE_LIB "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
 
 target_include_directories(HaackStation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -36,18 +43,11 @@ target_link_libraries(HaackStation PRIVATE
     HaackAudio
     HaackTextures
     HaackShaders
+    "${SDL2_TTF_LIB}"
+    "${SDL2_IMAGE_LIB}"
 )
 
-if(SDL2_TTF_FOUND OR EXISTS "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
-    target_link_libraries(HaackStation PRIVATE
-        "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
-endif()
-
-if(SDL2_IMAGE_FOUND OR EXISTS "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
-    target_link_libraries(HaackStation PRIVATE
-        "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
-    target_compile_definitions(HaackStation PRIVATE HAACK_SDL_IMAGE)
-endif()
+target_compile_definitions(HaackStation PRIVATE HAACK_SDL_IMAGE)
 
 if(WIN32)
     set_target_properties(HaackStation PROPERTIES
@@ -56,9 +56,47 @@ if(WIN32)
         winmm imm32 setupapi version)
 endif()
 
+# Copy assets
 add_custom_command(TARGET HaackStation POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/assets"
         "$<TARGET_FILE_DIR:HaackStation>/assets"
-    COMMENT "Copying assets to build output"
+    COMMENT "Copying assets"
+)
+
+# Copy SDL2 DLLs — runs after every build so clean rebuilds don't break things
+add_custom_command(TARGET HaackStation POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/deps/SDL2/lib/x64/SDL2.dll"
+        "$<TARGET_FILE_DIR:HaackStation>/SDL2.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.dll"
+        "$<TARGET_FILE_DIR:HaackStation>/SDL2_ttf.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.dll"
+        "$<TARGET_FILE_DIR:HaackStation>/SDL2_image.dll"
+    COMMENT "Copying SDL2 DLLs"
+)
+
+# Copy core DLL
+add_custom_command(TARGET HaackStation POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:HaackStation>/core"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/core/mednafen_psx_hw_libretro.dll"
+        "$<TARGET_FILE_DIR:HaackStation>/core/mednafen_psx_hw_libretro.dll"
+    COMMENT "Copying core DLL"
+)
+
+# Create bios and saves folders
+add_custom_command(TARGET HaackStation POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:HaackStation>/bios"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:HaackStation>/saves"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:HaackStation>/memcards/shared"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:HaackStation>/memcards/per_game"
+    COMMENT "Creating runtime directories"
 )

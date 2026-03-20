@@ -59,6 +59,9 @@ public:
     void render();
 
     bool wantsClose() const { return m_wantsClose; }
+    void onWindowResize(int w, int h);
+    bool wantsQuit()  const { return m_wantsQuit; }
+    void resetClose()       { m_wantsClose = false; m_wantsQuit = false; }
 
 private:
     void buildTabs();
@@ -77,6 +80,7 @@ private:
     int  m_activeItem   = 0;
     int  m_scrollOffset = 0;
     bool m_wantsClose   = false;
+    bool m_wantsQuit    = false;
     int  m_windowW      = 1280;
     int  m_windowH      = 720;
 
