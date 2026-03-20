@@ -3,6 +3,9 @@
 #include "controller_nav.h"
 #include "settings_screen.h"
 #include "settings_manager.h"
+#include "scrape_screen.h"
+#include "game_scraper.h"
+#include "save_state_manager.h"
 #include "splash_screen.h"
 #include "libretro_bridge.h"
 #include "libretro_types.h"
@@ -12,6 +15,9 @@
 #include <SDL2/SDL_image.h>
 #include <stdexcept>
 #include <iostream>
+#include <vector>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 static constexpr int   DEFAULT_W = 1280;
 static constexpr int   DEFAULT_H = 720;
@@ -92,6 +98,13 @@ void HaackApp::init() {
     m_settings = std::make_unique<SettingsScreen>(m_renderer, m_theme.get(),
                                                    m_nav.get(), &m_haackSettings);
     m_splash   = std::make_unique<SplashScreen>(m_renderer, m_theme.get());
+    m_scraper  = std::make_unique<ScrapeScreen>(m_renderer, m_theme.get(), m_nav.get());
+
+    // Save state manager
+    m_saveStates = std::make_unique<SaveStateManager>();
+    m_saveStates->setBridge(m_core.get());
+    m_saveStates->setRenderer(m_renderer);
+    m_saveStates->setBaseDir("saves/states/");
 
     // Add user-configured ROM path if set
     if (!m_haackSettings.romsPath.empty())
@@ -200,6 +213,17 @@ void HaackApp::handleEvents() {
                     else if (m_state == AppState::SETTINGS) setState(AppState::GAME_BROWSER);
                 }
                 if (e.key.keysym.sym == SDLK_F11) toggleFullscreen();
+                // Save state shortcuts (keyboard for now, in-game menu later)
+                if (m_state == AppState::IN_GAME) {
+                    if (e.key.keysym.sym == SDLK_F5) {
+                        m_saveStates->saveState(0);
+                        std::cout << "[App] Quick save to slot 1\n";
+                    }
+                    if (e.key.keysym.sym == SDLK_F7) {
+                        m_saveStates->loadState(0);
+                        std::cout << "[App] Quick load from slot 1\n";
+                    }
+                }
                 // Keyboard shortcut: Enter opens settings from empty shelf
                 if (e.key.keysym.sym == SDLK_RETURN &&
                     m_state == AppState::GAME_BROWSER) {
@@ -246,6 +270,7 @@ void HaackApp::handleEvents() {
         switch (m_state) {
             case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
             case AppState::SETTINGS:     m_settings->handleEvent(e); break;
+            case AppState::SCRAPING:     m_scraper->handleEvent(e);  break;
             default: break;
         }
     }
@@ -271,12 +296,35 @@ void HaackApp::update(float deltaMs) {
             m_settings->update(deltaMs);
             if (m_settings->wantsQuit()) {
                 applySettings();
-                m_running = false;  // Quit the application
+                m_running = false;
+            } else if (m_settings->wantsScrape()) {
+                m_settings->clearScrape();
+                applySettings();
+                {
+                    std::string mediaDir = m_haackSettings.romsPath.empty()
+                        ? "media/" : m_haackSettings.romsPath + "/media/";
+                    auto& lib = const_cast<std::vector<GameEntry>&>(
+                        m_scanner->getLibrary());
+                    m_scraper->startScraping(lib, mediaDir,
+                        m_haackSettings.ssUser,
+                        m_haackSettings.ssPassword);
+                }
+                setState(AppState::SCRAPING);
             } else if (m_settings->wantsClose()) {
                 applySettings();
                 setState(AppState::GAME_BROWSER);
             }
             break;
+
+        case AppState::SCRAPING:
+            m_scraper->update(deltaMs);
+            if (m_scraper->isDone() || m_scraper->wasCancelled()) {
+                // Reload library cover art paths
+                m_browser->setLibrary(m_scanner->getLibrary());
+                setState(AppState::GAME_BROWSER);
+            }
+            break;
+
         default: break;
     }
 }
@@ -289,6 +337,7 @@ void HaackApp::render() {
         case AppState::GAME_BROWSER: m_browser->render();                 break;
         case AppState::IN_GAME:      m_core->blitFramebuffer(m_renderer); break;
         case AppState::SETTINGS:     m_settings->render();                break;
+        case AppState::SCRAPING:     m_scraper->render();                 break;
         default: break;
     }
     SDL_RenderPresent(m_renderer);
@@ -306,6 +355,10 @@ void HaackApp::launchGame(const std::string& path) {
         std::cerr << "[HaackStation] Failed to load game.\n";
         std::cerr << "  Ensure BIOS files are in: bios/\n";
     } else {
+        // Tell save state manager which game is running
+        fs::path p(path);
+        std::string title = p.stem().string();
+        m_saveStates->setCurrentGame(title, path);
         setState(AppState::IN_GAME);
     }
 }
@@ -357,6 +410,12 @@ void HaackApp::applySettings() {
 }
 
 void HaackApp::stopGame() {
+    // Auto-save state before exiting
+    if (m_saveStates && m_core->isGameLoaded()) {
+        SDL_Surface* screenshot = m_saveStates->captureScreenshot();
+        m_saveStates->autoSave(screenshot);
+        if (screenshot) SDL_FreeSurface(screenshot);
+    }
     m_core->unloadGame();
     m_browser->resetAfterGame();
     setState(AppState::GAME_BROWSER);

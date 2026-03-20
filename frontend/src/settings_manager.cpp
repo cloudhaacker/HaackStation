@@ -65,6 +65,8 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "texture_replace")    s.textureReplacement = parseBool(val);
         else if (key == "ai_upscaling")       s.aiUpscaling        = parseBool(val);
         else if (key == "ai_upscale_scale")   s.aiUpscaleScale     = parseInt(val, 0);
+        else if (key == "ss_user")            s.ssUser             = val;
+        else if (key == "ss_password")        s.ssPassword         = val;
     }
 
     std::cout << "[Settings] Loaded from " << m_configPath << "\n";
@@ -106,6 +108,11 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "texture_replace="  << (s.textureReplacement ? "true" : "false") << "\n";
     f << "ai_upscaling="     << (s.aiUpscaling        ? "true" : "false") << "\n";
     f << "ai_upscale_scale=" << s.aiUpscaleScale      << "\n";
+    f << "\n";
+
+    f << "[Scraper]\n";
+    f << "ss_user="     << s.ssUser     << "\n";
+    f << "ss_password=" << s.ssPassword << "\n";
 
     std::cout << "[Settings] Saved to " << m_configPath << "\n";
     return true;

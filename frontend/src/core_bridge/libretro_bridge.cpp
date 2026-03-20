@@ -75,6 +75,9 @@ bool LibretroBridge::loadCore(const std::string& corePath) {
     LOAD_SYM(m_retro_set_input_poll,         retro_set_input_poll);
     LOAD_SYM(m_retro_set_input_state,        retro_set_input_state);
     LOAD_SYM(m_retro_set_controller_port_device, retro_set_controller_port_device);
+    LOAD_SYM(m_retro_serialize_size, retro_serialize_size);
+    LOAD_SYM(m_retro_serialize,      retro_serialize);
+    LOAD_SYM(m_retro_unserialize,    retro_unserialize);
 
     // Register our callbacks with the core
     m_retro_set_environment        ((void*)cb_environment);
@@ -537,6 +540,25 @@ bool LibretroBridge::initAudio() {
     std::cout << "[Bridge] Audio: core=" << m_audioCoreRate
               << "Hz SDL=" << m_audioOutputRate << "Hz\n";
     return true;
+}
+
+// ─── Save state serialization ────────────────────────────────────────────────
+size_t LibretroBridge::getSerializeSize() const {
+    if (!m_coreLoaded || !m_gameLoaded || !m_retro_serialize_size)
+        return 0;
+    return m_retro_serialize_size();
+}
+
+bool LibretroBridge::serialize(void* data, size_t size) const {
+    if (!m_coreLoaded || !m_gameLoaded || !m_retro_serialize)
+        return false;
+    return m_retro_serialize(data, size);
+}
+
+bool LibretroBridge::unserialize(const void* data, size_t size) {
+    if (!m_coreLoaded || !m_gameLoaded || !m_retro_unserialize)
+        return false;
+    return m_retro_unserialize(data, size);
 }
 
 void LibretroBridge::shutdownAudio() {

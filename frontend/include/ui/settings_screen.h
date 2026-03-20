@@ -44,6 +44,9 @@ struct HaackSettings {
     bool audioReplacement   = true;
     bool audioReplacementLog= false;
     bool textureReplacement = true;
+    // ScreenScraper credentials (optional)
+    std::string ssUser;
+    std::string ssPassword;
     bool aiUpscaling        = false;
     int  aiUpscaleScale     = 0;
 };
@@ -58,7 +61,9 @@ public:
     void update(float deltaMs);
     void render();
 
-    bool wantsClose() const { return m_wantsClose; }
+    bool wantsClose()  const { return m_wantsClose; }
+    bool wantsScrape() const { return m_wantsScrape; }
+    void clearScrape()       { m_wantsScrape = false; }
     void onWindowResize(int w, int h);
     bool wantsQuit()  const { return m_wantsQuit; }
     void resetClose()       { m_wantsClose = false; m_wantsQuit = false; }
@@ -81,6 +86,7 @@ private:
     int  m_scrollOffset = 0;
     bool m_wantsClose   = false;
     bool m_wantsQuit    = false;
+    bool m_wantsScrape  = false;
     int  m_windowW      = 1280;
     int  m_windowH      = 720;
 

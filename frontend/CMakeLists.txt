@@ -14,6 +14,9 @@ set(FRONTEND_SOURCES
     src/settings_manager.cpp
     src/per_game_settings.cpp
     src/memcard_manager.cpp
+    src/game_scraper.cpp
+    src/scrape_screen.cpp
+    src/save_state_manager.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

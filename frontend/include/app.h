@@ -3,6 +3,9 @@
 #include <memory>
 #include <string>
 #include "settings_screen.h"
+#include "scrape_screen.h"
+#include "game_scraper.h"
+#include "save_state_manager.h"
 
 class GameBrowser;
 class ControllerNav;
@@ -17,6 +20,7 @@ enum class AppState {
     GAME_BROWSER,
     IN_GAME,
     SETTINGS,
+    SCRAPING,
     SHUTDOWN
 };
 
@@ -53,6 +57,8 @@ private:
     std::unique_ptr<GameBrowser>    m_browser;
     std::unique_ptr<SettingsScreen> m_settings;
     std::unique_ptr<SplashScreen>   m_splash;
+    std::unique_ptr<ScrapeScreen>      m_scraper;
+    std::unique_ptr<SaveStateManager>  m_saveStates;
 
     HaackSettings m_haackSettings;
 };

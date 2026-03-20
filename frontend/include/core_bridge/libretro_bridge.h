@@ -54,6 +54,11 @@ public:
 
     bool     isCoreLoaded() const { return m_coreLoaded; }
     double   getTargetFps()  const { return m_timing.fps; }
+
+    // Save state serialization
+    size_t   getSerializeSize() const;
+    bool     serialize(void* data, size_t size) const;
+    bool     unserialize(const void* data, size_t size);
     bool     isGameLoaded() const { return m_gameLoaded; }
     CoreInfo getCoreInfo()  const { return m_coreInfo; }
 
@@ -98,6 +103,11 @@ private:
     int                m_fbWidth        = 640;
     int                m_fbHeight       = 480;
     retro_pixel_format m_pixelFormat    = RETRO_PIXEL_FORMAT_RGB565;
+
+    // Save state function pointers
+    size_t (*m_retro_serialize_size)()                    = nullptr;
+    bool   (*m_retro_serialize)(void*, size_t)            = nullptr;
+    bool   (*m_retro_unserialize)(const void*, size_t)    = nullptr;
 
     SDL_AudioDeviceID        m_audioDevice    = 0;
     retro_system_timing      m_timing         = {};

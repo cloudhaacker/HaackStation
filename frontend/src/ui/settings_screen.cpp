@@ -74,6 +74,12 @@ void SettingsScreen::buildTabs() {
         "Re-scan ROMs folder for new games",
         []() { std::cout << "[Settings] Rescan triggered\n"; }));
     general.items.push_back(makeSep());
+    general.items.push_back(makeLabel("ss_header", "ScreenScraper Account",
+        "Register free at screenscraper.fr for cover art"));
+    general.items.push_back(makeAction("scrape", "Scrape Game Art",
+        "Download cover art and info (requires SS account)",
+        [this]() { m_wantsScrape = true; }));
+    general.items.push_back(makeSep());
     general.items.push_back(makeAction("quit", "Quit HaackStation",
         "Exit the application",
         [this]() { m_wantsQuit = true; }));
