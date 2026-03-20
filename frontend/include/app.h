@@ -6,6 +6,7 @@
 #include "scrape_screen.h"
 #include "game_scraper.h"
 #include "save_state_manager.h"
+#include "ingame_menu.h"
 
 class GameBrowser;
 class ControllerNav;
@@ -36,6 +37,7 @@ public:
     void stopGame();
     void toggleFullscreen();
     void applySettings();
+    void processInGameMenuActions();
 
 private:
     void init();
@@ -59,6 +61,7 @@ private:
     std::unique_ptr<SplashScreen>   m_splash;
     std::unique_ptr<ScrapeScreen>      m_scraper;
     std::unique_ptr<SaveStateManager>  m_saveStates;
+    std::unique_ptr<InGameMenu>        m_inGameMenu;
 
     HaackSettings m_haackSettings;
 };

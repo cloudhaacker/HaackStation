@@ -17,6 +17,7 @@ set(FRONTEND_SOURCES
     src/game_scraper.cpp
     src/scrape_screen.cpp
     src/save_state_manager.cpp
+    src/ingame_menu.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

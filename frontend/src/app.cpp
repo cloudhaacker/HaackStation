@@ -6,6 +6,7 @@
 #include "scrape_screen.h"
 #include "game_scraper.h"
 #include "save_state_manager.h"
+#include "ingame_menu.h"
 #include "splash_screen.h"
 #include "libretro_bridge.h"
 #include "libretro_types.h"
@@ -106,6 +107,9 @@ void HaackApp::init() {
     m_saveStates->setRenderer(m_renderer);
     m_saveStates->setBaseDir("saves/states/");
 
+    m_inGameMenu = std::make_unique<InGameMenu>(
+        m_renderer, m_theme.get(), m_nav.get(), m_saveStates.get());
+
     // Add user-configured ROM path if set
     if (!m_haackSettings.romsPath.empty())
         m_scanner->addSearchPath(m_haackSettings.romsPath);
@@ -166,15 +170,20 @@ int HaackApp::run() {
         handleEvents();
 
         if (m_state == AppState::IN_GAME) {
-            // Fixed timestep for game simulation
-            double fps = m_core->getTargetFps();
-            if (fps <= 0.0) fps = 59.94;
-            double fixedStep = 1.0 / fps;
+            // Pause game simulation when in-game menu is open
+            if (m_inGameMenu && m_inGameMenu->isOpen()) {
+                accumulator = 0.0; // drain accumulator so no catch-up on resume
+            } else {
+                // Fixed timestep for game simulation
+                double fps = m_core->getTargetFps();
+                if (fps <= 0.0) fps = 59.94;
+                double fixedStep = 1.0 / fps;
 
-            accumulator += elapsed;
-            while (accumulator >= fixedStep) {
-                m_core->runFrame();
-                accumulator -= fixedStep;
+                accumulator += elapsed;
+                while (accumulator >= fixedStep) {
+                    m_core->runFrame();
+                    accumulator -= fixedStep;
+                }
             }
         } else {
             // Menu update uses real delta time
@@ -204,6 +213,7 @@ void HaackApp::handleEvents() {
                     SDL_GetRendererOutputSize(m_renderer, &w, &h);
                     m_browser->onWindowResize(w, h);
                     m_settings->onWindowResize(w, h);
+                    m_inGameMenu->onWindowResize(w, h);
                     m_theme->onWindowResize(w, h);
                 }
                 break;
@@ -245,6 +255,19 @@ void HaackApp::handleEvents() {
                     setState(AppState::SETTINGS);
                     continue;  // Don't pass this event to the browser
                 }
+                // Start+Y opens in-game menu
+                if (m_state == AppState::IN_GAME &&
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
+                    SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
+                        SDL_JoystickGetDeviceInstanceID(0));
+                    if (ctrl && SDL_GameControllerGetButton(
+                            ctrl, SDL_CONTROLLER_BUTTON_START)) {
+                        if (m_inGameMenu->isOpen())
+                            m_inGameMenu->close();
+                        else
+                            m_inGameMenu->open();
+                    }
+                }
                 // Start+Select quits game to shelf
                 if (m_state == AppState::IN_GAME &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
@@ -267,14 +290,56 @@ void HaackApp::handleEvents() {
         }
 
         // Route events to active screen AFTER app-level handling
-        switch (m_state) {
-            case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
-            case AppState::SETTINGS:     m_settings->handleEvent(e); break;
-            case AppState::SCRAPING:     m_scraper->handleEvent(e);  break;
-            default: break;
+        // In-game menu gets events first when open
+        if (m_state == AppState::IN_GAME && m_inGameMenu->isOpen()) {
+            m_inGameMenu->handleEvent(e);
+        } else {
+            switch (m_state) {
+                case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
+                case AppState::SETTINGS:     m_settings->handleEvent(e); break;
+                case AppState::SCRAPING:     m_scraper->handleEvent(e);  break;
+                default: break;
+            }
         }
     }
-    if (m_state == AppState::IN_GAME) updateGameInput();
+    if (m_state == AppState::IN_GAME) {
+        if (!m_inGameMenu || !m_inGameMenu->isOpen())
+            updateGameInput();
+        else
+            processInGameMenuActions();
+    }
+}
+
+void HaackApp::processInGameMenuActions() {
+    if (!m_inGameMenu) return;
+    InGameMenuAction action = m_inGameMenu->pendingAction();
+    if (action == InGameMenuAction::NONE) return;
+
+    m_inGameMenu->clearAction();
+
+    if (action == InGameMenuAction::RESUME) {
+        m_inGameMenu->close();
+
+    } else if (action == InGameMenuAction::SAVE_STATE) {
+        int slot = m_inGameMenu->selectedSlot();
+        SDL_Surface* shot = m_saveStates->captureScreenshot();
+        m_saveStates->saveState(slot, shot);
+        if (shot) SDL_FreeSurface(shot);
+        m_inGameMenu->close();
+
+    } else if (action == InGameMenuAction::LOAD_STATE) {
+        int slot = m_inGameMenu->selectedSlot();
+        // Map slot index to actual slot number from the list
+        auto slots = m_saveStates->listSlots();
+        if (slot < (int)slots.size()) {
+            m_saveStates->loadState(slots[slot].slotNumber);
+        }
+        m_inGameMenu->close();
+
+    } else if (action == InGameMenuAction::QUIT_TO_SHELF) {
+        m_inGameMenu->close();
+        stopGame();
+    }
 }
 
 void HaackApp::update(float deltaMs) {
@@ -289,8 +354,9 @@ void HaackApp::update(float deltaMs) {
                 launchGame(m_browser->consumeLaunchPath());
             break;
         case AppState::IN_GAME:
-            // runFrame() is called from run() loop with fixed timestep.
-            // Nothing to do here.
+            if (m_inGameMenu && m_inGameMenu->isOpen()) {
+                m_inGameMenu->update(deltaMs);
+            }
             break;
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
@@ -335,7 +401,11 @@ void HaackApp::render() {
     switch (m_state) {
         case AppState::STARTUP:      m_splash->render();                  break;
         case AppState::GAME_BROWSER: m_browser->render();                 break;
-        case AppState::IN_GAME:      m_core->blitFramebuffer(m_renderer); break;
+        case AppState::IN_GAME:
+            m_core->blitFramebuffer(m_renderer);
+            if (m_inGameMenu->isOpen())
+                m_inGameMenu->render();
+            break;
         case AppState::SETTINGS:     m_settings->render();                break;
         case AppState::SCRAPING:     m_scraper->render();                 break;
         default: break;
