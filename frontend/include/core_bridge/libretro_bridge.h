@@ -99,8 +99,10 @@ private:
     int                m_fbHeight       = 480;
     retro_pixel_format m_pixelFormat    = RETRO_PIXEL_FORMAT_RGB565;
 
-    SDL_AudioDeviceID   m_audioDevice = 0;
-    retro_system_timing m_timing      = {};
+    SDL_AudioDeviceID        m_audioDevice    = 0;
+    retro_system_timing      m_timing         = {};
+    int                      m_audioCoreRate  = 44100;
+    int                      m_audioOutputRate= 44100;
 
     int16_t m_inputState[2] = {0, 0};
 

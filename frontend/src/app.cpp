@@ -42,8 +42,10 @@ void HaackApp::init() {
         SDL_FreeSurface(icon);
     }
 
+    // No PRESENTVSYNC — we do our own frame pacing tied to PS1 core FPS
+    // VSync would lock us to monitor refresh rate (120/144Hz) causing speed issues
     m_renderer = SDL_CreateRenderer(m_window, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        SDL_RENDERER_ACCELERATED);
     if (!m_renderer)
         throw std::runtime_error(std::string("SDL_CreateRenderer: ") + SDL_GetError());
 
@@ -87,6 +89,11 @@ void HaackApp::init() {
     m_browser->setLibrary(m_scanner->getLibrary());
     m_splash->onScanComplete();
 
+    // Apply fullscreen setting on launch
+    if (m_haackSettings.fullscreen) {
+        SDL_SetWindowFullscreen(m_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
+
     m_state   = AppState::STARTUP;
     m_running = true;
 
@@ -110,19 +117,47 @@ void HaackApp::shutdown() {
 }
 
 int HaackApp::run() {
-    Uint32 lastTick = SDL_GetTicks();
+    // Accumulator-based game loop.
+    // The game simulation runs at a fixed rate (59.94fps for NTSC PS1).
+    // The renderer runs as fast as it can (uncapped while in-game,
+    // capped to 60fps in menus to save power).
+    // This means any monitor refresh rate works correctly.
+
+    Uint64 perfFreq   = SDL_GetPerformanceFrequency();
+    Uint64 lastTime   = SDL_GetPerformanceCounter();
+    double accumulator = 0.0;
+
     while (m_running) {
-        Uint32 now   = SDL_GetTicks();
-        float  delta = static_cast<float>(now - lastTick);
-        lastTick     = now;
+        Uint64 now     = SDL_GetPerformanceCounter();
+        double elapsed = (double)(now - lastTime) / perfFreq;
+        lastTime       = now;
+
+        // Cap elapsed to prevent spiral of death after a long pause
+        if (elapsed > 0.1) elapsed = 0.1;
+
         handleEvents();
-        update(delta);
-        render();
-        if (m_state != AppState::IN_GAME) {
-            Uint32 elapsed = SDL_GetTicks() - now;
-            if (elapsed < (Uint32)FRAME_MS)
-                SDL_Delay((Uint32)FRAME_MS - elapsed);
+
+        if (m_state == AppState::IN_GAME) {
+            // Fixed timestep for game simulation
+            double fps = m_core->getTargetFps();
+            if (fps <= 0.0) fps = 59.94;
+            double fixedStep = 1.0 / fps;
+
+            accumulator += elapsed;
+            while (accumulator >= fixedStep) {
+                m_core->runFrame();
+                accumulator -= fixedStep;
+            }
+        } else {
+            // Menu update uses real delta time
+            update((float)(elapsed * 1000.0));
+
+            // Cap menu loop to ~60fps to save power
+            Uint32 frameMs = SDL_GetTicks() - (Uint32)(lastTime * 1000 / perfFreq);
+            if (frameMs < 16) SDL_Delay(16 - frameMs);
         }
+
+        render();
     }
     return 0;
 }
@@ -203,39 +238,8 @@ void HaackApp::update(float deltaMs) {
                 launchGame(m_browser->consumeLaunchPath());
             break;
         case AppState::IN_GAME:
-            {
-                // High-resolution frame timing using performance counter
-                // SDL_GetTicks has only 1ms resolution — too coarse for 60fps
-                static Uint64 lastPerfCount = 0;
-                Uint64 perfFreq = SDL_GetPerformanceFrequency();
-                Uint64 frameStart = SDL_GetPerformanceCounter();
-
-                m_core->runFrame();
-
-                // Target FPS from core (59.94 NTSC, 50.0 PAL)
-                double fps = m_core->getTargetFps();
-                if (fps <= 0.0) fps = 59.94;
-                double targetSeconds = 1.0 / fps;
-                Uint64 targetCounts  = (Uint64)(targetSeconds * perfFreq);
-
-                // Spin-wait the last fraction of a millisecond for precision
-                // Sleep most of the remaining time, busy-wait the last bit
-                Uint64 elapsed = SDL_GetPerformanceCounter() - frameStart;
-                if (elapsed < targetCounts) {
-                    Uint64 remaining = targetCounts - elapsed;
-                    // Sleep if we have more than 2ms remaining
-                    Uint64 twoMs = perfFreq / 500;
-                    if (remaining > twoMs) {
-                        Uint32 sleepMs = (Uint32)(
-                            (double)(remaining - twoMs) / perfFreq * 1000.0);
-                        if (sleepMs > 0) SDL_Delay(sleepMs);
-                    }
-                    // Busy-wait the final fraction
-                    while (SDL_GetPerformanceCounter() - frameStart < targetCounts) {}
-                }
-                lastPerfCount = SDL_GetPerformanceCounter();
-                (void)lastPerfCount;
-            }
+            // runFrame() is called from run() loop with fixed timestep.
+            // Nothing to do here.
             break;
         case AppState::SETTINGS:
             m_settings->update(deltaMs);

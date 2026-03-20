@@ -10,6 +10,7 @@
 // ─── Platform dynamic library loading ────────────────────────────────────────
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
+    #define NOMINMAX
     #include <windows.h>
     #define DL_OPEN(path)       (void*)LoadLibraryA(path)
     #define DL_SYM(lib, sym)    (void*)GetProcAddress((HMODULE)(lib), sym)
@@ -309,19 +310,41 @@ void LibretroBridge::cb_audioSample(int16_t left, int16_t right) {
 // cb_audioSampleBatch: called with a batch of stereo samples each frame
 // This is the main audio path. We pass through the audio replacer if active.
 size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
-    if (!s_instance) return frames;
+    if (!s_instance || s_instance->m_audioDevice == 0) return frames;
+    LibretroBridge& b = *s_instance;
 
-    // Audio replacement hook: if a pack is loaded and a replacement
-    // exists for this audio hash, it will swap the samples in-place
-    if (s_instance->m_audioReplacer && s_instance->m_audioReplacer->isEnabled()) {
-        // Work on a mutable copy so the replacer can modify it
-        std::vector<int16_t> buf(data, data + frames * 2);
-        s_instance->m_audioReplacer->processAudioFrame(buf.data(), (int)frames);
-        SDL_QueueAudio(s_instance->m_audioDevice, buf.data(), (Uint32)(frames * 2 * sizeof(int16_t)));
-    } else {
-        SDL_QueueAudio(s_instance->m_audioDevice, data, (Uint32)(frames * 2 * sizeof(int16_t)));
+    // Audio replacement hook
+    const int16_t* src = data;
+    std::vector<int16_t> replaceBuf;
+    if (b.m_audioReplacer && b.m_audioReplacer->isEnabled()) {
+        replaceBuf.assign(data, data + frames * 2);
+        b.m_audioReplacer->processAudioFrame(replaceBuf.data(), (int)frames);
+        src = replaceBuf.data();
     }
 
+    // ── Queue latency management ───────────────────────────────────────────────
+    // Target: keep ~40ms of audio buffered (enough to prevent gaps,
+    // small enough that drift never becomes perceptible)
+    // If the queue grows beyond 80ms, trim it back to 40ms.
+    // This handles burst audio events (many sounds at once) that would
+    // otherwise cause the queue to grow indefinitely.
+    Uint32 bytesPerMs = (Uint32)(b.m_audioOutputRate * 2 * sizeof(int16_t) / 1000);
+    Uint32 targetMs   = 40;
+    Uint32 maxMs      = 80;
+    Uint32 queued     = SDL_GetQueuedAudioSize(b.m_audioDevice);
+
+    if (queued > bytesPerMs * maxMs) {
+        // Queue has grown too large — trim it back to target
+        // Pause, clear, re-queue only the most recent targetMs worth
+        SDL_PauseAudioDevice(b.m_audioDevice, 1);
+        SDL_ClearQueuedAudio(b.m_audioDevice);
+        SDL_PauseAudioDevice(b.m_audioDevice, 0);
+        // Don't queue this batch — let the next frame start fresh
+        return frames;
+    }
+
+    SDL_QueueAudio(b.m_audioDevice, src,
+                   (Uint32)(frames * 2 * sizeof(int16_t)));
     return frames;
 }
 
@@ -491,26 +514,35 @@ void LibretroBridge::setCoreOption(const std::string& key, const std::string& va
 
 // ─── SDL audio device setup ───────────────────────────────────────────────────
 bool LibretroBridge::initAudio() {
+    m_audioCoreRate = (m_timing.sample_rate > 0)
+                      ? (int)m_timing.sample_rate : 44100;
+
     SDL_AudioSpec want = {}, got = {};
-    want.freq     = (int)m_timing.sample_rate;
+    want.freq     = m_audioCoreRate;
     want.format   = AUDIO_S16SYS;
     want.channels = 2;
-    want.samples  = 2048;  // Larger buffer prevents crackling
-    want.callback = nullptr;  // We use SDL_QueueAudio
+    want.samples  = 2048;
+    want.callback = nullptr; // queue mode
 
-    m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &got, 0);
+    m_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &got,
+                                         SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (m_audioDevice == 0) {
-        std::cerr << "[Bridge] SDL_OpenAudioDevice failed: " << SDL_GetError() << "\n";
+        std::cerr << "[Bridge] SDL_OpenAudioDevice failed: "
+                  << SDL_GetError() << "\n";
         return false;
     }
 
-    SDL_PauseAudioDevice(m_audioDevice, 0);  // Start playing
-    std::cout << "[Bridge] Audio: " << got.freq << "Hz stereo\n";
+    m_audioOutputRate = got.freq;
+    SDL_PauseAudioDevice(m_audioDevice, 0);
+    std::cout << "[Bridge] Audio: core=" << m_audioCoreRate
+              << "Hz SDL=" << m_audioOutputRate << "Hz\n";
     return true;
 }
 
 void LibretroBridge::shutdownAudio() {
     if (m_audioDevice) {
+        SDL_PauseAudioDevice(m_audioDevice, 1);
+        SDL_ClearQueuedAudio(m_audioDevice);
         SDL_CloseAudioDevice(m_audioDevice);
         m_audioDevice = 0;
     }
