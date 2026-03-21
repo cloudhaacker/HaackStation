@@ -13,18 +13,21 @@ ScrapeScreen::~ScrapeScreen() {}
 void ScrapeScreen::startScraping(std::vector<GameEntry>& games,
                                   const std::string& mediaDir,
                                   const std::string& ssUser,
-                                  const std::string& ssPassword) {
+                                  const std::string& ssPassword,
+                                  const std::string& devId,
+                                  const std::string& devPassword) {
     m_done      = false;
     m_cancelled = false;
     m_progress  = ScrapeProgress{};
     m_progress.total = (int)games.size();
 
-    // Run scraper in a background thread so UI stays responsive
-    std::thread([this, &games, mediaDir, ssUser, ssPassword]() {
+    std::thread([this, &games, mediaDir, ssUser, ssPassword, devId, devPassword]() {
         GameScraper scraper;
         scraper.setMediaDir(mediaDir);
         if (!ssUser.empty())
             scraper.setCredentials(ssUser, ssPassword);
+        if (!devId.empty())
+            scraper.setDevCredentials(devId, devPassword);
 
         scraper.scrapeLibrary(games, [this](const ScrapeProgress& p) {
             std::lock_guard<std::mutex> lock(m_mutex);

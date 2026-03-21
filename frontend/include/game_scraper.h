@@ -64,6 +64,7 @@ public:
     // Optional: set ScreenScraper account credentials for higher rate limits
     // Anonymous access works but is limited to ~20,000 requests/day total
     void setCredentials(const std::string& user, const std::string& password);
+    void setDevCredentials(const std::string& devId, const std::string& devPassword);
 
     // Directory where cover art and screenshots are saved
     void setMediaDir(const std::string& dir) { m_mediaDir = dir; }

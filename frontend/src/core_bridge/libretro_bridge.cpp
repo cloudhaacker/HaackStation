@@ -542,6 +542,23 @@ bool LibretroBridge::initAudio() {
     return true;
 }
 
+// ─── System memory access ────────────────────────────────────────────────────
+const uint8_t* LibretroBridge::getSystemMemory() const {
+    if (!m_coreLoaded || !m_gameLoaded) return nullptr;
+    // RETRO_MEMORY_SYSTEM_RAM = 2 for PS1 main RAM (2MB)
+    void* mem = m_retro_get_memory_data
+                ? m_retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)
+                : nullptr;
+    return (const uint8_t*)mem;
+}
+
+size_t LibretroBridge::getSystemMemorySize() const {
+    if (!m_coreLoaded || !m_gameLoaded) return 0;
+    return m_retro_get_memory_size
+           ? m_retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM)
+           : 0;
+}
+
 // ─── Save state serialization ────────────────────────────────────────────────
 size_t LibretroBridge::getSerializeSize() const {
     if (!m_coreLoaded || !m_gameLoaded || !m_retro_serialize_size)

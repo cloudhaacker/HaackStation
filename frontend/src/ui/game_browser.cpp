@@ -1,4 +1,5 @@
 #include "game_browser.h"
+#include <SDL2/SDL_image.h>
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -372,6 +373,12 @@ std::string GameBrowser::consumeLaunchPath() {
     return m_launchPath;
 }
 
+void GameBrowser::clearCoverArtCache() {
+    for (auto& [idx, tex] : m_coverArtCache)
+        if (tex) SDL_DestroyTexture(tex);
+    m_coverArtCache.clear();
+}
+
 void GameBrowser::resetAfterGame() {
     // Called when returning from in-game back to the shelf
     // Clears the launch animation and restores browsing state
@@ -389,23 +396,66 @@ SDL_Texture* GameBrowser::getCoverArt(int gameIndex) {
     auto it = m_coverArtCache.find(gameIndex);
     if (it != m_coverArtCache.end()) return it->second;
 
-    // If the GameEntry has a cover art path, try to load it
     if (gameIndex < (int)m_games.size()) {
         const auto& game = m_games[gameIndex];
-        if (!game.coverArtPath.empty()) {
-            SDL_Surface* surf = SDL_LoadBMP(game.coverArtPath.c_str());
+
+        // Build list of paths to try in order of preference
+        std::vector<std::string> candidates;
+
+        // 1. Explicit path set by scraper
+        if (!game.coverArtPath.empty())
+            candidates.push_back(game.coverArtPath);
+
+        // 2. Standard media folder locations (relative to exe and ROM folder)
+        std::string safeName = game.title;
+        for (auto& c : safeName)
+            if (c=='/'||c=='\\'||c==':'||c=='*'||c=='?'||
+                c=='"'||c=='<'||c=='>'||c=='|') c='_';
+
+        candidates.push_back("media/covers/" + safeName + ".png");
+        candidates.push_back("media/covers/" + safeName + ".jpg");
+
+        // 2b. Original ROM filename stem (before cleanTitle stripped region tags)
+        {
+            size_t sl = game.path.find_last_of("/\\");
+            std::string stem = (sl != std::string::npos)
+                ? game.path.substr(sl + 1) : game.path;
+            // Remove extension
+            size_t dot = stem.rfind('.');
+            if (dot != std::string::npos) stem = stem.substr(0, dot);
+            // Sanitize
+            std::string safeStem = stem;
+            for (auto& c : safeStem)
+                if (c=='/'||c=='\\'||c==':'||c=='*'||c=='?'||
+                    c=='"'||c=='<'||c=='>'||c=='|') c='_';
+            if (safeStem != safeName) {
+                candidates.push_back("media/covers/" + safeStem + ".png");
+                candidates.push_back("media/covers/" + safeStem + ".jpg");
+            }
+        }
+
+        // 3. Next to the ROM file
+        size_t slash = game.path.find_last_of("/\\");
+        if (slash != std::string::npos) {
+            std::string romDir = game.path.substr(0, slash + 1);
+            candidates.push_back(romDir + "media/covers/" + safeName + ".png");
+        }
+
+        for (const auto& path : candidates) {
+            // Use IMG_Load so PNG, JPG, BMP all work
+            SDL_Surface* surf = IMG_Load(path.c_str());
             if (surf) {
                 SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, surf);
                 SDL_FreeSurface(surf);
                 if (tex) {
                     m_coverArtCache[gameIndex] = tex;
+                    std::cout << "[GameBrowser] Cover art loaded: " << path << "\n";
                     return tex;
                 }
             }
         }
     }
 
-    // No cover art available — cache nullptr so we don't retry
     m_coverArtCache[gameIndex] = nullptr;
     return nullptr;
 }

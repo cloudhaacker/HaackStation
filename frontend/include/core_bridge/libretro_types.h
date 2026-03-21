@@ -1,4 +1,11 @@
 #pragma once
+
+// Memory region identifiers for retro_get_memory_data/size
+#define RETRO_MEMORY_MASK        0xff
+#define RETRO_MEMORY_SAVE_RAM    0
+#define RETRO_MEMORY_RTC         1
+#define RETRO_MEMORY_SYSTEM_RAM  2
+#define RETRO_MEMORY_VIDEO_RAM   3
 // libretro_types.h
 // Minimal self-contained libretro API definitions.
 // This lets us compile the bridge without needing the full beetle submodule

@@ -55,6 +55,10 @@ public:
     bool     isCoreLoaded() const { return m_coreLoaded; }
     double   getTargetFps()  const { return m_timing.fps; }
 
+    // System memory access for RetroAchievements
+    const uint8_t* getSystemMemory() const;
+    size_t         getSystemMemorySize() const;
+
     // Save state serialization
     size_t   getSerializeSize() const;
     bool     serialize(void* data, size_t size) const;
@@ -103,6 +107,10 @@ private:
     int                m_fbWidth        = 640;
     int                m_fbHeight       = 480;
     retro_pixel_format m_pixelFormat    = RETRO_PIXEL_FORMAT_RGB565;
+
+    // Memory access function pointers
+    void*  (*m_retro_get_memory_data)(unsigned) = nullptr;
+    size_t (*m_retro_get_memory_size)(unsigned)  = nullptr;
 
     // Save state function pointers
     size_t (*m_retro_serialize_size)()                    = nullptr;

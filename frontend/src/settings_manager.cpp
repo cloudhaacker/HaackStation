@@ -67,6 +67,12 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "ai_upscale_scale")   s.aiUpscaleScale     = parseInt(val, 0);
         else if (key == "ss_user")            s.ssUser             = val;
         else if (key == "ss_password")        s.ssPassword         = val;
+        else if (key == "ss_dev_id")          s.ssDevId            = val;
+        else if (key == "ss_dev_password")    s.ssDevPassword      = val;
+        else if (key == "ra_user")            s.raUser             = val;
+        else if (key == "ra_api_key")         s.raApiKey           = val;
+        else if (key == "ra_password")        s.raPassword         = val;
+        else if (key == "ra_hardcore")        s.raHardcore         = parseBool(val);
     }
 
     std::cout << "[Settings] Loaded from " << m_configPath << "\n";
@@ -111,8 +117,17 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "\n";
 
     f << "[Scraper]\n";
-    f << "ss_user="     << s.ssUser     << "\n";
-    f << "ss_password=" << s.ssPassword << "\n";
+    f << "ss_user="         << s.ssUser        << "\n";
+    f << "ss_password="     << s.ssPassword    << "\n";
+    f << "ss_dev_id="       << s.ssDevId       << "\n";
+    f << "ss_dev_password=" << s.ssDevPassword << "\n";
+    f << "\n";
+
+    f << "[RetroAchievements]\n";
+    f << "ra_user="     << s.raUser     << "\n";
+    f << "ra_api_key="  << s.raApiKey   << "\n";
+    f << "ra_password=" << s.raPassword << "\n";
+    f << "ra_hardcore=" << (s.raHardcore ? "true" : "false") << "\n";
 
     std::cout << "[Settings] Saved to " << m_configPath << "\n";
     return true;

@@ -24,7 +24,9 @@ public:
     void startScraping(std::vector<GameEntry>& games,
                        const std::string& mediaDir,
                        const std::string& ssUser = "",
-                       const std::string& ssPassword = "");
+                       const std::string& ssPassword = "",
+                       const std::string& devId = "",
+                       const std::string& devPassword = "");
 
     void handleEvent(const SDL_Event& e);
     void update(float deltaMs);

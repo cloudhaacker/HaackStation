@@ -44,9 +44,16 @@ struct HaackSettings {
     bool audioReplacement   = true;
     bool audioReplacementLog= false;
     bool textureReplacement = true;
-    // ScreenScraper credentials (optional)
+    // ScreenScraper credentials
     std::string ssUser;
     std::string ssPassword;
+    std::string ssDevId;
+    std::string ssDevPassword;
+    // RetroAchievements
+    std::string raUser;
+    std::string raApiKey;      // Session token (stored after login)
+    std::string raPassword;    // Used for initial login only
+    bool        raHardcore = false;
     bool aiUpscaling        = false;
     int  aiUpscaleScale     = 0;
 };

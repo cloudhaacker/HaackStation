@@ -3,7 +3,7 @@ build/
 out/
 cmake-build-*/
 
-# IDE
+# IDE files
 .vs/
 .vscode/settings.json
 *.user
@@ -23,27 +23,33 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+*.cmake
 !CMakeLists.txt
 
-# BIOS - NEVER commit (copyrighted)
+# BIOS files — NEVER commit these (copyrighted)
+*.bin
 bios/
 
-# Game files - NEVER commit
+# Game files — NEVER commit
 *.iso
 *.chd
 *.cue
 *.img
 
-# Saves
+# Save states and memory cards
 *.mcr
 *.mcd
 *.srm
 *.state
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Node tooling
+# Node (for doc generation tooling)
 node_modules/
 package-lock.json
+
+# Private API credentials - never commit these
+frontend/include/private_credentials.h

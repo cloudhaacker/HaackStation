@@ -44,6 +44,7 @@ public:
     // app.cpp polls these after each update()
     bool        hasPendingLaunch()   const { return m_pendingLaunch; }
     void        resetAfterGame();          // Call when returning from in-game
+    void        clearCoverArtCache();      // Force reload of cover art textures
     std::string consumeLaunchPath();       // Returns path and clears flag
 
     // Window resize notification

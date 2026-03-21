@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
+# ── rcheevos sources ──────────────────────────────────────────────────────────
+set(RCHEEVOS_DIR "${CMAKE_SOURCE_DIR}/deps/rcheevos")
+# Glob all rcheevos .c files - exclude rc_libretro.c (needs libretro.h, not needed)
+file(GLOB_RECURSE RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/*.c")
+list(FILTER RCHEEVOS_SOURCES EXCLUDE REGEX "rc_libretro\.c$")
+message(STATUS "rcheevos sources: ${RCHEEVOS_SOURCES}")
+
 set(FRONTEND_SOURCES
     src/main.cpp
     src/app.cpp
@@ -18,6 +25,7 @@ set(FRONTEND_SOURCES
     src/scrape_screen.cpp
     src/save_state_manager.cpp
     src/ingame_menu.cpp
+    src/ra_manager.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})
@@ -25,6 +33,8 @@ add_executable(HaackStation ${FRONTEND_SOURCES})
 # Explicit lib paths for MSVC — variables from root CMakeLists
 set(SDL2_TTF_LIB   "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
 set(SDL2_IMAGE_LIB "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
+
+target_sources(HaackStation PRIVATE ${RCHEEVOS_SOURCES})
 
 target_include_directories(HaackStation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -34,6 +44,8 @@ target_include_directories(HaackStation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core_bridge
     ${CMAKE_BINARY_DIR}/include
     ${CMAKE_SOURCE_DIR}/deps/SDL2/include
+    ${RCHEEVOS_DIR}/include
+    ${RCHEEVOS_DIR}/src
     ${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/include
     ${CMAKE_SOURCE_DIR}/deps/SDL2_image/include
     ${CMAKE_SOURCE_DIR}/audio/include
