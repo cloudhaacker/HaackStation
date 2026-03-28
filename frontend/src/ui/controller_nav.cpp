@@ -3,7 +3,6 @@
 
 ControllerNav::ControllerNav() {
     SDL_GameControllerEventState(SDL_ENABLE);
-    // Auto-open first available controller
     for (int i = 0; i < SDL_NumJoysticks(); ++i) {
         if (SDL_IsGameController(i)) {
             onControllerAdded(i);
@@ -45,7 +44,6 @@ std::string ControllerNav::controllerName() const {
 }
 
 NavAction ControllerNav::processEvent(const SDL_Event& e) {
-    // Input cooldown — block all navigation input for a period
     if (SDL_GetTicks() < m_cooldownUntil) return NavAction::NONE;
     NavAction action = NavAction::NONE;
 
@@ -53,7 +51,6 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
         case SDL_CONTROLLERBUTTONDOWN:
             action = sdlButtonToAction(
                 static_cast<SDL_GameControllerButton>(e.cbutton.button));
-            // Start held tracking for directional actions
             if (action == NavAction::UP   || action == NavAction::DOWN ||
                 action == NavAction::LEFT || action == NavAction::RIGHT) {
                 m_heldAction  = action;
@@ -91,9 +88,11 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
         case SDL_KEYDOWN:
             action = sdlKeyToAction(e.key.keysym.sym);
             if (action == NavAction::UP   || action == NavAction::DOWN ||
-                action == NavAction::LEFT || action == NavAction::RIGHT) {
+                action == NavAction::LEFT || action == NavAction::RIGHT ||
+                action == NavAction::SHOULDER_L || action == NavAction::SHOULDER_R) {
                 m_heldAction  = action;
                 m_heldSince   = SDL_GetTicks();
+                m_lastRepeat  = 0;
                 m_repeatFired = false;
             }
             break;
@@ -131,69 +130,56 @@ NavAction ControllerNav::updateHeld(Uint32 nowMs) {
 
 NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
     switch (btn) {
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:    return NavAction::UP;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  return NavAction::DOWN;
-        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  return NavAction::LEFT;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return NavAction::RIGHT;
-        case SDL_CONTROLLER_BUTTON_A:          return NavAction::CONFIRM;
-        case SDL_CONTROLLER_BUTTON_B:          return NavAction::BACK;
-        case SDL_CONTROLLER_BUTTON_START:      return NavAction::MENU;
-        case SDL_CONTROLLER_BUTTON_Y:          return NavAction::OPTIONS;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:       return NavAction::UP;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:     return NavAction::DOWN;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:     return NavAction::LEFT;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return NavAction::RIGHT;
+        case SDL_CONTROLLER_BUTTON_A:             return NavAction::CONFIRM;
+        case SDL_CONTROLLER_BUTTON_B:             return NavAction::BACK;
+        case SDL_CONTROLLER_BUTTON_START:         return NavAction::MENU;
+        case SDL_CONTROLLER_BUTTON_Y:             return NavAction::OPTIONS;
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return NavAction::SHOULDER_L;
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return NavAction::SHOULDER_R;
         default: return NavAction::NONE;
     }
 }
 
-// ─── Keyboard mapping (RetroArch defaults) ────────────────────────────────────
-// UI navigation:
-//   Arrows / WASD     → D-pad
-//   X / Space / Enter → Cross (confirm)
-//   Z / Backspace     → Circle (back)
-//   Tab               → Start (menu)
-//   Page Up/Down      → Shoulder buttons (L1/R1 in menus)
+// ─── Keyboard mapping ─────────────────────────────────────────────────────────
 //
-// In-game PS1 buttons (via updateGameInput() in app.cpp):
-//   X         → Cross    (×)   RETRO_DEVICE_ID_JOYPAD_B
-//   Z         → Circle   (○)   RETRO_DEVICE_ID_JOYPAD_A
-//   A         → Square   (□)   RETRO_DEVICE_ID_JOYPAD_Y
-//   S         → Triangle (△)   RETRO_DEVICE_ID_JOYPAD_X
-//   Q         → L1             RETRO_DEVICE_ID_JOYPAD_L
-//   W         → R1             RETRO_DEVICE_ID_JOYPAD_R
-//   E         → L2             RETRO_DEVICE_ID_JOYPAD_L2
-//   R         → R2             RETRO_DEVICE_ID_JOYPAD_R2
-//   Enter     → Start
-//   Backspace → Select
-//   Arrows    → D-pad
-//   F1        → Open in-game menu (replaces Start+Y combo)
+// UI NAVIGATION (all menus, shelf, settings, details panel):
+//   Arrow keys     → D-pad / directional navigation
+//   X              → Confirm (maps to Cross / controller A)
+//   Z              → Back    (maps to Circle / controller B)
+//   Page Up/Down   → L1/R1   (screenshot cycling in details panel)
+//
+// APP-LEVEL SHORTCUTS (intercepted in app.cpp BEFORE this function):
+//   Enter          → Start / Open Settings from shelf
+//   Space          → Select
+//   Escape         → Quit game / quit app
+//   F1             → Toggle in-game menu
+//   F2             → Open details panel (Y button)
+//   F11            → Toggle fullscreen
+//
+// IN-GAME PS1 BUTTONS (read via SDL_GetKeyboardState each frame, NOT events):
+//   Arrow keys → D-pad
+//   X → Cross(×)  Z → Circle(○)  A → Square(□)  S → Triangle(△)
+//   Q → L1   W → R1   E → L2   R → R2
+//   Enter → Start   Space → Select
+//
+// WASD is intentionally absent from UI nav — A/S/W are in-game PS1 buttons.
+// Using WASD for navigation would make settings/shelf unusable during a game.
+
 NavAction ControllerNav::sdlKeyToAction(SDL_Keycode key) const {
     switch (key) {
-        // D-pad / navigation
-        case SDLK_UP:        case SDLK_w: return NavAction::UP;
-        case SDLK_DOWN:      case SDLK_s: return NavAction::DOWN;
-        case SDLK_LEFT:      case SDLK_a: return NavAction::LEFT;
-        case SDLK_RIGHT:     case SDLK_d: return NavAction::RIGHT;
-
-        // Confirm — X (PS1 Cross), Space, or Enter
-        case SDLK_x:
-        case SDLK_SPACE:
-        case SDLK_RETURN:   return NavAction::CONFIRM;
-
-        // Back — Z (PS1 Circle) or Backspace
-        case SDLK_z:
-        case SDLK_BACKSPACE: return NavAction::BACK;
-
-        // Menu / Start — Tab
-        case SDLK_TAB:       return NavAction::MENU;
-
-        // Options / Y — F2 (context menu, details panel)
-        case SDLK_F2:        return NavAction::OPTIONS;
-
-        // Shoulder buttons for menu page navigation
-        case SDLK_PAGEUP:    return NavAction::SHOULDER_L;
-        case SDLK_PAGEDOWN:  return NavAction::SHOULDER_R;
-
-        default: return NavAction::NONE;
+        case SDLK_UP:        return NavAction::UP;
+        case SDLK_DOWN:      return NavAction::DOWN;
+        case SDLK_LEFT:      return NavAction::LEFT;
+        case SDLK_RIGHT:     return NavAction::RIGHT;
+        case SDLK_x:         return NavAction::CONFIRM;
+        case SDLK_z:         return NavAction::BACK;
+        case SDLK_PAGEUP:    return NavAction::SHOULDER_L;   // L1 / cycle screenshots left
+        case SDLK_PAGEDOWN:  return NavAction::SHOULDER_R;   // R1 / cycle screenshots right
+        default:             return NavAction::NONE;
     }
 }
 
