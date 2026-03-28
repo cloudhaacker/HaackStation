@@ -8,21 +8,21 @@
 //
 // API docs: https://www.screenscraper.fr/webapi2.php
 //
-// Usage:
-//   GameScraper scraper;
-//   scraper.setCredentials("your_username", "your_password"); // optional
-//   scraper.setMediaDir("media/");
-//   ScrapeResult result = scraper.scrapeGame("Crash Bandicoot", "SCUS-94900");
-//   if (result.success) {
-//       // result.coverPath has the downloaded cover art
-//       // result.description has the game description
-//   }
+// Media downloaded per game (all from the single jeuInfos API call):
+//   covers/[title].png         — box art front (box-2D)
+//   covers/[title]_back.jpg    — box art back  (box-2D-back)
+//   screenshots/[title]/       — per-game folder, up to 3 shots:
+//       01_screenshot.jpg      — in-game screenshot
+//       02_titlescreen.jpg     — title screen (ss)
+//       03_fanart.jpg          — fan art / background art
 //
-// ScreenScraper allows anonymous access with rate limiting.
-// Users can register a free account for higher limits.
+// Skip logic:
+//   Cover:       skip if covers/[title].png or .jpg already exists
+//   Screenshots: skip if screenshots/[title]/ folder already exists (non-empty)
 
 #include "game_scanner.h"
 #include <string>
+#include <vector>
 #include <functional>
 #include <cstdint>
 
@@ -42,9 +42,9 @@ struct ScrapeResult {
     int         players      = 1;
 
     // Media paths (downloaded locally)
-    std::string coverPath;      // Box art front
-    std::string screenshotPath; // In-game screenshot
-    std::string videoPath;      // Video preview (if available)
+    std::string              coverPath;         // Box art front
+    std::string              backCoverPath;     // Box art back
+    std::vector<std::string> screenshotPaths;   // Per-game folder contents
 };
 
 struct ScrapeProgress {
@@ -52,7 +52,7 @@ struct ScrapeProgress {
     int  done      = 0;
     int  succeeded = 0;
     int  failed    = 0;
-    int  skipped   = 0;   // Already scraped
+    int  skipped   = 0;
     std::string currentGame;
 };
 
@@ -61,64 +61,45 @@ public:
     GameScraper();
     ~GameScraper();
 
-    // Optional: set ScreenScraper account credentials for higher rate limits
-    // Anonymous access works but is limited to ~20,000 requests/day total
     void setCredentials(const std::string& user, const std::string& password);
     void setDevCredentials(const std::string& devId, const std::string& devPassword);
-
-    // Directory where cover art and screenshots are saved
     void setMediaDir(const std::string& dir) { m_mediaDir = dir; }
 
-    // Scrape a single game — returns immediately with result
     ScrapeResult scrapeGame(const GameEntry& game);
 
-    // Scrape entire library — calls progressCallback for each game
-    // Can be cancelled by returning false from the callback
     using ProgressCallback = std::function<bool(const ScrapeProgress&)>;
     void scrapeLibrary(std::vector<GameEntry>& games,
                        ProgressCallback callback = nullptr);
 
-    // Check if a game already has scraped media
     bool isScraped(const GameEntry& game) const;
-
-    // Clear all scraped media for a game (forces re-scrape)
     void clearScrapedData(const GameEntry& game);
 
-    // ScreenScraper system ID for PS1
     static constexpr int PS1_SYSTEM_ID = 57;
 
 private:
-    // Build the API URL for a game lookup
     std::string buildApiUrl(const std::string& gameName,
                              const std::string& serial) const;
-
-    // Download a file from URL to local path
     bool downloadFile(const std::string& url,
                       const std::string& localPath) const;
-
-    // Parse JSON response from ScreenScraper
     ScrapeResult parseResponse(const std::string& json,
                                 const GameEntry& game) const;
-
-    // Extract a field from ScreenScraper's JSON response
     std::string extractField(const std::string& json,
                               const std::string& key) const;
     std::string extractMediaUrl(const std::string& json,
                                  const std::string& mediaType) const;
-
-    // Sanitize filename for saving
     std::string safeFilename(const std::string& name) const;
 
-    // Rate limiting
+    // Returns true if the per-game screenshot folder exists and is non-empty
+    bool screenshotsScraped(const GameEntry& game) const;
+
     void respectRateLimit() const;
 
     std::string m_user;
     std::string m_password;
-    std::string m_mediaDir     = "media/";
+    std::string m_mediaDir    = "media/";
     std::string m_devId;
     std::string m_devPassword;
 
-    // Rate limiting state
     mutable uint32_t m_lastRequestTime = 0;
-    static constexpr uint32_t MIN_REQUEST_INTERVAL_MS = 1000; // 1 req/sec max
+    static constexpr uint32_t MIN_REQUEST_INTERVAL_MS = 1000;
 };
