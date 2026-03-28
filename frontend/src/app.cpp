@@ -28,9 +28,13 @@
 #include <filesystem>
 namespace fs = std::filesystem;
 
-static constexpr int   DEFAULT_W = 1280;
-static constexpr int   DEFAULT_H = 720;
-static constexpr float FRAME_MS  = 1000.f / 60.f;
+static constexpr int DEFAULT_W = 1280;
+static constexpr int DEFAULT_H = 720;
+
+// Fast forward multiplier table — index matches fastForwardSpeed setting
+// 0=2x  1=4x  2=6x  3=8x
+static constexpr int FF_MULTIPLIERS[] = { 2, 4, 6, 8 };
+static constexpr int FF_TABLE_SIZE    = 4;
 
 HaackApp::HaackApp() {
 #ifdef _WIN32
@@ -73,19 +77,16 @@ void HaackApp::init() {
 
     SDL_Surface* icon = IMG_Load("assets/icons/icon.png");
     if (!icon) icon = SDL_LoadBMP("assets/icons/icon.bmp");
-    if (icon) {
-        SDL_SetWindowIcon(m_window, icon);
-        SDL_FreeSurface(icon);
-    }
+    if (icon) { SDL_SetWindowIcon(m_window, icon); SDL_FreeSurface(icon); }
 
     m_renderer = SDL_CreateRenderer(m_window, -1, SDL_RENDERER_ACCELERATED);
     if (!m_renderer)
         throw std::runtime_error(std::string("SDL_CreateRenderer: ") + SDL_GetError());
 
-    m_theme    = std::make_unique<ThemeEngine>(m_renderer);
-    m_nav      = std::make_unique<ControllerNav>();
-    m_scanner  = std::make_unique<GameScanner>();
-    m_core     = std::make_unique<LibretroBridge>();
+    m_theme   = std::make_unique<ThemeEngine>(m_renderer);
+    m_nav     = std::make_unique<ControllerNav>();
+    m_scanner = std::make_unique<GameScanner>();
+    m_core    = std::make_unique<LibretroBridge>();
 
     m_core->setRenderer(m_renderer);
     std::string biosPath = m_haackSettings.biosPath.empty()
@@ -93,16 +94,23 @@ void HaackApp::init() {
     m_core->setBiosPath(biosPath);
     m_core->setSavePath("saves/");
 
-    m_core->setCoreOption("beetle_psx_hw_renderer",              "software");
-    m_core->setCoreOption("beetle_psx_hw_internal_resolution",   "1x(native)");
-    m_core->setCoreOption("beetle_psx_hw_filter",                "nearest");
-    m_core->setCoreOption("beetle_psx_hw_dither_mode",           "internal resolution");
-    m_core->setCoreOption("beetle_psx_hw_display_vram",          "disabled");
+    m_core->setCoreOption("beetle_psx_hw_renderer",            "software");
+    m_core->setCoreOption("beetle_psx_hw_internal_resolution", "1x(native)");
+    m_core->setCoreOption("beetle_psx_hw_filter",              "nearest");
+    m_core->setCoreOption("beetle_psx_hw_dither_mode",         "internal resolution");
+    m_core->setCoreOption("beetle_psx_hw_display_vram",        "disabled");
     m_core->setCoreOption("beetle_psx_hw_use_mednafen_memcard0_method", "libretro");
-    m_core->setCoreOption("beetle_psx_hw_spu_reverb",            "enabled");
-    m_core->setCoreOption("beetle_psx_hw_spu_interpolation",     "gaussian");
-    m_core->setCoreOption("beetle_psx_hw_cd_access_method",      "sync");
-    m_core->setCoreOption("beetle_psx_hw_cd_fastload",           "disabled");
+    m_core->setCoreOption("beetle_psx_hw_spu_reverb",          "enabled");
+    m_core->setCoreOption("beetle_psx_hw_spu_interpolation",   "gaussian");
+    m_core->setCoreOption("beetle_psx_hw_cd_access_method",    "sync");
+    m_core->setCoreOption("beetle_psx_hw_cd_fastload",         "disabled");
+
+    // Fast Boot: skip PS1 BIOS logo. Loaded from settings, applied per-launch too.
+    m_core->setCoreOption("beetle_psx_hw_skip_bios",
+        m_haackSettings.fastBoot ? "enabled" : "disabled");
+
+    std::cout << "[HaackStation] Fast Boot: "
+              << (m_haackSettings.fastBoot ? "enabled" : "disabled") << "\n";
 
     m_browser  = std::make_unique<GameBrowser>(m_renderer, m_theme.get(), m_nav.get());
     m_settings = std::make_unique<SettingsScreen>(m_renderer, m_theme.get(),
@@ -148,15 +156,17 @@ void HaackApp::init() {
     m_state   = AppState::STARTUP;
     m_running = true;
 
+    int ffMult = FF_MULTIPLIERS[
+        std::max(0, std::min(m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1))];
     std::cout << "[HaackStation] Ready — "
               << m_scanner->getLibrary().size() << " games found\n";
-    std::cout << "[HaackStation] Keyboard reference:\n"
+    std::cout << "[HaackStation] Keyboard:\n"
               << "  SHELF:   Arrows=Navigate  X=Launch  Enter=Settings  F2=Details  Esc=Quit\n"
               << "  INGAME:  Arrows=D-pad  X=Cross  Z=Circle  A=Square  S=Triangle\n"
               << "           Q=L1  W=R1  E=L2  R=R2  Enter=Start  Space=Select\n"
-              << "           F1=In-game menu  Esc=Quit to shelf\n"
-              << "  DETAILS: Arrows=Navigate  PageUp/Down=Cycle screenshots  Z=Close\n"
-              << "  GLOBAL:  F11=Fullscreen\n";
+              << "           F=Fast Forward (hold)  F1=In-game menu  Esc=Quit to shelf\n"
+              << "  GLOBAL:  F11=Fullscreen\n"
+              << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n";
 }
 
 void HaackApp::shutdown() {
@@ -195,15 +205,29 @@ int HaackApp::run() {
                 accumulator = 0.0;
                 m_inGameMenu->update((float)(elapsed * 1000.0));
             } else {
-                double fps = m_core->getTargetFps();
+                double fps      = m_core->getTargetFps();
                 if (fps <= 0.0) fps = 59.94;
                 double fixedStep = 1.0 / fps;
 
                 accumulator += elapsed;
                 while (accumulator >= fixedStep) {
-                    m_core->runFrame();
-                    if (m_ra && m_ra->isGameLoaded())
-                        m_ra->doFrame(m_core.get());
+                    if (m_fastForward) {
+                        // Run N frames, mute audio to avoid queue overflow
+                        int idx  = std::max(0, std::min(
+                            m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1));
+                        int mult = FF_MULTIPLIERS[idx];
+                        SDL_PauseAudioDevice(0, 1);
+                        for (int ff = 0; ff < mult; ++ff) {
+                            m_core->runFrame();
+                            if (m_ra && m_ra->isGameLoaded())
+                                m_ra->doFrame(m_core.get());
+                        }
+                        SDL_PauseAudioDevice(0, 0);
+                    } else {
+                        m_core->runFrame();
+                        if (m_ra && m_ra->isGameLoaded())
+                            m_ra->doFrame(m_core.get());
+                    }
                     accumulator -= fixedStep;
                 }
             }
@@ -219,11 +243,6 @@ int HaackApp::run() {
     return 0;
 }
 
-// ─── handleEvents ─────────────────────────────────────────────────────────────
-// App-level keyboard shortcuts are intercepted HERE, before any event is
-// routed to screens. This ensures Enter/Escape/F1/F2/F11 always work correctly
-// regardless of which screen is active, and prevents double-firing through
-// sdlKeyToAction() in ControllerNav.
 void HaackApp::handleEvents() {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -246,53 +265,37 @@ void HaackApp::handleEvents() {
 
             case SDL_KEYDOWN: {
                 SDL_Keycode key = e.key.keysym.sym;
+                if (key == SDLK_F11) { toggleFullscreen(); continue; }
 
-                // ── F11: fullscreen — always ─────────────────────────────
-                if (key == SDLK_F11) {
-                    toggleFullscreen();
-                    continue; // consumed
-                }
-
-                // ── IN-GAME shortcuts ────────────────────────────────────
                 if (m_state == AppState::IN_GAME) {
-                    if (key == SDLK_ESCAPE) { stopGame();         continue; }
-                    if (key == SDLK_F5)     {
+                    if (key == SDLK_ESCAPE) { stopGame(); continue; }
+                    if (key == SDLK_F5) {
                         m_saveStates->saveState(0);
-                        std::cout << "[App] Quick save to slot 1\n";
+                        std::cout << "[App] Quick save slot 1\n";
                         continue;
                     }
-                    if (key == SDLK_F7)     {
+                    if (key == SDLK_F7) {
                         m_saveStates->loadState(0);
-                        std::cout << "[App] Quick load from slot 1\n";
+                        std::cout << "[App] Quick load slot 1\n";
                         continue;
                     }
                     if (key == SDLK_F1) {
-                        // Toggle in-game menu (keyboard stand-in for Start+Y)
                         if (m_inGameMenu->isOpen()) m_inGameMenu->close();
                         else                        m_inGameMenu->open();
                         continue;
                     }
-                    // All other keys fall through to screen routing
-                    // (in-game PS1 buttons are read via SDL_GetKeyboardState,
-                    //  not events, so no special handling needed here)
+                    if (key == SDLK_f) { m_fastForward = true; continue; }
                     break;
                 }
-
-                // ── GAME BROWSER shortcuts ───────────────────────────────
                 if (m_state == AppState::GAME_BROWSER) {
-                    // Details panel eats all input when open —
-                    // let it handle Escape/Z via normal routing below
                     if (m_details && m_details->isOpen()) break;
-
                     if (key == SDLK_ESCAPE) { m_running = false; continue; }
                     if (key == SDLK_RETURN) {
-                        // Enter = Start = open settings
                         m_settings->resetClose();
                         setState(AppState::SETTINGS);
                         continue;
                     }
                     if (key == SDLK_F2) {
-                        // F2 = Y button = open details panel
                         auto* game = m_browser->selectedGameEntry();
                         if (game && m_details && !m_details->isOpen()) {
                             m_details->open(*game, m_saveStates.get());
@@ -304,8 +307,6 @@ void HaackApp::handleEvents() {
                     }
                     break;
                 }
-
-                // ── SETTINGS shortcuts ───────────────────────────────────
                 if (m_state == AppState::SETTINGS) {
                     if (key == SDLK_ESCAPE) {
                         applySettings();
@@ -314,9 +315,13 @@ void HaackApp::handleEvents() {
                     }
                     break;
                 }
-
-                break; // SDL_KEYDOWN
+                break;
             }
+
+            case SDL_KEYUP:
+                if (e.key.keysym.sym == SDLK_f)
+                    m_fastForward = false;
+                break;
 
             case SDL_CONTROLLERDEVICEADDED:
                 m_nav->onControllerAdded(e.cdevice.which);
@@ -326,21 +331,18 @@ void HaackApp::handleEvents() {
                 break;
 
             case SDL_CONTROLLERBUTTONDOWN:
-                // Start → settings (from browser)
                 if (m_state == AppState::GAME_BROWSER &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     m_settings->resetClose();
                     setState(AppState::SETTINGS);
                     continue;
                 }
-                // Guide → settings (from browser)
                 if (m_state == AppState::GAME_BROWSER &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) {
                     m_settings->resetClose();
                     setState(AppState::SETTINGS);
                     continue;
                 }
-                // Start+Y → in-game menu
                 if (m_state == AppState::IN_GAME &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
                     SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
@@ -351,23 +353,19 @@ void HaackApp::handleEvents() {
                         else                        m_inGameMenu->open();
                     }
                 }
-                // Start+Select → quit game
                 if (m_state == AppState::IN_GAME &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
                     SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
                         SDL_JoystickGetDeviceInstanceID(0));
                     if (ctrl && SDL_GameControllerGetButton(
-                            ctrl, SDL_CONTROLLER_BUTTON_START)) {
+                            ctrl, SDL_CONTROLLER_BUTTON_START))
                         stopGame();
-                    }
                 }
                 break;
 
             default: break;
         }
 
-        // ── Route to active screen ─────────────────────────────────────────
-        // Details panel has highest priority in browser state
         if (m_state == AppState::GAME_BROWSER &&
             m_details && m_details->isOpen()) {
             m_details->handleEvent(e);
@@ -424,12 +422,10 @@ void HaackApp::update(float deltaMs) {
             m_splash->update(deltaMs);
             if (m_splash->isDone()) setState(AppState::GAME_BROWSER);
             break;
-
         case AppState::GAME_BROWSER:
             m_browser->update(deltaMs);
             if (m_browser->hasPendingLaunch())
                 launchGame(m_browser->consumeLaunchPath());
-            // Y button → open details panel
             if (m_browser->wantsDetails() && m_details && !m_details->isOpen()) {
                 m_browser->clearWantsDetails();
                 auto* game = m_browser->selectedGameEntry();
@@ -449,17 +445,14 @@ void HaackApp::update(float deltaMs) {
                     m_details->clearAction();
                 } else if (act != DetailsPanelAction::NONE) {
                     m_details->clearAction();
-                    // TODO: route to sub-screens
                 }
             }
             break;
-
         case AppState::IN_GAME:
             if (m_inGameMenu && m_inGameMenu->isOpen())
                 m_inGameMenu->update(deltaMs);
             if (m_ra) m_ra->update(deltaMs);
             break;
-
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
             if (m_settings->wantsQuit()) {
@@ -485,7 +478,6 @@ void HaackApp::update(float deltaMs) {
                 setState(AppState::GAME_BROWSER);
             }
             break;
-
         case AppState::SCRAPING:
             m_scraper->update(deltaMs);
             if (m_scraper->isDone() || m_scraper->wasCancelled()) {
@@ -495,7 +487,6 @@ void HaackApp::update(float deltaMs) {
                 setState(AppState::GAME_BROWSER);
             }
             break;
-
         default: break;
     }
 }
@@ -504,9 +495,7 @@ void HaackApp::render() {
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
     SDL_RenderClear(m_renderer);
     switch (m_state) {
-        case AppState::STARTUP:
-            m_splash->render();
-            break;
+        case AppState::STARTUP:      m_splash->render();  break;
         case AppState::GAME_BROWSER:
             m_browser->render();
             if (m_details && m_details->isOpen()) m_details->render();
@@ -518,28 +507,54 @@ void HaackApp::render() {
                 SDL_GetRendererOutputSize(m_renderer, &w, &h);
                 m_ra->render(w, h);
             }
-            if (m_inGameMenu->isOpen())
-                m_inGameMenu->render();
+            if (m_inGameMenu->isOpen()) m_inGameMenu->render();
+            if (m_fastForward)          renderFastForwardIndicator();
             break;
-        case AppState::SETTINGS:
-            m_settings->render();
-            break;
-        case AppState::SCRAPING:
-            m_scraper->render();
-            break;
+        case AppState::SETTINGS:     m_settings->render(); break;
+        case AppState::SCRAPING:     m_scraper->render();  break;
         default: break;
     }
     SDL_RenderPresent(m_renderer);
 }
 
-void HaackApp::setState(AppState next) {
-    m_state = next;
+void HaackApp::renderFastForwardIndicator() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    int idx  = std::max(0, std::min(m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1));
+    int mult = FF_MULTIPLIERS[idx];
+    std::string label = ">>" + std::to_string(mult) + "x";
+
+    int badgeW = 64, badgeH = 28;
+    int badgeX = w - badgeW - 12;
+    int badgeY = 12;
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 20, 20, 40, 200);
+    SDL_Rect bg = { badgeX, badgeY, badgeW, badgeH };
+    SDL_RenderFillRect(m_renderer, &bg);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    const auto& pal = m_theme->palette();
+    SDL_SetRenderDrawColor(m_renderer, pal.accent.r, pal.accent.g, pal.accent.b, 255);
+    SDL_RenderDrawRect(m_renderer, &bg);
+
+    m_theme->drawTextCentered(label,
+        badgeX + badgeW / 2, badgeY + (badgeH - 14) / 2,
+        pal.accent, FontSize::SMALL);
 }
+
+void HaackApp::setState(AppState next) { m_state = next; }
 
 void HaackApp::launchGame(const std::string& path) {
     std::cout << "[HaackStation] Launching: " << path << "\n";
     if (!m_haackSettings.biosPath.empty())
         m_core->setBiosPath(m_haackSettings.biosPath);
+
+    // Re-apply fast boot at launch so per-game overrides can hook in later
+    m_core->setCoreOption("beetle_psx_hw_skip_bios",
+        m_haackSettings.fastBoot ? "enabled" : "disabled");
+
     if (!m_core->loadGame(path)) {
         std::cerr << "[HaackStation] Failed to load game.\n";
         std::cerr << "  Ensure BIOS files are in: bios/\n";
@@ -574,17 +589,22 @@ void HaackApp::applySettings() {
     {
         Uint32 flags = SDL_GetWindowFlags(m_window);
         bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-        if (m_haackSettings.fullscreen != isFs) {
+        if (m_haackSettings.fullscreen != isFs)
             SDL_SetWindowFullscreen(m_window,
                 m_haackSettings.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-        }
     }
+
+    if (m_core && m_core->isGameLoaded())
+        m_core->setCoreOption("beetle_psx_hw_skip_bios",
+            m_haackSettings.fastBoot ? "enabled" : "disabled");
 
     static const char* resOptions[] = { "1x(native)", "2x", "4x", "8x", "16x" };
     int resIdx = m_haackSettings.internalRes;
     if (resIdx >= 0 && resIdx < 5)
         m_core->setCoreOption("beetle_psx_hw_internal_resolution", resOptions[resIdx]);
 
+    int idx = std::max(0, std::min(m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1));
+    std::cout << "[Settings] Fast forward: " << FF_MULTIPLIERS[idx] << "x\n";
     std::cout << "[Settings] Volume: " << m_haackSettings.audioVolume << "%\n";
 
     SettingsManager mgr;
@@ -593,6 +613,7 @@ void HaackApp::applySettings() {
 }
 
 void HaackApp::stopGame() {
+    m_fastForward = false;
     if (m_saveStates && m_core->isGameLoaded()) {
         SDL_Surface* screenshot = m_saveStates->captureCleanScreenshot();
         m_saveStates->autoSave(screenshot);
@@ -611,29 +632,11 @@ void HaackApp::toggleFullscreen() {
     m_haackSettings.fullscreen = !isFs;
 }
 
-// ─── updateGameInput ──────────────────────────────────────────────────────────
-// Reads controller AND keyboard state every frame and OR's both masks together.
-// SDL_GetKeyboardState() is used (not events) so held keys register every frame.
-// Controller and keyboard work simultaneously — plug in a controller any time.
-//
-// PS1 keyboard layout (RetroArch defaults):
-//   Arrows       → D-pad
-//   X            → Cross   (×) — confirms in menus, jump/action in games
-//   Z            → Circle  (○) — cancel in menus
-//   A            → Square  (□)
-//   S            → Triangle(△)
-//   Q            → L1
-//   W            → R1
-//   E            → L2
-//   R            → R2
-//   Enter        → Start
-//   Space        → Select
 void HaackApp::updateGameInput() {
     if (m_nav && SDL_GetTicks() < m_inputCooldownUntil) return;
 
     int mask = 0;
 
-    // ── Controller ────────────────────────────────────────────────────────────
     SDL_GameController* ctrl = nullptr;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -659,25 +662,36 @@ void HaackApp::updateGameInput() {
         if (btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);
         if (btn(SDL_CONTROLLER_BUTTON_LEFTSTICK))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L3);
         if (btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK))    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R3);
+
         Sint16 l2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
         Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
         if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
-        if (r2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);
+
+        // R2 = fast forward. Don't pass to core as JOYPAD_R2 during FF so games
+        // don't register a phantom button press.
+        if (r2 > 8000) {
+            m_fastForward = true;
+        } else {
+            // Clear FF only if F key is also not held
+            const Uint8* ks = SDL_GetKeyboardState(nullptr);
+            if (m_fastForward && !ks[SDL_SCANCODE_F])
+                m_fastForward = false;
+        }
+
         SDL_GameControllerClose(ctrl);
     }
 
-    // ── Keyboard ──────────────────────────────────────────────────────────────
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
-    if (ks[SDL_SCANCODE_X])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);      // Cross
-    if (ks[SDL_SCANCODE_Z])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);      // Circle
-    if (ks[SDL_SCANCODE_A])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);      // Square
-    if (ks[SDL_SCANCODE_S])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_X);      // Triangle
-    if (ks[SDL_SCANCODE_Q])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L);      // L1
-    if (ks[SDL_SCANCODE_W])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);      // R1
-    if (ks[SDL_SCANCODE_E])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);     // L2
-    if (ks[SDL_SCANCODE_R])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);     // R2
-    if (ks[SDL_SCANCODE_RETURN])    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_START);  // Start
-    if (ks[SDL_SCANCODE_SPACE])     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT); // Select
+    if (ks[SDL_SCANCODE_X])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);
+    if (ks[SDL_SCANCODE_Z])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);
+    if (ks[SDL_SCANCODE_A])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);
+    if (ks[SDL_SCANCODE_S])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_X);
+    if (ks[SDL_SCANCODE_Q])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L);
+    if (ks[SDL_SCANCODE_W])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);
+    if (ks[SDL_SCANCODE_E])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
+    if (ks[SDL_SCANCODE_R])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);
+    if (ks[SDL_SCANCODE_RETURN])    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_START);
+    if (ks[SDL_SCANCODE_SPACE])     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT);
     if (ks[SDL_SCANCODE_UP])        mask |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
     if (ks[SDL_SCANCODE_DOWN])      mask |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (ks[SDL_SCANCODE_LEFT])      mask |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <iostream>
 
-// ─── Helper to build SettingItems cleanly ─────────────────────────────────────
+// ─── Helper builders ──────────────────────────────────────────────────────────
 static SettingItem makeToggle(const std::string& id, const std::string& label,
                                const std::string& desc, bool* val) {
     SettingItem s;
@@ -63,99 +63,132 @@ void SettingsScreen::buildTabs() {
     m_tabs.clear();
 
     // ── General ───────────────────────────────────────────────────────────────
-    SettingTab general;
-    general.label = "General";
-    general.items.push_back(makeToggle("fullscreen", "Fullscreen",
-        "Launch in fullscreen mode", &m_settings->fullscreen));
-    general.items.push_back(makeToggle("show_fps", "Show FPS",
-        "Display frames per second counter", &m_settings->showFps));
-    general.items.push_back(makeSep());
-    general.items.push_back(makeAction("rescan", "Rescan Library",
-        "Re-scan ROMs folder for new games",
-        []() { std::cout << "[Settings] Rescan triggered\n"; }));
-    general.items.push_back(makeSep());
-    general.items.push_back(makeLabel("ss_header", "ScreenScraper Account",
-        "Register free at screenscraper.fr for cover art"));
-    general.items.push_back(makeAction("scrape", "Scrape Game Art",
-        "Download cover art and info (requires SS account)",
-        [this]() { m_wantsScrape = true; }));
-    general.items.push_back(makeSep());
-    general.items.push_back(makeAction("quit", "Quit HaackStation",
-        "Exit the application",
-        [this]() { m_wantsQuit = true; }));
-    m_tabs.push_back(general);
+    {
+        SettingTab tab;
+        tab.label = "General";
+        tab.items.push_back(makeToggle("fullscreen", "Fullscreen",
+            "Launch in fullscreen mode", &m_settings->fullscreen));
+        tab.items.push_back(makeToggle("show_fps", "Show FPS",
+            "Display frames per second counter", &m_settings->showFps));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeAction("rescan", "Rescan Library",
+            "Re-scan ROMs folder for new games",
+            []() { std::cout << "[Settings] Rescan triggered\n"; }));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("ss_header", "ScreenScraper Account",
+            "Register free at screenscraper.fr"));
+        tab.items.push_back(makeAction("scrape", "Scrape Game Art",
+            "Download cover art, screenshots and info",
+            [this]() { m_wantsScrape = true; }));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeAction("quit", "Quit HaackStation",
+            "Exit the application",
+            [this]() { m_wantsQuit = true; }));
+        m_tabs.push_back(tab);
+    }
+
+    // ── Emulation ─────────────────────────────────────────────────────────────
+    // Fast Boot and Fast Forward live here. These are the settings most likely
+    // to be overridden per-game, which is why they're grouped separately from
+    // general display/audio options.
+    {
+        SettingTab tab;
+        tab.label = "Emulation";
+        tab.items.push_back(makeToggle("fast_boot", "Fast Boot",
+            "Skip PS1 BIOS logo on startup (disable for some PAL/Saga Frontier)",
+            &m_settings->fastBoot));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("ff_header", "Fast Forward",
+            "Hold R2 (controller) or F key (keyboard) to speed up"));
+        tab.items.push_back(makeChoice("ff_speed", "Fast Forward Speed",
+            "How many times faster than normal when held",
+            { "2x", "4x", "6x", "8x" },
+            &m_settings->fastForwardSpeed));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("ff_note", "Fast Forward toggle",
+            "Per-game toggle option coming in per-game settings"));
+        m_tabs.push_back(tab);
+    }
 
     // ── Video ─────────────────────────────────────────────────────────────────
-    SettingTab video;
-    video.label = "Video";
-    video.items.push_back(makeChoice("renderer", "Renderer",
-        "GPU rendering backend",
-        {"OpenGL (compatible)", "Vulkan (recommended)"},
-        &m_settings->rendererChoice));
-    video.items.push_back(makeChoice("internal_res", "Internal Resolution",
-        "PS1 renders at this resolution",
-        {"1x Native (320x240)", "2x (640x480)", "4x (1280x960)",
-         "8x (2560x1920)", "16x (5120x3840)"},
-        &m_settings->internalRes));
-    video.items.push_back(makeToggle("vsync", "V-Sync",
-        "Sync to monitor refresh rate", &m_settings->vsync));
-    video.items.push_back(makeSep());
-    video.items.push_back(makeChoice("shader", "Shader Pack",
-        "Post-processing shader",
-        {"None (sharp)", "CRT Lottes", "CRT Royale",
-         "Scanlines", "Sharp Bilinear", "xBRZ Freescale"},
-        &m_settings->shaderChoice));
-    m_tabs.push_back(video);
+    {
+        SettingTab tab;
+        tab.label = "Video";
+        tab.items.push_back(makeChoice("renderer", "Renderer",
+            "GPU rendering backend",
+            { "OpenGL (compatible)", "Vulkan (recommended)" },
+            &m_settings->rendererChoice));
+        tab.items.push_back(makeChoice("internal_res", "Internal Resolution",
+            "PS1 renders at this resolution",
+            { "1x Native (320x240)", "2x (640x480)", "4x (1280x960)",
+              "8x (2560x1920)", "16x (5120x3840)" },
+            &m_settings->internalRes));
+        tab.items.push_back(makeToggle("vsync", "V-Sync",
+            "Sync to monitor refresh rate", &m_settings->vsync));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeChoice("shader", "Shader Pack",
+            "Post-processing shader",
+            { "None (sharp)", "CRT Lottes", "CRT Royale",
+              "Scanlines", "Sharp Bilinear", "xBRZ Freescale" },
+            &m_settings->shaderChoice));
+        m_tabs.push_back(tab);
+    }
 
     // ── Audio ─────────────────────────────────────────────────────────────────
-    SettingTab audio;
-    audio.label = "Audio";
-    audio.items.push_back(makeSlider("volume", "Master Volume",
-        "Overall audio volume", &m_settings->audioVolume, 0, 100));
-    audio.items.push_back(makeSep());
-    audio.items.push_back(makeToggle("audio_replace", "Audio Replacement",
-        "Replace SPU audio with high-quality tracks",
-        &m_settings->audioReplacement));
-    m_tabs.push_back(audio);
+    {
+        SettingTab tab;
+        tab.label = "Audio";
+        tab.items.push_back(makeSlider("volume", "Master Volume",
+            "Overall audio volume", &m_settings->audioVolume, 0, 100));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeToggle("audio_replace", "Audio Replacement",
+            "Replace SPU audio with high-quality tracks",
+            &m_settings->audioReplacement));
+        m_tabs.push_back(tab);
+    }
 
     // ── Textures ──────────────────────────────────────────────────────────────
-    SettingTab textures;
-    textures.label = "Textures";
-    textures.items.push_back(makeToggle("tex_replace", "Texture Replacement",
-        "Use HD texture packs when available",
-        &m_settings->textureReplacement));
-    textures.items.push_back(makeSep());
-    textures.items.push_back(makeToggle("ai_upscale", "AI Upscaling (NCNN)",
-        "Upscale PS1 textures using AI (experimental)",
-        &m_settings->aiUpscaling));
-    textures.items.push_back(makeChoice("ai_scale", "AI Upscale Factor",
-        "How much to upscale textures", {"2x", "4x"},
-        &m_settings->aiUpscaleScale));
-    m_tabs.push_back(textures);
+    {
+        SettingTab tab;
+        tab.label = "Textures";
+        tab.items.push_back(makeToggle("tex_replace", "Texture Replacement",
+            "Use HD texture packs when available",
+            &m_settings->textureReplacement));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeToggle("ai_upscale", "AI Upscaling (NCNN)",
+            "Upscale PS1 textures using AI (experimental)",
+            &m_settings->aiUpscaling));
+        tab.items.push_back(makeChoice("ai_scale", "AI Upscale Factor",
+            "How much to upscale textures", { "2x", "4x" },
+            &m_settings->aiUpscaleScale));
+        m_tabs.push_back(tab);
+    }
 
     // ── About ─────────────────────────────────────────────────────────────────
-    SettingTab about;
-    about.label = "About";
-    about.items.push_back(makeLabel("ver",     "Version",        "0.1.0-dev"));
-    about.items.push_back(makeLabel("core",    "Emulation Core", "Beetle PSX HW / Mednafen (libretro)"));
-    about.items.push_back(makeLabel("license", "License",        "GNU General Public License v2"));
-    about.items.push_back(makeSep());
-    about.items.push_back(makeLabel("core_credit", "Core Credit",
-        "libretro team and Mednafen contributors"));
-    about.items.push_back(makeLabel("code_credit", "Frontend Code",
-        "Claude (Anthropic AI) - directed by project author"));
-    about.items.push_back(makeLabel("logo_credit", "Project Logo",
-        "Generated with Google Gemini"));
-    about.items.push_back(makeLabel("font_credit", "UI Font",
-        "Zrnic by Apostrophic Labs - dafont.com/zrnic.font"));
-    about.items.push_back(makeSep());
-    about.items.push_back(makeLabel("github", "Source Code",
-        "github.com/cloudhaacker/HaackStation"));
-    about.items.push_back(makeSep());
-    about.items.push_back(makeAction("quit", "Quit HaackStation",
-        "Exit the application",
-        [this]() { m_wantsQuit = true; }));
-    m_tabs.push_back(about);
+    {
+        SettingTab tab;
+        tab.label = "About";
+        tab.items.push_back(makeLabel("ver",     "Version",        "0.1.0-dev"));
+        tab.items.push_back(makeLabel("core",    "Emulation Core", "Beetle PSX HW / Mednafen (libretro)"));
+        tab.items.push_back(makeLabel("license", "License",        "GNU General Public License v2"));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("core_credit", "Core Credit",
+            "libretro team and Mednafen contributors"));
+        tab.items.push_back(makeLabel("code_credit", "Frontend Code",
+            "Claude (Anthropic AI) - directed by project author"));
+        tab.items.push_back(makeLabel("logo_credit", "Project Logo",
+            "Generated with Google Gemini"));
+        tab.items.push_back(makeLabel("font_credit", "UI Font",
+            "Zrnic by Apostrophic Labs - dafont.com/zrnic.font"));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("github", "Source Code",
+            "github.com/cloudhaacker/HaackStation"));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeAction("quit", "Quit HaackStation",
+            "Exit the application",
+            [this]() { m_wantsQuit = true; }));
+        m_tabs.push_back(tab);
+    }
 }
 
 void SettingsScreen::handleEvent(const SDL_Event& e) {
@@ -216,9 +249,6 @@ void SettingsScreen::activateCurrentItem() {
             if (item.action) { item.action(); m_nav->rumbleConfirm(); }
             break;
         case SettingType::PATH:
-            // PATH fields: A button confirms the current value
-            // In Phase 3 this will open a folder browser
-            // For now, rumble to acknowledge
             m_nav->rumbleConfirm();
             break;
         default: break;
@@ -228,7 +258,6 @@ void SettingsScreen::activateCurrentItem() {
 void SettingsScreen::update(float /*deltaMs*/) {}
 
 void SettingsScreen::render() {
-    // Always get current output size — handles fullscreen transitions
     SDL_GetRendererOutputSize(m_renderer, &m_windowW, &m_windowH);
 
     const auto& pal = m_theme->palette();
@@ -289,7 +318,6 @@ void SettingsScreen::renderItem(const SettingItem& item, int x, int y,
     if (!item.description.empty())
         m_theme->drawText(item.description, x+16, y+30, pal.textDisable, FontSize::TINY);
 
-    // Right-side value
     switch (item.type) {
         case SettingType::TOGGLE:
             if (item.toggleValue) {

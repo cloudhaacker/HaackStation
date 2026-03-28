@@ -49,25 +49,30 @@ private:
     void update(float deltaMs);
     void render();
     void updateGameInput();
+    void renderFastForwardIndicator();
 
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
     bool          m_running  = false;
     AppState      m_state    = AppState::STARTUP;
 
-    std::unique_ptr<ThemeEngine>    m_theme;
-    std::unique_ptr<ControllerNav>  m_nav;
-    std::unique_ptr<GameScanner>    m_scanner;
-    std::unique_ptr<LibretroBridge> m_core;
-    std::unique_ptr<GameBrowser>    m_browser;
-    std::unique_ptr<SettingsScreen> m_settings;
-    std::unique_ptr<SplashScreen>   m_splash;
-    std::unique_ptr<ScrapeScreen>      m_scraper;
-    std::unique_ptr<SaveStateManager>  m_saveStates;
-    std::unique_ptr<InGameMenu>        m_inGameMenu;
-    std::unique_ptr<RAManager>         m_ra;
-    std::unique_ptr<GameDetailsPanel>  m_details;
-    Uint32 m_inputCooldownUntil = 0; // Block game input after save/load
+    std::unique_ptr<ThemeEngine>      m_theme;
+    std::unique_ptr<ControllerNav>    m_nav;
+    std::unique_ptr<GameScanner>      m_scanner;
+    std::unique_ptr<LibretroBridge>   m_core;
+    std::unique_ptr<GameBrowser>      m_browser;
+    std::unique_ptr<SettingsScreen>   m_settings;
+    std::unique_ptr<SplashScreen>     m_splash;
+    std::unique_ptr<ScrapeScreen>     m_scraper;
+    std::unique_ptr<SaveStateManager> m_saveStates;
+    std::unique_ptr<InGameMenu>       m_inGameMenu;
+    std::unique_ptr<RAManager>        m_ra;
+    std::unique_ptr<GameDetailsPanel> m_details;
+
+    Uint32 m_inputCooldownUntil = 0;
+
+    // Fast forward: true while R2 (controller) or F (keyboard) is held
+    bool m_fastForward = false;
 
     HaackSettings m_haackSettings;
 };

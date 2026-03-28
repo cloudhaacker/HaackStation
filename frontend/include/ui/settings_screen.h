@@ -32,30 +32,53 @@ struct SettingTab {
 };
 
 struct HaackSettings {
+    // ── Paths ─────────────────────────────────────────────────────────────────
     std::string romsPath;
     std::string biosPath;
+
+    // ── General ───────────────────────────────────────────────────────────────
     bool fullscreen         = false;
     bool vsync              = true;
     bool showFps            = false;
+
+    // ── Emulation ─────────────────────────────────────────────────────────────
+    // Fast Boot: skips the PS1 BIOS logo/animation on startup.
+    // Can cause compatibility issues with a small number of games
+    // (e.g. Saga Frontier, some PAL titles). Disable per-game if needed.
+    bool fastBoot           = false;
+
+    // Fast Forward speed multiplier index:
+    //   0 = 2×   1 = 4×   2 = 6×   3 = 8×
+    // Applied when R2 (or F key) is held. Higher = faster but may cause
+    // audio glitches or missed frames on slower machines.
+    int  fastForwardSpeed   = 1;  // Default: 4×
+
+    // ── Video ─────────────────────────────────────────────────────────────────
     int  rendererChoice     = 0;
     int  internalRes        = 1;
     int  shaderChoice       = 0;
+
+    // ── Audio ─────────────────────────────────────────────────────────────────
     int  audioVolume        = 100;
     bool audioReplacement   = true;
     bool audioReplacementLog= false;
+
+    // ── Textures ──────────────────────────────────────────────────────────────
     bool textureReplacement = true;
-    // ScreenScraper credentials
+    bool aiUpscaling        = false;
+    int  aiUpscaleScale     = 0;
+
+    // ── ScreenScraper credentials ─────────────────────────────────────────────
     std::string ssUser;
     std::string ssPassword;
     std::string ssDevId;
     std::string ssDevPassword;
-    // RetroAchievements
+
+    // ── RetroAchievements ─────────────────────────────────────────────────────
     std::string raUser;
     std::string raApiKey;      // Session token (stored after login)
     std::string raPassword;    // Used for initial login only
     bool        raHardcore = false;
-    bool aiUpscaling        = false;
-    int  aiUpscaleScale     = 0;
 };
 
 class SettingsScreen {

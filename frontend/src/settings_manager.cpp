@@ -41,6 +41,8 @@ bool SettingsManager::load(HaackSettings& s) {
     while (std::getline(f, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        // Skip section headers like [General]
+        if (line[0] == '[') continue;
 
         auto eq = line.find('=');
         if (eq == std::string::npos) continue;
@@ -48,27 +50,38 @@ bool SettingsManager::load(HaackSettings& s) {
         std::string key = trim(line.substr(0, eq));
         std::string val = trim(line.substr(eq + 1));
 
-        // General
+        // ── General ──────────────────────────────────────────────────────────
         if      (key == "roms_path")          s.romsPath           = val;
         else if (key == "bios_path")          s.biosPath           = val;
         else if (key == "fullscreen")         s.fullscreen         = parseBool(val);
         else if (key == "vsync")              s.vsync              = parseBool(val);
         else if (key == "show_fps")           s.showFps            = parseBool(val);
-        // Video
+
+        // ── Emulation ─────────────────────────────────────────────────────────
+        else if (key == "fast_boot")          s.fastBoot           = parseBool(val);
+        else if (key == "fast_forward_speed") s.fastForwardSpeed   = parseInt(val, 1);
+
+        // ── Video ─────────────────────────────────────────────────────────────
         else if (key == "renderer")           s.rendererChoice     = parseInt(val, 0);
         else if (key == "internal_res")       s.internalRes        = parseInt(val, 1);
         else if (key == "shader")             s.shaderChoice       = parseInt(val, 0);
-        // Audio
+
+        // ── Audio ─────────────────────────────────────────────────────────────
         else if (key == "audio_volume")       s.audioVolume        = parseInt(val, 100);
         else if (key == "audio_replacement")  s.audioReplacement   = parseBool(val);
-        // Textures
+
+        // ── Textures ──────────────────────────────────────────────────────────
         else if (key == "texture_replace")    s.textureReplacement = parseBool(val);
         else if (key == "ai_upscaling")       s.aiUpscaling        = parseBool(val);
         else if (key == "ai_upscale_scale")   s.aiUpscaleScale     = parseInt(val, 0);
+
+        // ── ScreenScraper ─────────────────────────────────────────────────────
         else if (key == "ss_user")            s.ssUser             = val;
         else if (key == "ss_password")        s.ssPassword         = val;
         else if (key == "ss_dev_id")          s.ssDevId            = val;
         else if (key == "ss_dev_password")    s.ssDevPassword      = val;
+
+        // ── RetroAchievements ─────────────────────────────────────────────────
         else if (key == "ra_user")            s.raUser             = val;
         else if (key == "ra_api_key")         s.raApiKey           = val;
         else if (key == "ra_password")        s.raPassword         = val;
@@ -92,28 +105,33 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "# This file is auto-generated. You can edit it manually.\n\n";
 
     f << "[General]\n";
-    f << "roms_path="     << s.romsPath       << "\n";
-    f << "bios_path="     << s.biosPath       << "\n";
-    f << "fullscreen="    << (s.fullscreen    ? "true" : "false") << "\n";
-    f << "vsync="         << (s.vsync         ? "true" : "false") << "\n";
-    f << "show_fps="      << (s.showFps       ? "true" : "false") << "\n";
+    f << "roms_path="  << s.romsPath  << "\n";
+    f << "bios_path="  << s.biosPath  << "\n";
+    f << "fullscreen=" << (s.fullscreen ? "true" : "false") << "\n";
+    f << "vsync="      << (s.vsync      ? "true" : "false") << "\n";
+    f << "show_fps="   << (s.showFps    ? "true" : "false") << "\n";
+    f << "\n";
+
+    f << "[Emulation]\n";
+    f << "fast_boot="          << (s.fastBoot ? "true" : "false") << "\n";
+    f << "fast_forward_speed=" << s.fastForwardSpeed               << "\n";
     f << "\n";
 
     f << "[Video]\n";
-    f << "renderer="      << s.rendererChoice  << "\n";
-    f << "internal_res="  << s.internalRes     << "\n";
-    f << "shader="        << s.shaderChoice    << "\n";
+    f << "renderer="     << s.rendererChoice << "\n";
+    f << "internal_res=" << s.internalRes    << "\n";
+    f << "shader="       << s.shaderChoice   << "\n";
     f << "\n";
 
     f << "[Audio]\n";
-    f << "audio_volume="      << s.audioVolume      << "\n";
+    f << "audio_volume="      << s.audioVolume                            << "\n";
     f << "audio_replacement=" << (s.audioReplacement ? "true" : "false") << "\n";
     f << "\n";
 
     f << "[Textures]\n";
     f << "texture_replace="  << (s.textureReplacement ? "true" : "false") << "\n";
     f << "ai_upscaling="     << (s.aiUpscaling        ? "true" : "false") << "\n";
-    f << "ai_upscale_scale=" << s.aiUpscaleScale      << "\n";
+    f << "ai_upscale_scale=" << s.aiUpscaleScale                          << "\n";
     f << "\n";
 
     f << "[Scraper]\n";
@@ -124,10 +142,10 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "\n";
 
     f << "[RetroAchievements]\n";
-    f << "ra_user="     << s.raUser     << "\n";
-    f << "ra_api_key="  << s.raApiKey   << "\n";
-    f << "ra_password=" << s.raPassword << "\n";
-    f << "ra_hardcore=" << (s.raHardcore ? "true" : "false") << "\n";
+    f << "ra_user="     << s.raUser                              << "\n";
+    f << "ra_api_key="  << s.raApiKey                            << "\n";
+    f << "ra_password=" << s.raPassword                          << "\n";
+    f << "ra_hardcore=" << (s.raHardcore ? "true" : "false")    << "\n";
 
     std::cout << "[Settings] Saved to " << m_configPath << "\n";
     return true;
