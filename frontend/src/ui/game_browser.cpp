@@ -11,7 +11,7 @@ static constexpr float SELECTION_ANIM_SPD= 8.f;    // Selection highlight fade s
 static constexpr float LAUNCH_ANIM_SPD   = 3.f;    // Launch flash speed
 
 GameBrowser::GameBrowser(SDL_Renderer* renderer, ThemeEngine* theme, ControllerNav* nav)
-    : m_renderer(renderer), m_theme(theme), m_nav(nav)
+    : m_renderer(renderer), m_theme(theme), m_nav(nav), m_wantsDetails(false)
 {
     SDL_GetRendererOutputSize(renderer, &m_windowW, &m_windowH);
     m_theme->layout().recalculate(m_windowW, m_windowH);
@@ -136,10 +136,8 @@ void GameBrowser::moveSelection(NavAction action) {
         }
 
         case NavAction::OPTIONS:
-            // Per-game options — will be handled by menu system in a later phase
-            std::cout << "[GameBrowser] Options for: ";
-            if (const GameEntry* g = selectedGame()) std::cout << g->title;
-            std::cout << "\n";
+            // Signal app to open details panel
+            m_wantsDetails = true;
             break;
 
         default:
@@ -291,15 +289,19 @@ void GameBrowser::renderGrid() {
         }
     }
 
-    // Selected game info panel (below grid, above footer) — shows full title
+    // Selected game info panel (above footer)
     if (selectionValid()) {
         const GameEntry& sel = *selectedGame();
-        int infoY = m_windowH - m_theme->layout().footerH - 34;
+        // Move up enough to fit title + optional disc count + padding
+        int lineCount = sel.isMultiDisc ? 2 : 1;
+        int blockH    = lineCount * 24 + 8;
+        int infoY     = m_windowH - m_theme->layout().footerH - blockH - 8;
+
         m_theme->drawTextCentered(sel.title, m_windowW / 2, infoY,
                                    m_theme->palette().textPrimary, FontSize::BODY);
         if (sel.isMultiDisc) {
             std::string discInfo = std::to_string(sel.discCount) + " discs";
-            m_theme->drawTextCentered(discInfo, m_windowW / 2, infoY + 22,
+            m_theme->drawTextCentered(discInfo, m_windowW / 2, infoY + 24,
                                        m_theme->palette().multiDisc, FontSize::SMALL);
         }
     }
@@ -373,6 +375,13 @@ std::string GameBrowser::consumeLaunchPath() {
     return m_launchPath;
 }
 
+const GameEntry* GameBrowser::selectedGameEntry() const {
+    if (!selectionValid()) return nullptr;
+    int idx = m_selectedRow * m_theme->layout().cardsPerRow + m_selectedCol;
+    if (idx < 0 || idx >= (int)m_games.size()) return nullptr;
+    return &m_games[idx];
+}
+
 void GameBrowser::clearCoverArtCache() {
     for (auto& [idx, tex] : m_coverArtCache)
         if (tex) SDL_DestroyTexture(tex);
@@ -385,7 +394,8 @@ void GameBrowser::resetAfterGame() {
     m_launchAnim    = 0.f;
     m_selectionAnim = 1.f;
     m_pendingLaunch = false;
-    if (m_games.empty())
+    m_wantsDetails  = false;
+	if (m_games.empty())
         m_state = BrowserState::EMPTY;
     else
         m_state = BrowserState::BROWSING;

@@ -26,6 +26,7 @@ set(FRONTEND_SOURCES
     src/save_state_manager.cpp
     src/ingame_menu.cpp
     src/ra_manager.cpp
+    src/game_details_panel.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})
@@ -35,6 +36,12 @@ set(SDL2_TTF_LIB   "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
 set(SDL2_IMAGE_LIB "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
 
 target_sources(HaackStation PRIVATE ${RCHEEVOS_SOURCES})
+
+# Enable CHD hashing support in rcheevos
+target_compile_definitions(HaackStation PRIVATE
+    HAVE_CHD=1
+    RC_HASH_STANDALONE=1
+)
 
 target_include_directories(HaackStation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

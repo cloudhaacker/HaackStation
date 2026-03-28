@@ -40,10 +40,17 @@ public:
     void update(float deltaMs);
     void render();
 
+    // 1. Check if the user wants details (The Getter)
+	bool wantsDetails() const { return m_wantsDetails; }
+	void clearWantsDetails() { m_wantsDetails = false; } // App calls this after opening the menu
+
     // ── Launch pending ─────────────────────────────────────────────────────────
     // app.cpp polls these after each update()
     bool        hasPendingLaunch()   const { return m_pendingLaunch; }
-    void        resetAfterGame();          // Call when returning from in-game
+    void        resetAfterGame();
+    const GameEntry* selectedGameEntry() const;  // Current selected game
+    int         selectedIndex() const { return m_selectedRow * m_theme->layout().cardsPerRow + m_selectedCol; }       // Index of selected game
+    SDL_Texture* getCoverArt(int gameIndex);       // Public access for details panel
     void        clearCoverArtCache();      // Force reload of cover art textures
     std::string consumeLaunchPath();       // Returns path and clears flag
 
@@ -53,7 +60,6 @@ public:
 private:
     // Navigation helpers
     void        moveSelection(NavAction action);
-    int         selectedIndex() const { return m_selectedRow * m_theme->layout().cardsPerRow + m_selectedCol; }
     bool        selectionValid() const;
     const GameEntry* selectedGame() const;
 
@@ -69,7 +75,6 @@ private:
     SDL_Rect    cardRect(int row, int col) const;
 
     // Cover art loading (lazy, async-friendly)
-    SDL_Texture* getCoverArt(int gameIndex);
     void         loadCoverArtAsync(int gameIndex);
 
     // State
@@ -88,6 +93,8 @@ private:
     // Selection
     int m_selectedRow = 0;
     int m_selectedCol = 0;
+
+    bool m_wantsDetails = false; // Add this variable here!
 
     // Scroll offset (in rows, can be fractional for smooth scroll)
     float m_scrollOffset     = 0.f;

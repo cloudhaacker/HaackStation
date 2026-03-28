@@ -8,6 +8,7 @@
 #include "save_state_manager.h"
 #include "ingame_menu.h"
 #include "ra_manager.h"
+#include "game_details_panel.h"
 #include "splash_screen.h"
 #include "libretro_bridge.h"
 #include "libretro_types.h"
@@ -139,6 +140,7 @@ void HaackApp::init() {
 
     // RetroAchievements
     m_ra = std::make_unique<RAManager>();
+    m_details = std::make_unique<GameDetailsPanel>(m_renderer, m_theme.get(), m_nav.get());
     m_ra->setRenderer(m_renderer);
     m_ra->setTheme(m_theme.get());
     if (!m_haackSettings.raUser.empty()) {
@@ -174,6 +176,10 @@ void HaackApp::init() {
 
     std::cout << "[HaackStation] Ready — "
               << m_scanner->getLibrary().size() << " games found\n";
+    std::cout << "[HaackStation] Keyboard: Arrows/WASD=D-pad, X=Cross, Z=Circle, "
+              << "A=Square, S=Triangle, Q=L1, W=R1, E=L2, R=R2, "
+              << "Enter=Start, Backspace=Select, F1=In-Game Menu, F2=Details, "
+              << "Tab=Settings, Esc=Quit game, F11=Fullscreen\n";
 }
 
 void HaackApp::shutdown() {
@@ -219,6 +225,7 @@ int HaackApp::run() {
         if (m_state == AppState::IN_GAME) {
             if (m_inGameMenu && m_inGameMenu->isOpen()) {
                 accumulator = 0.0;
+                m_inGameMenu->update((float)(elapsed * 1000.0));
             } else {
                 double fps = m_core->getTargetFps();
                 if (fps <= 0.0) fps = 59.94;
@@ -227,12 +234,13 @@ int HaackApp::run() {
                 accumulator += elapsed;
                 while (accumulator >= fixedStep) {
                     m_core->runFrame();
-                    // RA checks memory every frame
                     if (m_ra && m_ra->isGameLoaded())
                         m_ra->doFrame(m_core.get());
                     accumulator -= fixedStep;
                 }
             }
+            // Always update RA animations and notifications while in-game
+            if (m_ra) m_ra->update((float)(elapsed * 1000.0));
         } else {
             // Menu update uses real delta time
             update((float)(elapsed * 1000.0));
@@ -266,29 +274,74 @@ void HaackApp::handleEvents() {
                 }
                 break;
             case SDL_KEYDOWN:
-                if (e.key.keysym.sym == SDLK_ESCAPE) {
-                    if (m_state == AppState::IN_GAME)       stopGame();
-                    else if (m_state == AppState::SETTINGS) setState(AppState::GAME_BROWSER);
+                // ── Global keyboard shortcuts ──────────────────────────────
+                if (e.key.keysym.sym == SDLK_F11) {
+                    toggleFullscreen();
+                    break;
                 }
-                if (e.key.keysym.sym == SDLK_F11) toggleFullscreen();
-                // Save state shortcuts (keyboard for now, in-game menu later)
+                // Save state shortcuts (keyboard, in-game only)
                 if (m_state == AppState::IN_GAME) {
                     if (e.key.keysym.sym == SDLK_F5) {
                         m_saveStates->saveState(0);
                         std::cout << "[App] Quick save to slot 1\n";
+                        break;
                     }
                     if (e.key.keysym.sym == SDLK_F7) {
                         m_saveStates->loadState(0);
                         std::cout << "[App] Quick load from slot 1\n";
+                        break;
+                    }
+                    // F1 = in-game menu toggle (keyboard stand-in for Start+Y)
+                    if (e.key.keysym.sym == SDLK_F1) {
+                        if (m_inGameMenu->isOpen())
+                            m_inGameMenu->close();
+                        else
+                            m_inGameMenu->open();
+                        break;
+                    }
+                    // Escape = quit game to shelf
+                    if (e.key.keysym.sym == SDLK_ESCAPE) {
+                        stopGame();
+                        break;
                     }
                 }
-                // Keyboard shortcut: Enter opens settings from empty shelf
-                if (e.key.keysym.sym == SDLK_RETURN &&
-                    m_state == AppState::GAME_BROWSER) {
-                    m_settings->resetClose();
-                    setState(AppState::SETTINGS);
+                // ── Browser keyboard shortcuts ─────────────────────────────
+                if (m_state == AppState::GAME_BROWSER) {
+                    // Escape from browser = quit app
+                    if (e.key.keysym.sym == SDLK_ESCAPE) {
+                        m_running = false;
+                        break;
+                    }
+                    // Tab = open settings (mirrors controller Start button)
+                    if (e.key.keysym.sym == SDLK_TAB) {
+                        m_settings->resetClose();
+                        setState(AppState::SETTINGS);
+                        break;
+                    }
+                    // F2 = open details panel (mirrors controller Y button)
+                    if (e.key.keysym.sym == SDLK_F2) {
+                        if (m_details && !m_details->isOpen()) {
+                            auto* game = m_browser->selectedGameEntry();
+                            if (game) {
+                                m_details->open(*game, m_saveStates.get());
+                                int idx = m_browser->selectedIndex();
+                                if (idx >= 0)
+                                    m_details->setCoverTexture(m_browser->getCoverArt(idx));
+                            }
+                        }
+                        break;
+                    }
                 }
-                break;
+                // Settings: Escape goes back to browser
+                if (m_state == AppState::SETTINGS) {
+                    if (e.key.keysym.sym == SDLK_ESCAPE) {
+                        applySettings();
+                        setState(AppState::GAME_BROWSER);
+                        break;
+                    }
+                }
+                break;  // SDL_KEYDOWN
+
             case SDL_CONTROLLERDEVICEADDED:
                 m_nav->onControllerAdded(e.cdevice.which);
                 break;
@@ -338,8 +391,12 @@ void HaackApp::handleEvents() {
         }
 
         // Route events to active screen AFTER app-level handling
-        // In-game menu gets events first when open
-        if (m_state == AppState::IN_GAME && m_inGameMenu->isOpen()) {
+        // Details panel is highest priority in GAME_BROWSER state
+        if (m_state == AppState::GAME_BROWSER &&
+            m_details && m_details->isOpen()) {
+            m_details->handleEvent(e);
+            // Don't pass event to browser - panel consumes everything
+        } else if (m_state == AppState::IN_GAME && m_inGameMenu->isOpen()) {
             m_inGameMenu->handleEvent(e);
         } else {
             switch (m_state) {
@@ -370,19 +427,20 @@ void HaackApp::processInGameMenuActions() {
 
     } else if (action == InGameMenuAction::SAVE_STATE) {
         int slot = m_inGameMenu->selectedSlot();
-        SDL_Surface* shot = m_saveStates->captureScreenshot();
+        // Use clean screenshot (no menu overlay) for save state thumbnail
+        SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
         m_saveStates->saveState(slot, shot);
         if (shot) SDL_FreeSurface(shot);
         m_inGameMenu->close();
-
     } else if (action == InGameMenuAction::LOAD_STATE) {
         int slot = m_inGameMenu->selectedSlot();
-        // Map slot index to actual slot number from the list
         auto slots = m_saveStates->listSlots();
         if (slot < (int)slots.size()) {
             m_saveStates->loadState(slots[slot].slotNumber);
         }
         m_inGameMenu->close();
+        // Block game input for 500ms after load so player isn't surprised
+        m_inputCooldownUntil = SDL_GetTicks() + 500;
 
     } else if (action == InGameMenuAction::QUIT_TO_SHELF) {
         m_inGameMenu->close();
@@ -400,6 +458,30 @@ void HaackApp::update(float deltaMs) {
             m_browser->update(deltaMs);
             if (m_browser->hasPendingLaunch())
                 launchGame(m_browser->consumeLaunchPath());
+            // Open details panel when Y is pressed — only if not already open
+            if (m_browser->wantsDetails() &&
+                m_details && !m_details->isOpen()) {
+                m_browser->clearWantsDetails();
+                auto* game = m_browser->selectedGameEntry();
+                if (game) {
+                    m_details->open(*game, m_saveStates.get());
+                    int idx = m_browser->selectedIndex();
+                    if (idx >= 0)
+                        m_details->setCoverTexture(m_browser->getCoverArt(idx));
+                }
+            } else if (m_browser->wantsDetails()) {
+                m_browser->clearWantsDetails(); // clear even if already open
+            }
+            if (m_details && m_details->isOpen()) {
+                m_details->update(deltaMs);
+                auto act = m_details->pendingAction();
+                if (act == DetailsPanelAction::CLOSE) {
+                    m_details->clearAction();
+                } else if (act != DetailsPanelAction::NONE) {
+                    m_details->clearAction();
+                    // TODO: route to appropriate sub-screens
+                }
+            }
             break;
         case AppState::IN_GAME:
             if (m_inGameMenu && m_inGameMenu->isOpen())
@@ -453,7 +535,10 @@ void HaackApp::render() {
     SDL_RenderClear(m_renderer);
     switch (m_state) {
         case AppState::STARTUP:      m_splash->render();                  break;
-        case AppState::GAME_BROWSER: m_browser->render();                 break;
+        case AppState::GAME_BROWSER:
+            m_browser->render();
+            if (m_details && m_details->isOpen()) m_details->render();
+            break;
         case AppState::IN_GAME:
             m_core->blitFramebuffer(m_renderer);
             if (m_ra) {
@@ -551,7 +636,8 @@ void HaackApp::applySettings() {
 
 void HaackApp::stopGame() {
     if (m_saveStates && m_core->isGameLoaded()) {
-        SDL_Surface* screenshot = m_saveStates->captureScreenshot();
+        // Always use clean screenshot for auto-save (no menu overlays)
+        SDL_Surface* screenshot = m_saveStates->captureCleanScreenshot();
         m_saveStates->autoSave(screenshot);
         if (screenshot) SDL_FreeSurface(screenshot);
     }
@@ -568,7 +654,18 @@ void HaackApp::toggleFullscreen() {
     m_haackSettings.fullscreen = !isFs;
 }
 
+// ─── updateGameInput ──────────────────────────────────────────────────────────
+// Reads physical controller AND keyboard each frame and OR's the button masks
+// together. This means both inputs work simultaneously with no priority issues.
+// When a controller is plugged in, it works as normal. When keyboard-only,
+// everything still works. When both, they combine (safe for PS1 core).
 void HaackApp::updateGameInput() {
+    // Skip game input during cooldown (e.g. right after loading a save state)
+    if (m_nav && SDL_GetTicks() < m_inputCooldownUntil) return;
+
+    int mask = 0;
+
+    // ── Controller input ──────────────────────────────────────────────────────
     SDL_GameController* ctrl = nullptr;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -576,30 +673,65 @@ void HaackApp::updateGameInput() {
             break;
         }
     }
-    if (!ctrl) return;
+    if (ctrl) {
+        auto btn = [&](SDL_GameControllerButton b) -> bool {
+            return SDL_GameControllerGetButton(ctrl, b) != 0;
+        };
+        if (btn(SDL_CONTROLLER_BUTTON_A))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);
+        if (btn(SDL_CONTROLLER_BUTTON_B))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);
+        if (btn(SDL_CONTROLLER_BUTTON_X))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);
+        if (btn(SDL_CONTROLLER_BUTTON_Y))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_X);
+        if (btn(SDL_CONTROLLER_BUTTON_DPAD_UP))       mask |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
+        if (btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
+        if (btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);
+        if (btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT))    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT);
+        if (btn(SDL_CONTROLLER_BUTTON_START))         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_START);
+        if (btn(SDL_CONTROLLER_BUTTON_BACK))          mask |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT);
+        if (btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L);
+        if (btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);
+        if (btn(SDL_CONTROLLER_BUTTON_LEFTSTICK))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L3);
+        if (btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK))    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R3);
+        Sint16 l2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+        if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
+        if (r2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);
+        SDL_GameControllerClose(ctrl);
+    }
 
-    auto btn = [&](SDL_GameControllerButton b) -> bool {
-        return SDL_GameControllerGetButton(ctrl, b) != 0;
-    };
-    int mask = 0;
-    if (btn(SDL_CONTROLLER_BUTTON_A))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);
-    if (btn(SDL_CONTROLLER_BUTTON_B))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);
-    if (btn(SDL_CONTROLLER_BUTTON_X))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);
-    if (btn(SDL_CONTROLLER_BUTTON_Y))             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_X);
-    if (btn(SDL_CONTROLLER_BUTTON_DPAD_UP))       mask |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
-    if (btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
-    if (btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);
-    if (btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT))    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-    if (btn(SDL_CONTROLLER_BUTTON_START))         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_START);
-    if (btn(SDL_CONTROLLER_BUTTON_BACK))          mask |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT);
-    if (btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L);
-    if (btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);
-    if (btn(SDL_CONTROLLER_BUTTON_LEFTSTICK))     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L3);
-    if (btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK))    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R3);
-    Sint16 l2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-    Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-    if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
-    if (r2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);
+    // ── Keyboard input (RetroArch default layout) ─────────────────────────────
+    // Reads key state directly each frame — works even without controller.
+    // Keys are OR'd into the same mask so controller + keyboard combine safely.
+    //
+    // PS1 button mapping:
+    //   X         → Cross    (×)   confirms / jumps
+    //   Z         → Circle   (○)   cancel / back
+    //   A         → Square   (□)
+    //   S         → Triangle (△)
+    //   Q         → L1
+    //   W         → R1
+    //   E         → L2
+    //   R         → R2
+    //   Enter     → Start
+    //   Backspace → Select
+    //   Arrows    → D-pad
+    {
+        const Uint8* ks = SDL_GetKeyboardState(nullptr);
+
+        if (ks[SDL_SCANCODE_X])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);      // Cross
+        if (ks[SDL_SCANCODE_Z])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);      // Circle
+        if (ks[SDL_SCANCODE_A])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);      // Square
+        if (ks[SDL_SCANCODE_S])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_X);      // Triangle
+        if (ks[SDL_SCANCODE_Q])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L);      // L1
+        if (ks[SDL_SCANCODE_W])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R);      // R1
+        if (ks[SDL_SCANCODE_E])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);     // L2
+        if (ks[SDL_SCANCODE_R])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_R2);     // R2
+        if (ks[SDL_SCANCODE_RETURN])    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_START);  // Start
+        if (ks[SDL_SCANCODE_BACKSPACE]) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT); // Select
+        if (ks[SDL_SCANCODE_UP])        mask |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
+        if (ks[SDL_SCANCODE_DOWN])      mask |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
+        if (ks[SDL_SCANCODE_LEFT])      mask |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);
+        if (ks[SDL_SCANCODE_RIGHT])     mask |= (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT);
+    }
+
     m_core->setButtonState(0, mask);
-    SDL_GameControllerClose(ctrl);
 }

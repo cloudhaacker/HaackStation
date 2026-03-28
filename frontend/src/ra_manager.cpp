@@ -183,6 +183,19 @@ bool RAManager::initialize(const std::string& username,
 
     rc_client_set_event_handler(m_client, raEventHandler);
 
+    // Enable unofficial achievements (allows unlocks while pending RA approval)
+    rc_client_set_unofficial_enabled(m_client, 1);
+
+    // Disable hardcore mode by default (softcore allows save states)
+    rc_client_set_hardcore_enabled(m_client, 0);
+
+    // Log our user agent so RA can identify HaackStation
+    {
+        char uaClause[256] = {};
+        rc_client_get_user_agent_clause(m_client, uaClause, sizeof(uaClause));
+        std::cout << "[RA] User agent: HaackStation/0.1 " << uaClause << "\n";
+    }
+
     // Login strategy:
     // 1. If we have a session token, try that first (fast, no password needed)
     // 2. If token fails or missing, use password login
@@ -293,6 +306,15 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                         self->m_gameInfo.totalAchievements = total;
                         std::cout << "[RA] " << total << " achievements\n";
                         rc_client_destroy_achievement_list(list);
+
+                        // Show "game loaded" notification
+                        AchievementInfo gameInfo;
+                        gameInfo.title = self->m_gameInfo.title;
+                        gameInfo.description = std::to_string(total) +
+                            " achievements available";
+                        gameInfo.points = 0;
+                        gameInfo.id = 0; // 0 = game loaded notification
+                        self->queueNotification(gameInfo);
                     }
                 }
             } else {
@@ -331,6 +353,12 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             info.description = ach->description ? ach->description : "";
             info.points      = ach->points;
             info.unlocked    = true;
+
+            // Skip system warning achievements (0 points, warning in title)
+            if (info.points == 0 && info.title.find("Warning") != std::string::npos) {
+                std::cout << "[RA] Suppressed warning: " << info.title << "\n";
+                break;
+            }
             if (ach->badge_name && strlen(ach->badge_name) > 0) {
                 info.badgeUrl = std::string(
                     "https://media.retroachievements.org/Badge/") +
@@ -366,6 +394,7 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
 
 // ─── Notifications ────────────────────────────────────────────────────────────
 void RAManager::queueNotification(const AchievementInfo& achievement) {
+    std::cout << "[RA] Queuing notification: " << achievement.title << "\n";
     UnlockNotification n;
     n.achievement = achievement;
     n.showUntil   = SDL_GetTicks() + (Uint32)NOTIFY_DURATION_MS;
@@ -422,28 +451,40 @@ void RAManager::render(int screenW, int screenH) {
         SDL_Rect border = { x, y, 4, NOTIFY_H };
         SDL_RenderFillRect(m_renderer, &border);
 
-        // Badge image
-        int textX = x + 12;
-        if (!n.achievement.badgeLocalPath.empty() &&
-            fs::exists(n.achievement.badgeLocalPath)) {
-            SDL_Texture* badge = IMG_LoadTexture(m_renderer,
-                n.achievement.badgeLocalPath.c_str());
-            if (badge) {
-                SDL_Rect br = { x + 8, y + 8, 64, 64 };
-                SDL_RenderCopy(m_renderer, badge, nullptr, &br);
-                SDL_DestroyTexture(badge);
-                textX = x + 80;
-            }
-        }
-
-        // Text
         SDL_Color gold = { 255, 215, 0, 255 };
-        m_theme->drawText("Achievement Unlocked!",
-            textX, y + 8, gold, FontSize::SMALL);
-        m_theme->drawText(n.achievement.title,
-            textX, y + 28, pal.textPrimary, FontSize::BODY);
-        m_theme->drawText(std::to_string(n.achievement.points) + " pts",
-            textX, y + 52, pal.textSecond, FontSize::TINY);
+        SDL_Color raBlue = { 32, 144, 255, 255 };
+
+        // Game-loaded notification (id == 0) vs achievement unlock
+        if (n.achievement.id == 0) {
+            // Game connected to RA
+            int textX = x + 12;
+            m_theme->drawText("RetroAchievements",
+                textX, y + 8, raBlue, FontSize::SMALL);
+            m_theme->drawText(n.achievement.title,
+                textX, y + 28, pal.textPrimary, FontSize::BODY);
+            m_theme->drawText(n.achievement.description,
+                textX, y + 52, pal.textSecond, FontSize::TINY);
+        } else {
+            // Achievement unlock
+            int textX = x + 12;
+            if (!n.achievement.badgeLocalPath.empty() &&
+                fs::exists(n.achievement.badgeLocalPath)) {
+                SDL_Texture* badge = IMG_LoadTexture(m_renderer,
+                    n.achievement.badgeLocalPath.c_str());
+                if (badge) {
+                    SDL_Rect br = { x + 8, y + 8, 64, 64 };
+                    SDL_RenderCopy(m_renderer, badge, nullptr, &br);
+                    SDL_DestroyTexture(badge);
+                    textX = x + 80;
+                }
+            }
+            m_theme->drawText("Achievement Unlocked!",
+                textX, y + 8, gold, FontSize::SMALL);
+            m_theme->drawText(n.achievement.title,
+                textX, y + 28, pal.textPrimary, FontSize::BODY);
+            m_theme->drawText(std::to_string(n.achievement.points) + " pts",
+                textX, y + 52, pal.textSecond, FontSize::TINY);
+        }
 
         notifY -= NOTIFY_H + 8;
     }

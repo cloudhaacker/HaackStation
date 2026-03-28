@@ -102,6 +102,7 @@ public:
     int  drawTextCentered(const std::string& text, int cx, int y, SDL_Color c, FontSize size,
                           bool useDisplayFont = false);
     int  drawTextTruncated(const std::string& text, int x, int y, int maxW, SDL_Color c, FontSize size);
+    void drawTextWrapped(const std::string& text, int x, int y, int maxW, SDL_Color c, FontSize size);
     void measureText(const std::string& text, FontSize size, int& w, int& h,
                      bool useDisplayFont = false);
 

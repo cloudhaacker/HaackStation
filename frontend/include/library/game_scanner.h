@@ -71,6 +71,7 @@ private:
     // Auto-generate M3U files for multi-disc games in a directory
     // Returns number of M3U files created
     int autoGenerateM3u(const std::string& dirPath);
+    int refreshM3uFiles(const std::string& dirPath); // Rewrite M3Us after CHD conversion
 
     std::unordered_set<std::string> buildSuppressedSet(
         const std::string& dir,

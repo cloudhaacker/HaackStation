@@ -8,6 +8,7 @@
 #include "save_state_manager.h"
 #include "ingame_menu.h"
 #include "ra_manager.h"
+#include "game_details_panel.h"
 
 class GameBrowser;
 class ControllerNav;
@@ -65,6 +66,8 @@ private:
     std::unique_ptr<SaveStateManager>  m_saveStates;
     std::unique_ptr<InGameMenu>        m_inGameMenu;
     std::unique_ptr<RAManager>         m_ra;
+    std::unique_ptr<GameDetailsPanel>  m_details;
+    Uint32 m_inputCooldownUntil = 0; // Block game input after save/load
 
     HaackSettings m_haackSettings;
 };

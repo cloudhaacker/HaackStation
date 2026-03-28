@@ -45,6 +45,8 @@ std::string ControllerNav::controllerName() const {
 }
 
 NavAction ControllerNav::processEvent(const SDL_Event& e) {
+    // Input cooldown — block all navigation input for a period
+    if (SDL_GetTicks() < m_cooldownUntil) return NavAction::NONE;
     NavAction action = NavAction::NONE;
 
     switch (e.type) {
@@ -143,17 +145,54 @@ NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
     }
 }
 
+// ─── Keyboard mapping (RetroArch defaults) ────────────────────────────────────
+// UI navigation:
+//   Arrows / WASD     → D-pad
+//   X / Space / Enter → Cross (confirm)
+//   Z / Backspace     → Circle (back)
+//   Tab               → Start (menu)
+//   Page Up/Down      → Shoulder buttons (L1/R1 in menus)
+//
+// In-game PS1 buttons (via updateGameInput() in app.cpp):
+//   X         → Cross    (×)   RETRO_DEVICE_ID_JOYPAD_B
+//   Z         → Circle   (○)   RETRO_DEVICE_ID_JOYPAD_A
+//   A         → Square   (□)   RETRO_DEVICE_ID_JOYPAD_Y
+//   S         → Triangle (△)   RETRO_DEVICE_ID_JOYPAD_X
+//   Q         → L1             RETRO_DEVICE_ID_JOYPAD_L
+//   W         → R1             RETRO_DEVICE_ID_JOYPAD_R
+//   E         → L2             RETRO_DEVICE_ID_JOYPAD_L2
+//   R         → R2             RETRO_DEVICE_ID_JOYPAD_R2
+//   Enter     → Start
+//   Backspace → Select
+//   Arrows    → D-pad
+//   F1        → Open in-game menu (replaces Start+Y combo)
 NavAction ControllerNav::sdlKeyToAction(SDL_Keycode key) const {
     switch (key) {
-        case SDLK_UP:    case SDLK_w: return NavAction::UP;
-        case SDLK_DOWN:  case SDLK_s: return NavAction::DOWN;
-        case SDLK_LEFT:  case SDLK_a: return NavAction::LEFT;
-        case SDLK_RIGHT: case SDLK_d: return NavAction::RIGHT;
-        case SDLK_RETURN: case SDLK_SPACE: return NavAction::CONFIRM;
-        case SDLK_ESCAPE: case SDLK_BACKSPACE: return NavAction::BACK;
-        case SDLK_TAB:   return NavAction::MENU;
-        case SDLK_PAGEUP:   return NavAction::PAGE_UP;
-        case SDLK_PAGEDOWN: return NavAction::PAGE_DOWN;
+        // D-pad / navigation
+        case SDLK_UP:        case SDLK_w: return NavAction::UP;
+        case SDLK_DOWN:      case SDLK_s: return NavAction::DOWN;
+        case SDLK_LEFT:      case SDLK_a: return NavAction::LEFT;
+        case SDLK_RIGHT:     case SDLK_d: return NavAction::RIGHT;
+
+        // Confirm — X (PS1 Cross), Space, or Enter
+        case SDLK_x:
+        case SDLK_SPACE:
+        case SDLK_RETURN:   return NavAction::CONFIRM;
+
+        // Back — Z (PS1 Circle) or Backspace
+        case SDLK_z:
+        case SDLK_BACKSPACE: return NavAction::BACK;
+
+        // Menu / Start — Tab
+        case SDLK_TAB:       return NavAction::MENU;
+
+        // Options / Y — F2 (context menu, details panel)
+        case SDLK_F2:        return NavAction::OPTIONS;
+
+        // Shoulder buttons for menu page navigation
+        case SDLK_PAGEUP:    return NavAction::SHOULDER_L;
+        case SDLK_PAGEDOWN:  return NavAction::SHOULDER_R;
+
         default: return NavAction::NONE;
     }
 }
@@ -177,4 +216,8 @@ void ControllerNav::rumbleError() {
         SDL_Delay(150);
         SDL_GameControllerRumble(m_controller, 0xFFFF, 0x0000, 120);
     }
+}
+
+void ControllerNav::setInputCooldown(int ms) {
+    m_cooldownUntil = SDL_GetTicks() + (Uint32)ms;
 }

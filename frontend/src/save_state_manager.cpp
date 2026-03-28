@@ -267,6 +267,33 @@ SDL_Surface* SaveStateManager::captureScreenshot() const {
     return surface;
 }
 
+SDL_Surface* SaveStateManager::captureCleanScreenshot() const {
+    // Render ONLY the game framebuffer with no UI overlay
+    // Use this when the in-game menu is visible to get a clean game screenshot
+    if (!m_renderer || !m_bridge) return nullptr;
+
+    // Clear to black, blit only the game framebuffer
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(m_renderer);
+    m_bridge->blitFramebuffer(m_renderer);
+    // Note: do NOT call SDL_RenderPresent — we read before presenting
+
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+    SDL_Surface* surface = SDL_CreateRGBSurface(
+        0, w, h, 32,
+        0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+    if (!surface) return nullptr;
+    if (SDL_RenderReadPixels(m_renderer, nullptr,
+                              surface->format->format,
+                              surface->pixels,
+                              surface->pitch) != 0) {
+        SDL_FreeSurface(surface);
+        return nullptr;
+    }
+    return surface;
+}
+
 bool SaveStateManager::deleteSlot(int slot) {
     bool deleted = false;
     std::string sp = slotPath(slot);

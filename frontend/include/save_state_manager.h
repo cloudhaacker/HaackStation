@@ -79,6 +79,7 @@ public:
 
     // Capture a screenshot from the current frame
     SDL_Surface* captureScreenshot() const;
+    SDL_Surface* captureCleanScreenshot() const; // No UI overlay
 
     bool isGameLoaded() const { return !m_gameTitle.empty(); }
 

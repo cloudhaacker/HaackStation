@@ -50,6 +50,7 @@ public:
 
     // Vibration — short pulse for confirm, double for error
     void rumbleConfirm();
+    void setInputCooldown(int ms);  // Block all input for N milliseconds
     void rumbleError();
 
     void setRepeat(NavRepeat r) { m_repeat = r; }
@@ -65,6 +66,7 @@ private:
     NavAction m_heldAction    = NavAction::NONE;
     Uint32    m_heldSince     = 0;
     Uint32    m_lastRepeat    = 0;
+	Uint32    m_cooldownUntil = 0;
     bool      m_repeatFired   = false;
 
     NavRepeat m_repeat;

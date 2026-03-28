@@ -247,6 +247,50 @@ int ThemeEngine::drawTextTruncated(const std::string& text, int x, int y, int ma
     return drawText(truncated, x, y, c, size);
 }
 
+void ThemeEngine::drawTextWrapped(const std::string& text, int x, int y,
+                                   int maxW, SDL_Color color, FontSize size) {
+    // Simple word-wrap: split by spaces and add words until line is full
+    if (text.empty()) return;
+    std::vector<std::string> words;
+    std::string word;
+    for (char c : text) {
+        if (c == ' ' || c == '\n') {
+            if (!word.empty()) { words.push_back(word); word.clear(); }
+            if (c == '\n') words.push_back("\n");
+        } else {
+            word += c;
+        }
+    }
+    if (!word.empty()) words.push_back(word);
+
+    std::string line;
+    int lineY = y;
+    int lineH = 18; // approximate line height for TINY font
+
+    for (const auto& w : words) {
+        if (w == "\n") {
+            if (!line.empty()) {
+                drawText(line, x, lineY, color, size);
+                lineY += lineH;
+                line.clear();
+            }
+            continue;
+        }
+        std::string test = line.empty() ? w : line + " " + w;
+        int tw = 0, th = 0;
+        measureText(test, size, tw, th);
+        if (tw > maxW && !line.empty()) {
+            drawText(line, x, lineY, color, size);
+            lineY += lineH;
+            line = w;
+        } else {
+            line = test;
+        }
+    }
+    if (!line.empty())
+        drawText(line, x, lineY, color, size);
+}
+
 void ThemeEngine::measureText(const std::string& text, FontSize size,
                                int& w, int& h, bool useDisplayFont) {
     TTF_Font* font = getFont(size, useDisplayFont);
