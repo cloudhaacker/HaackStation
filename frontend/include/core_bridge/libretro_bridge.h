@@ -55,6 +55,9 @@ public:
     bool     isCoreLoaded() const { return m_coreLoaded; }
     double   getTargetFps()  const { return m_timing.fps; }
 
+    // Audio device access — used by app.cpp for fast forward muting
+    SDL_AudioDeviceID getAudioDevice() const { return m_audioDevice; }
+
     // System memory access for RetroAchievements
     const uint8_t* getSystemMemory() const;
     size_t         getSystemMemorySize() const;

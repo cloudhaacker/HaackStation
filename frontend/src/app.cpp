@@ -221,17 +221,31 @@ int HaackApp::run() {
                 accumulator += elapsed;
                 while (accumulator >= fixedStep) {
                     if (m_fastForward) {
-                        // Run N frames, mute audio to avoid queue overflow
+                        // Fast forward: run N extra frames per tick.
+                        // The bridge's cb_audioSampleBatch skip-threshold handles
+                        // queue management during normal play. During FF we also
+                        // need to clear the queue afterward so accumulated FF audio
+                        // doesn't play back at normal speed after releasing the button.
                         int idx  = std::max(0, std::min(
                             m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1));
                         int mult = FF_MULTIPLIERS[idx];
-                        SDL_PauseAudioDevice(0, 1);
+
+                        // Mute output (use device ID from bridge, not hardcoded 0)
+                        SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+                        if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
+
                         for (int ff = 0; ff < mult; ++ff) {
                             m_core->runFrame();
                             if (m_ra && m_ra->isGameLoaded())
                                 m_ra->doFrame(m_core.get());
                         }
-                        SDL_PauseAudioDevice(0, 0);
+
+                        // Clear whatever audio the core queued during FF frames,
+                        // then resume — prevents FF audio playing back after release
+                        if (audioDev) {
+                            SDL_ClearQueuedAudio(audioDev);
+                            SDL_PauseAudioDevice(audioDev, 0);
+                        }
                     } else {
                         m_core->runFrame();
                         if (m_ra && m_ra->isGameLoaded())

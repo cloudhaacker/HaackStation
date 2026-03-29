@@ -310,8 +310,22 @@ void LibretroBridge::cb_audioSample(int16_t left, int16_t right) {
     cb_audioSampleBatch(buf, 1);
 }
 
-// cb_audioSampleBatch: called with a batch of stereo samples each frame
-// This is the main audio path. We pass through the audio replacer if active.
+// cb_audioSampleBatch: called with a batch of stereo samples each frame.
+// This is the main audio path. We pass through the audio replacer if active,
+// then manage the SDL queue to prevent latency buildup and the ~15s hitch.
+//
+// ── Queue management strategy ─────────────────────────────────────────────────
+// The PS1 core outputs audio at ~44100Hz. SDL plays it back at the same rate.
+// Even a tiny sample-rate mismatch causes the queue to grow slowly over time
+// until it triggers a stutter. The previous hard-clear approach caused its own
+// audible gap.
+//
+// Better approach (same as RetroArch): SKIP queuing new batches when the queue
+// is already large enough. The device keeps playing what's buffered — no gap,
+// no click. The queue drains naturally until it's back in range.
+//
+// Skip threshold  : 200ms — queue has enough, skip this batch silently
+// Hard clear      : 2000ms — only if queue is truly runaway (device stalled)
 size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
     if (!s_instance || s_instance->m_audioDevice == 0) return frames;
     LibretroBridge& b = *s_instance;
@@ -325,27 +339,32 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         src = replaceBuf.data();
     }
 
-    // ── Queue latency management ───────────────────────────────────────────────
-    // Target: keep ~40ms of audio buffered (enough to prevent gaps,
-    // small enough that drift never becomes perceptible)
-    // If the queue grows beyond 80ms, trim it back to 40ms.
-    // This handles burst audio events (many sounds at once) that would
-    // otherwise cause the queue to grow indefinitely.
-    Uint32 bytesPerMs = (Uint32)(b.m_audioOutputRate * 2 * sizeof(int16_t) / 1000);
-    Uint32 targetMs   = 40;
-    Uint32 maxMs      = 80;
-    Uint32 queued     = SDL_GetQueuedAudioSize(b.m_audioDevice);
+    // ── Queue depth check ──────────────────────────────────────────────────────
+    Uint32 queued   = SDL_GetQueuedAudioSize(b.m_audioDevice);
+    Uint32 byteRate = (Uint32)(b.m_audioOutputRate * 2 * sizeof(int16_t));
 
-    if (queued > bytesPerMs * maxMs) {
-        // Queue has grown too large — trim it back to target
-        // Pause, clear, re-queue only the most recent targetMs worth
+    const Uint32 SKIP_THRESHOLD_MS  = 200;
+    const Uint32 CLEAR_THRESHOLD_MS = 2000;
+
+    Uint32 queuedMs = (byteRate > 0) ? (queued * 1000 / byteRate) : 0;
+
+    if (queuedMs >= CLEAR_THRESHOLD_MS) {
+        // Runaway queue — clear it. Should almost never happen.
         SDL_PauseAudioDevice(b.m_audioDevice, 1);
         SDL_ClearQueuedAudio(b.m_audioDevice);
         SDL_PauseAudioDevice(b.m_audioDevice, 0);
-        // Don't queue this batch — let the next frame start fresh
+        std::cout << "[Bridge] Audio queue runaway cleared ("
+                  << queuedMs << "ms)\n";
         return frames;
     }
 
+    if (queuedMs >= SKIP_THRESHOLD_MS) {
+        // Queue has enough buffered — skip this batch silently.
+        // Device keeps playing; no gap is created.
+        return frames;
+    }
+
+    // Normal path
     SDL_QueueAudio(b.m_audioDevice, src,
                    (Uint32)(frames * 2 * sizeof(int16_t)));
     return frames;
