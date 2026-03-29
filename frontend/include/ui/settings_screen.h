@@ -53,6 +53,10 @@ struct HaackSettings {
     // audio glitches or missed frames on slower machines.
     int  fastForwardSpeed   = 1;  // Default: 4×
 
+    // Top row mode — what shows above the main game shelf:
+    //   0 = Recently Played   1 = Favorites   2 = None
+    int  topRowMode         = 0;  // Default: Recently Played
+
     // ── Video ─────────────────────────────────────────────────────────────────
     int  rendererChoice     = 0;
     int  internalRes        = 1;

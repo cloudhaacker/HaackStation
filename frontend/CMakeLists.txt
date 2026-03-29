@@ -10,6 +10,7 @@ message(STATUS "rcheevos sources: ${RCHEEVOS_SOURCES}")
 set(FRONTEND_SOURCES
     src/main.cpp
     src/app.cpp
+    src/play_history.cpp
     src/ui/game_browser.cpp
     src/ui/controller_nav.cpp
     src/ui/settings_screen.cpp

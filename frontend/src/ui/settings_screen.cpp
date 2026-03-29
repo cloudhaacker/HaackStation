@@ -71,6 +71,11 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeToggle("show_fps", "Show FPS",
             "Display frames per second counter", &m_settings->showFps));
         tab.items.push_back(makeSep());
+        tab.items.push_back(makeChoice("top_row", "Shelf Top Row",
+            "What to show above your game library",
+            { "Recently Played", "Favorites", "Nothing" },
+            &m_settings->topRowMode));
+        tab.items.push_back(makeSep());
         tab.items.push_back(makeAction("rescan", "Rescan Library",
             "Re-scan ROMs folder for new games",
             []() { std::cout << "[Settings] Rescan triggered\n"; }));

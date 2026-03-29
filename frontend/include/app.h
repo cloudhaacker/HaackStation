@@ -9,6 +9,7 @@
 #include "ingame_menu.h"
 #include "ra_manager.h"
 #include "game_details_panel.h"
+#include "play_history.h"
 
 class GameBrowser;
 class ControllerNav;
@@ -68,6 +69,7 @@ private:
     std::unique_ptr<InGameMenu>       m_inGameMenu;
     std::unique_ptr<RAManager>        m_ra;
     std::unique_ptr<GameDetailsPanel> m_details;
+    std::unique_ptr<PlayHistory>      m_playHistory;
 
     Uint32 m_inputCooldownUntil = 0;
 
@@ -76,7 +78,7 @@ private:
     // require a short hold before activating (prevents accidental triggers).
     bool   m_fastForward  = false;
     Uint32 m_ffHeldSince  = 0;
-    static constexpr Uint32 FF_HOLD_DELAY_MS = 200; // hold threshold in ms
+    static constexpr Uint32 FF_HOLD_DELAY_MS = 500; // hold threshold in ms
 
     HaackSettings m_haackSettings;
 };

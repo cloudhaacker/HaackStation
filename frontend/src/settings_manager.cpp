@@ -60,6 +60,7 @@ bool SettingsManager::load(HaackSettings& s) {
         // ── Emulation ─────────────────────────────────────────────────────────
         else if (key == "fast_boot")          s.fastBoot           = parseBool(val);
         else if (key == "fast_forward_speed") s.fastForwardSpeed   = parseInt(val, 1);
+        else if (key == "top_row_mode")       s.topRowMode         = parseInt(val, 0);
 
         // ── Video ─────────────────────────────────────────────────────────────
         else if (key == "renderer")           s.rendererChoice     = parseInt(val, 0);
@@ -115,6 +116,7 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "[Emulation]\n";
     f << "fast_boot="          << (s.fastBoot ? "true" : "false") << "\n";
     f << "fast_forward_speed=" << s.fastForwardSpeed               << "\n";
+    f << "top_row_mode="       << s.topRowMode                     << "\n";
     f << "\n";
 
     f << "[Video]\n";
