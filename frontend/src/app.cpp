@@ -157,8 +157,10 @@ void HaackApp::init() {
     }
     m_splash->onScanComplete();
 
-    if (m_haackSettings.fullscreen)
+    if (m_haackSettings.fullscreen) {
         SDL_SetWindowFullscreen(m_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        SDL_ShowCursor(SDL_DISABLE); // Hide cursor in fullscreen
+    }
 
     m_state   = AppState::STARTUP;
     m_running = true;
@@ -622,9 +624,11 @@ void HaackApp::applySettings() {
     {
         Uint32 flags = SDL_GetWindowFlags(m_window);
         bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-        if (m_haackSettings.fullscreen != isFs)
+        if (m_haackSettings.fullscreen != isFs) {
             SDL_SetWindowFullscreen(m_window,
                 m_haackSettings.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+            SDL_ShowCursor(m_haackSettings.fullscreen ? SDL_DISABLE : SDL_ENABLE);
+        }
     }
 
     if (m_core && m_core->isGameLoaded())
@@ -664,8 +668,10 @@ void HaackApp::stopGame() {
 void HaackApp::toggleFullscreen() {
     Uint32 flags = SDL_GetWindowFlags(m_window);
     bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-    SDL_SetWindowFullscreen(m_window, isFs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-    m_haackSettings.fullscreen = !isFs;
+    bool goingFs = !isFs;
+    SDL_SetWindowFullscreen(m_window, goingFs ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    SDL_ShowCursor(goingFs ? SDL_DISABLE : SDL_ENABLE);
+    m_haackSettings.fullscreen = goingFs;
 }
 
 void HaackApp::updateGameInput() {
