@@ -72,7 +72,11 @@ private:
     Uint32 m_inputCooldownUntil = 0;
 
     // Fast forward: true while R2 (controller) or F (keyboard) is held
-    bool m_fastForward = false;
+    // m_ffHeldSince tracks when the button was first pressed so we can
+    // require a short hold before activating (prevents accidental triggers).
+    bool   m_fastForward  = false;
+    Uint32 m_ffHeldSince  = 0;
+    static constexpr Uint32 FF_HOLD_DELAY_MS = 200; // hold threshold in ms
 
     HaackSettings m_haackSettings;
 };

@@ -284,7 +284,12 @@ void HaackApp::handleEvents() {
                         else                        m_inGameMenu->open();
                         continue;
                     }
-                    if (key == SDLK_f) { m_fastForward = true; continue; }
+                    if (key == SDLK_f) {
+                        // Start hold timer — FF activates after FF_HOLD_DELAY_MS
+                        if (m_ffHeldSince == 0)
+                            m_ffHeldSince = SDL_GetTicks();
+                        continue;
+                    }
                     break;
                 }
                 if (m_state == AppState::GAME_BROWSER) {
@@ -319,8 +324,10 @@ void HaackApp::handleEvents() {
             }
 
             case SDL_KEYUP:
-                if (e.key.keysym.sym == SDLK_f)
+                if (e.key.keysym.sym == SDLK_f) {
                     m_fastForward = false;
+                    m_ffHeldSince = 0;
+                }
                 break;
 
             case SDL_CONTROLLERDEVICEADDED:
@@ -551,7 +558,23 @@ void HaackApp::launchGame(const std::string& path) {
     if (!m_haackSettings.biosPath.empty())
         m_core->setBiosPath(m_haackSettings.biosPath);
 
-    // Re-apply fast boot at launch so per-game overrides can hook in later
+    // ── Fast Boot fix ─────────────────────────────────────────────────────────
+    // beetle_psx_hw_skip_bios must be in m_coreOptions BEFORE retro_init()
+    // fires. On first launch the core isn't loaded yet, so loadGame() would
+    // call loadCore() internally — which calls retro_init() before we ever
+    // get to set the option. Fix: explicitly load the core here first so our
+    // setCoreOption call happens before retro_init(), every time.
+    if (!m_core->isCoreLoaded()) {
+        std::string corePath = LibretroBridge::defaultCorePath();
+        if (!m_core->loadCore(corePath)) {
+            std::cerr << "[HaackStation] Failed to load core: " << corePath << "\n";
+            m_browser->resetAfterGame();
+            setState(AppState::GAME_BROWSER);
+            return;
+        }
+    }
+
+    // Now set fast boot — core is loaded, option will be read at game load time
     m_core->setCoreOption("beetle_psx_hw_skip_bios",
         m_haackSettings.fastBoot ? "enabled" : "disabled");
 
@@ -667,21 +690,35 @@ void HaackApp::updateGameInput() {
         Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
         if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
 
-        // R2 = fast forward. Don't pass to core as JOYPAD_R2 during FF so games
-        // don't register a phantom button press.
+        // R2 = fast forward with hold delay — prevents accidental triggers.
+        // Track how long R2 has been held; only activate after FF_HOLD_DELAY_MS.
         if (r2 > 8000) {
-            m_fastForward = true;
+            if (m_ffHeldSince == 0)
+                m_ffHeldSince = SDL_GetTicks();
+            if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
+                m_fastForward = true;
         } else {
-            // Clear FF only if F key is also not held
-            const Uint8* ks = SDL_GetKeyboardState(nullptr);
-            if (m_fastForward && !ks[SDL_SCANCODE_F])
+            // R2 released — clear FF only if F key also not held
+            const Uint8* ks2 = SDL_GetKeyboardState(nullptr);
+            if (!ks2[SDL_SCANCODE_F]) {
                 m_fastForward = false;
+                m_ffHeldSince = 0;
+            }
         }
 
         SDL_GameControllerClose(ctrl);
     }
 
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
+
+    // F key fast forward — activate only after hold threshold
+    if (ks[SDL_SCANCODE_F]) {
+        if (m_ffHeldSince == 0)
+            m_ffHeldSince = SDL_GetTicks();
+        if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
+            m_fastForward = true;
+    }
+
     if (ks[SDL_SCANCODE_X])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);
     if (ks[SDL_SCANCODE_Z])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_A);
     if (ks[SDL_SCANCODE_A])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_Y);
