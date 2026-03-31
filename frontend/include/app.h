@@ -42,6 +42,7 @@ public:
     void applySettings();
     void saveRaToken(const std::string& token);
     void processInGameMenuActions();
+    void takeScreenshot();          // Save framebuffer to screenshots/ folder
 
 private:
     void init();
@@ -78,7 +79,9 @@ private:
     // require a short hold before activating (prevents accidental triggers).
     bool   m_fastForward  = false;
     Uint32 m_ffHeldSince  = 0;
-    static constexpr Uint32 FF_HOLD_DELAY_MS = 500; // hold threshold in ms
+    static constexpr Uint32 FF_HOLD_DELAY_MS = 500;
+
+    std::string m_currentGamePath; // Set on launch, used for screenshot naming
 
     HaackSettings m_haackSettings;
 };

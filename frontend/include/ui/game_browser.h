@@ -1,24 +1,19 @@
 #pragma once
 // game_browser.h
 // The main game shelf — displays the library as a scrollable card grid.
-// Also renders the optional "top row" (Recently Played or Favorites)
-// above the main grid when enabled in settings.
 //
-// Top row layout:
-//   ┌──────────────────────────────────────────────────────────────┐
-//   │  Recently Played  ›  [Card] [Card] [Card] [Card] [Card]     │  ← topRowMode=0
-//   ├──────────────────────────────────────────────────────────────┤
-//   │  [Main grid scrolls here]                                    │
-//   └──────────────────────────────────────────────────────────────┘
+// SHELF-FLIP NAVIGATION (PS4/PS5 style):
+//   L1 / R1 (or Page Up / Page Down on keyboard) cycles between shelves:
 //
-// Navigation:
-//   - When top row is active and cursor is in main grid:
-//     UP from row 0 → moves cursor into top row
-//   - When cursor is in top row:
-//     DOWN → returns to main grid row 0
-//     LEFT/RIGHT → scrolls within top row
-//     CONFIRM → launches game
-//     OPTIONS → opens details panel
+//     ◀  [ All Games ]  [ Recently Played ]  [ Favorites ]  ▶
+//
+//   Each shelf is a full-screen card grid — same spring scroll, same cover art,
+//   same Y→Details, same launch behavior. The header label and dot indicator
+//   change to show which shelf is active.
+//
+//   "Favorites" is a stub — shows a friendly empty state until Phase 4.
+//   "Recently Played" shows games in reverse play order from PlayHistory.
+//   "All Games" shows the full alphabetical library.
 
 #include "controller_nav.h"
 #include "theme_engine.h"
@@ -37,11 +32,10 @@ enum class BrowserState {
     LAUNCHING,
 };
 
-// Which row is shown above the main grid
-enum class TopRowMode {
-    RECENTLY_PLAYED = 0,
-    FAVORITES       = 1,
-    NONE            = 2,
+enum class ShelfMode {
+    ALL_GAMES       = 0,
+    RECENTLY_PLAYED = 1,
+    FAVORITES       = 2,
 };
 
 class GameBrowser {
@@ -51,7 +45,14 @@ public:
 
     void setLibrary(const std::vector<GameEntry>& games);
     void setPlayHistory(const PlayHistory* history) { m_playHistory = history; }
-    void setTopRowMode(TopRowMode mode) { m_topRowMode = mode; }
+
+    // Which shelf to start on: 0=All Games  1=Recently Played  2=Favorites
+    void setShelfMode(int mode) {
+        m_shelfMode = static_cast<ShelfMode>(std::max(0, std::min(mode, 2)));
+        rebuildActiveList();
+    }
+    // Legacy compat — settings still uses setTopRowMode name
+    void setTopRowMode(int mode) { setShelfMode(mode); }
 
     void handleEvent(const SDL_Event& e);
     void update(float deltaMs);
@@ -59,20 +60,19 @@ public:
 
     void onWindowResize(int w, int h);
 
-    // Launch
-    bool        hasPendingLaunch()  const { return m_pendingLaunch; }
+    bool        hasPendingLaunch() const { return m_pendingLaunch; }
     std::string consumeLaunchPath();
 
-    // Details panel
-    bool  wantsDetails()     const { return m_wantsDetails; }
-    void  clearWantsDetails()      { m_wantsDetails = false; }
+    bool wantsDetails()    const { return m_wantsDetails; }
+    void clearWantsDetails()     { m_wantsDetails = false; }
 
-    // Selected game access
     const GameEntry* selectedGameEntry() const;
     int              selectedIndex()     const;
 
-    // Cover art — loads lazily and caches
-    SDL_Texture* getCoverArt(int gameIndex);
+    // Cover art — keyed by index in m_allGames
+    SDL_Texture* getCoverArt(int allGamesIndex);
+    // Cover art by game path — safe to call regardless of active shelf
+    SDL_Texture* getCoverArtForGame(const std::string& path);
     void         clearCoverArtCache();
 
     void resetAfterGame();
@@ -80,73 +80,58 @@ public:
 private:
     void moveSelection(NavAction action);
     void ensureSelectionVisible();
+    void cycleShelf(int direction);  // +1=right, -1=left
+    void rebuildActiveList();        // Rebuild m_activeGames for current shelf
 
-    // Render helpers
     void renderGrid();
-    void renderTopRow();
+    void renderShelfIndicator();
     void renderEmptyState();
+    void renderEmptyShelf();         // For Recently Played / Favorites when empty
     void renderScanningState();
 
-    // Card geometry
     SDL_Rect cardRect(int row, int col) const;
-    int      totalRows()    const;
-    int      visibleRows()  const;
-    bool     selectionValid() const;
+    int  totalRows()    const;
+    int  visibleRows()  const;
+    bool selectionValid() const;
     const GameEntry* selectedGame() const;
 
-    // Top row helpers
-    int  topRowCardCount()   const;   // How many cards fit in one row
-    bool topRowHasContent()  const;   // Whether the top row has anything to show
-    int  topRowHeight()      const;   // Pixel height of the top row section
-    SDL_Texture* topRowCoverArt(int topRowIndex);
+    // Cover art for active list entry — maps through m_activeToAllIndex
+    SDL_Texture* activeCoverArt(int activeIndex);
 
-    SDL_Renderer* m_renderer = nullptr;
-    ThemeEngine*  m_theme    = nullptr;
-    ControllerNav* m_nav     = nullptr;
+    SDL_Renderer*  m_renderer = nullptr;
+    ThemeEngine*   m_theme    = nullptr;
+    ControllerNav* m_nav      = nullptr;
 
-    std::vector<GameEntry>  m_games;
-    BrowserState            m_state       = BrowserState::EMPTY;
-    TopRowMode              m_topRowMode  = TopRowMode::RECENTLY_PLAYED;
-    const PlayHistory*      m_playHistory = nullptr;
+    std::vector<GameEntry> m_allGames;      // Full library
+    std::vector<GameEntry> m_activeGames;   // Current shelf's list
+    std::vector<int>       m_activeToAllIndex; // Maps activeGames[i] → allGames index
 
-    // Main grid selection
+    BrowserState m_state     = BrowserState::EMPTY;
+    ShelfMode    m_shelfMode = ShelfMode::ALL_GAMES;
+
+    const PlayHistory* m_playHistory = nullptr;
+
     int   m_selectedRow = 0;
     int   m_selectedCol = 0;
 
-    // Top row selection — separate cursor, only active when m_inTopRow=true
-    bool  m_inTopRow       = false;
-    int   m_topRowSelected = 0;
-
-    // Scroll
     float m_scrollOffset   = 0.f;
     float m_scrollTarget   = 0.f;
     float m_scrollVelocity = 0.f;
 
-    // Animations
     float m_selectionAnim    = 1.f;
     bool  m_selectionChanged = false;
     float m_spinnerAngle     = 0.f;
     float m_launchAnim       = 0.f;
 
-    // Launch
     bool        m_pendingLaunch = false;
     std::string m_launchPath;
 
-    // Details panel signal
     bool m_wantsDetails = false;
 
-    // Cover art cache — keyed by game index in m_games
     std::unordered_map<int, SDL_Texture*> m_coverArtCache;
-
-    // Top row cover art cache — keyed by position in recently played list
-    std::unordered_map<int, SDL_Texture*> m_topRowCoverCache;
 
     int m_windowW = 1280;
     int m_windowH = 720;
 
-    // Top row visual constants
-    static constexpr int TOP_ROW_H        = 110;  // Height of the entire top row section
-    static constexpr int TOP_ROW_CARD_H   = 80;   // Card height in top row
-    static constexpr int TOP_ROW_LABEL_H  = 20;   // "Recently Played" label height
-    static constexpr int TOP_ROW_PAD      = 8;    // Padding between top row cards
+    static constexpr int NUM_SHELVES = 3;
 };
