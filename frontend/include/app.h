@@ -10,6 +10,7 @@
 #include "ra_manager.h"
 #include "game_details_panel.h"
 #include "play_history.h"
+#include "rewind_manager.h"   // ← NEW
 
 class GameBrowser;
 class ControllerNav;
@@ -52,6 +53,14 @@ private:
     void render();
     void updateGameInput();
     void renderFastForwardIndicator();
+    void renderRewindIndicator();                    // ← NEW
+    void renderScreenshotNotification(); // Brief toast after screenshot capture
+
+    // ── Rewind helpers ────────────────────────────────────────────────────────
+    // stripRomRegion() removes parenthetical / bracketed region & revision tags
+    // from a ROM filename stem so screenshot folders match ScreenScraper names.
+    // e.g. "Crash Bandicoot (USA)" → "Crash Bandicoot"
+    static std::string stripRomRegion(const std::string& stem);
 
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
@@ -71,17 +80,31 @@ private:
     std::unique_ptr<RAManager>        m_ra;
     std::unique_ptr<GameDetailsPanel> m_details;
     std::unique_ptr<PlayHistory>      m_playHistory;
+    std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
 
     Uint32 m_inputCooldownUntil = 0;
 
-    // Fast forward: true while R2 (controller) or F (keyboard) is held
+    // Fast forward: true while R2 (controller) or F (keyboard) is held.
     // m_ffHeldSince tracks when the button was first pressed so we can
     // require a short hold before activating (prevents accidental triggers).
     bool   m_fastForward  = false;
     Uint32 m_ffHeldSince  = 0;
     static constexpr Uint32 FF_HOLD_DELAY_MS = 500;
 
-    std::string m_currentGamePath; // Set on launch, used for screenshot naming
+    // Rewind: true while L2 (controller) or R (keyboard) is held.
+    // Same hold-delay pattern as fast-forward to prevent accidental triggers.
+    // m_rewindFired tracks whether at least one stepBack succeeded this session
+    // (used to decide whether to show the "empty buffer" indicator).
+    bool   m_rewinding       = false;
+    Uint32 m_rewindHeldSince = 0;
+    static constexpr Uint32 REWIND_HOLD_DELAY_MS = 300;
+
+    // Rumble pulse for FF / rewind: fire a short rumble every N ms while active.
+    Uint32 m_rumbleNextAt    = 0;
+    static constexpr Uint32 RUMBLE_PULSE_INTERVAL_MS = 600;
+
+    std::string m_currentGamePath;           // Set on launch, used for screenshot naming
+    Uint32      m_screenshotNotifyUntil = 0; // Show screenshot toast until this tick
 
     HaackSettings m_haackSettings;
 };

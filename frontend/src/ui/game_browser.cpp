@@ -116,9 +116,6 @@ void GameBrowser::handleEvent(const SDL_Event& e) {
 
     NavAction action = m_nav->processEvent(e);
     if (action != NavAction::NONE) moveSelection(action);
-
-    action = m_nav->updateHeld(SDL_GetTicks());
-    if (action != NavAction::NONE) moveSelection(action);
 }
 
 void GameBrowser::moveSelection(NavAction action) {
@@ -140,22 +137,43 @@ void GameBrowser::moveSelection(NavAction action) {
             m_selectedCol--;
             if (m_selectedCol < 0) {
                 if (m_selectedRow > 0) {
+                    // Move to end of previous row
                     m_selectedRow--;
                     m_selectedCol = cols - 1;
                 } else {
-                    m_selectedCol = 0;
+                    // Wrap: first item → last item in library
+                    int lastIdx   = (int)m_activeGames.size() - 1;
+                    m_selectedRow = lastIdx / cols;
+                    m_selectedCol = lastIdx % cols;
                 }
             }
             break;
 
-        case NavAction::RIGHT:
-            m_selectedCol++;
-            if (m_selectedCol >= cols || selectedIndex() >= (int)m_activeGames.size())
-                m_selectedCol = prevCol;
+        case NavAction::RIGHT: {
+            int nextCol = m_selectedCol + 1;
+            int nextIdx = m_selectedRow * cols + nextCol;
+            if (nextCol >= cols || nextIdx >= (int)m_activeGames.size()) {
+                // End of row or library — wrap to very first item
+                m_selectedRow = 0;
+                m_selectedCol = 0;
+            } else {
+                m_selectedCol = nextCol;
+            }
             break;
+        }
 
         case NavAction::UP:
-            if (m_selectedRow > 0) m_selectedRow--;
+            if (m_selectedRow > 0) {
+                m_selectedRow--;
+            } else {
+                // Wrap: top → last row (clamp col if row is short)
+                m_selectedRow = rows - 1;
+                int newIdx = selectedIndex();
+                if (newIdx >= (int)m_activeGames.size()) {
+                    m_selectedCol = (int)m_activeGames.size() - m_selectedRow * cols - 1;
+                    m_selectedCol = std::max(0, m_selectedCol);
+                }
+            }
             break;
 
         case NavAction::DOWN:
@@ -166,6 +184,9 @@ void GameBrowser::moveSelection(NavAction action) {
                     m_selectedCol = (int)m_activeGames.size() - m_selectedRow * cols - 1;
                     m_selectedCol = std::max(0, m_selectedCol);
                 }
+            } else {
+                // Wrap: last row → first row
+                m_selectedRow = 0;
             }
             break;
 
@@ -198,6 +219,12 @@ void GameBrowser::moveSelection(NavAction action) {
 
 // ─── Update ───────────────────────────────────────────────────────────────────
 void GameBrowser::update(float deltaMs) {
+    // updateHeld fires every frame so d-pad hold works even between SDL events
+    if (m_state == BrowserState::BROWSING) {
+        NavAction held = m_nav->updateHeld(SDL_GetTicks());
+        if (held != NavAction::NONE) moveSelection(held);
+    }
+
     float dt = deltaMs / 1000.f;
 
     float diff        = m_scrollTarget - m_scrollOffset;

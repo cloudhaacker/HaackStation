@@ -104,7 +104,7 @@ public:
 
 private:
     void buildTabs();
-    void navigateAction(NavAction action);
+    void navigateAction(NavAction action, bool isRepeat = false);
     void activateCurrentItem();
     void renderTab(const SettingTab& tab);
     void renderItem(const SettingItem& item, int x, int y, int w, bool selected);
@@ -121,7 +121,8 @@ private:
     bool m_wantsClose   = false;
     bool m_wantsQuit    = false;
     bool m_wantsScrape  = false;
-    int  m_windowW      = 1280;
+    bool m_editingChoice = false;  // true while LEFT/RIGHT adjusts a CHOICE/SLIDER
+	int  m_windowW      = 1280;
     int  m_windowH      = 720;
 
     static constexpr int TAB_BAR_H = 56;

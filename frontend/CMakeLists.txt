@@ -28,6 +28,7 @@ set(FRONTEND_SOURCES
     src/ingame_menu.cpp
     src/ra_manager.cpp
     src/game_details_panel.cpp
+	src/rewind_manager.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

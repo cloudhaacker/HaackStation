@@ -75,12 +75,21 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
                 Sint16 y = SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTY);
                 action = axisToAction(x, y);
                 if (action != NavAction::NONE && action != m_heldAction) {
+                    // New direction — start hold timer, fire ONCE immediately
+                    // (same as button press), then throttle via updateHeld()
                     m_heldAction  = action;
                     m_heldSince   = SDL_GetTicks();
                     m_lastRepeat  = 0;
                     m_repeatFired = false;
+                    // Return action now for the first immediate fire
+                    // updateHeld() handles subsequent repeats at repeatIntervalMs
                 } else if (action == NavAction::NONE) {
                     m_heldAction = NavAction::NONE;
+                    action = NavAction::NONE; // Don't fire on release
+                } else {
+                    // Same direction still held — updateHeld() handles throttling,
+                    // don't return it here or it fires on every axis event
+                    action = NavAction::NONE;
                 }
             }
             break;

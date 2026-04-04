@@ -198,39 +198,133 @@ void SettingsScreen::buildTabs() {
 
 void SettingsScreen::handleEvent(const SDL_Event& e) {
     NavAction action = m_nav->processEvent(e);
-    if (action != NavAction::NONE) navigateAction(action);
-    action = m_nav->updateHeld(SDL_GetTicks());
-    if (action != NavAction::NONE) navigateAction(action);
+    if (action != NavAction::NONE) navigateAction(action, false);
 }
 
-void SettingsScreen::navigateAction(NavAction action) {
-    auto& tab = m_tabs[m_activeTab];
+void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
+    auto& tab     = m_tabs[m_activeTab];
+    int   numTabs = (int)m_tabs.size();
+    int   numItems= (int)tab.items.size();
+
+    // Helper: skip separators going in a direction, return new index or -1 if stuck
+    auto skipSeps = [&](int start, int dir) -> int {
+        int next = start;
+        for (int i = 0; i < numItems; i++) {
+            next = next + dir;
+            if (next < 0 || next >= numItems) return -1; // hit an edge
+            if (tab.items[next].type != SettingType::SEPARATOR) return next;
+        }
+        return -1;
+    };
+
     switch (action) {
         case NavAction::LEFT:
-            m_activeTab = std::max(0, m_activeTab - 1);
-            m_activeItem = 0; m_scrollOffset = 0;
+            if (m_editingChoice) {
+                // Adjust selected choice / slider backwards
+                auto& item = tab.items[m_activeItem];
+                if (item.type == SettingType::CHOICE &&
+                    item.choiceIndex && !item.choices.empty()) {
+                    int sz = (int)item.choices.size();
+                    int next = *item.choiceIndex - 1;
+                    if (next >= 0) { *item.choiceIndex = next; m_nav->rumbleConfirm(); }
+                } else if (item.type == SettingType::SLIDER && item.sliderValue) {
+                    if (*item.sliderValue > item.sliderMin) {
+                        (*item.sliderValue)--;
+                        m_nav->rumbleConfirm();
+                    }
+                }
+            } else {
+                // Switch tab left (wrap only on fresh press)
+                if (!isRepeat || m_activeTab > 0) {
+                    m_activeTab  = (m_activeTab - 1 + numTabs) % numTabs;
+                    m_activeItem = 0; m_scrollOffset = 0;
+                }
+            }
             break;
+
         case NavAction::RIGHT:
-            m_activeTab = std::min((int)m_tabs.size() - 1, m_activeTab + 1);
-            m_activeItem = 0; m_scrollOffset = 0;
+            if (m_editingChoice) {
+                // Adjust selected choice / slider forwards
+                auto& item = tab.items[m_activeItem];
+                if (item.type == SettingType::CHOICE &&
+                    item.choiceIndex && !item.choices.empty()) {
+                    int sz = (int)item.choices.size();
+                    int next = *item.choiceIndex + 1;
+                    if (next < sz) { *item.choiceIndex = next; m_nav->rumbleConfirm(); }
+                } else if (item.type == SettingType::SLIDER && item.sliderValue) {
+                    if (*item.sliderValue < item.sliderMax) {
+                        (*item.sliderValue)++;
+                        m_nav->rumbleConfirm();
+                    }
+                }
+            } else {
+                // Switch tab right (wrap only on fresh press)
+                if (!isRepeat || m_activeTab < numTabs - 1) {
+                    m_activeTab  = (m_activeTab + 1) % numTabs;
+                    m_activeItem = 0; m_scrollOffset = 0;
+                }
+            }
             break;
-        case NavAction::UP:
-            do { m_activeItem = std::max(0, m_activeItem - 1); }
-            while (m_activeItem > 0 &&
-                   tab.items[m_activeItem].type == SettingType::SEPARATOR);
+
+        case NavAction::UP: {
+            if (m_editingChoice) { m_editingChoice = false; break; } // exit edit mode
+            int next = skipSeps(m_activeItem, -1);
+            if (next >= 0) {
+                m_activeItem = next;
+            } else if (!isRepeat) {
+                // Fresh press at top: wrap to bottom
+                for (int i = numItems - 1; i >= 0; i--) {
+                    if (tab.items[i].type != SettingType::SEPARATOR) {
+                        m_activeItem = i; break;
+                    }
+                }
+            }
+            // isRepeat at top edge: do nothing (clamp)
             break;
-        case NavAction::DOWN:
-            do { m_activeItem = std::min((int)tab.items.size()-1, m_activeItem+1); }
-            while (m_activeItem < (int)tab.items.size()-1 &&
-                   tab.items[m_activeItem].type == SettingType::SEPARATOR);
+        }
+
+        case NavAction::DOWN: {
+            if (m_editingChoice) { m_editingChoice = false; break; } // exit edit mode
+            int next = skipSeps(m_activeItem, +1);
+            if (next >= 0) {
+                m_activeItem = next;
+            } else if (!isRepeat) {
+                // Fresh press at bottom: wrap to top
+                for (int i = 0; i < numItems; i++) {
+                    if (tab.items[i].type != SettingType::SEPARATOR) {
+                        m_activeItem = i; break;
+                    }
+                }
+            }
+            // isRepeat at bottom edge: do nothing (clamp)
             break;
-        case NavAction::CONFIRM:
-            activateCurrentItem();
+        }
+
+        case NavAction::CONFIRM: {
+            auto& item = tab.items[m_activeItem];
+            if (item.type == SettingType::CHOICE || item.type == SettingType::SLIDER) {
+                // Toggle into/out of edit mode so LEFT/RIGHT adjusts the value
+                m_editingChoice = !m_editingChoice;
+                m_nav->rumbleConfirm();
+            } else {
+                m_editingChoice = false;
+                activateCurrentItem();
+            }
             break;
+        }
+
         case NavAction::BACK:
+            if (m_editingChoice) {
+                m_editingChoice = false; // exit edit mode first
+            } else {
+                m_wantsClose = true;
+            }
+            break;
+
         case NavAction::MENU:
             m_wantsClose = true;
             break;
+
         default: break;
     }
 }
@@ -260,7 +354,11 @@ void SettingsScreen::activateCurrentItem() {
     }
 }
 
-void SettingsScreen::update(float /*deltaMs*/) {}
+void SettingsScreen::update(float /*deltaMs*/) {
+    // updateHeld fires every frame so d-pad hold works even between SDL events
+    NavAction held = m_nav->updateHeld(SDL_GetTicks());
+    if (held != NavAction::NONE) navigateAction(held, true);
+}
 
 void SettingsScreen::render() {
     SDL_GetRendererOutputSize(m_renderer, &m_windowW, &m_windowH);

@@ -15,6 +15,7 @@
 #include "libretro_types.h"
 #include "game_scanner.h"
 #include "theme_engine.h"
+#include "rewind_manager.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdexcept>
@@ -28,6 +29,7 @@
 #include <vector>
 #include <filesystem>
 #include <ctime>
+#include <regex>
 namespace fs = std::filesystem;
 
 static constexpr int DEFAULT_W = 1280;
@@ -131,6 +133,10 @@ void HaackApp::init() {
     m_ra      = std::make_unique<RAManager>();
     m_details = std::make_unique<GameDetailsPanel>(m_renderer, m_theme.get(), m_nav.get());
 
+    // Rewind manager — 10-second buffer, capture every 2 frames.
+    // Buffer depth can be made a Settings option later; hardcoded for now.
+    m_rewind = std::make_unique<RewindManager>(10, 2);
+
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();
     m_playHistory->load();
@@ -174,9 +180,11 @@ void HaackApp::init() {
               << "  SHELF:   Arrows=Navigate  X=Launch  Enter=Settings  F2=Details  Esc=Quit\n"
               << "  INGAME:  Arrows=D-pad  X=Cross  Z=Circle  A=Square  S=Triangle\n"
               << "           Q=L1  W=R1  E=L2  R=R2  Enter=Start  Space=Select\n"
-              << "           F=Fast Forward (hold)  F1=In-game menu  Esc=Quit to shelf\n"
+              << "           F=Fast Forward (hold)  BackQuote=Rewind (hold)\n"
+              << "           F1=In-game menu  Esc=Quit to shelf\n"
               << "  GLOBAL:  F11=Fullscreen\n"
-              << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n";
+              << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n"
+              << "[HaackStation] Rewind: hold L2 (controller) or ` (backtick)\n";
 }
 
 void HaackApp::shutdown() {
@@ -221,17 +229,38 @@ int HaackApp::run() {
 
                 accumulator += elapsed;
                 while (accumulator >= fixedStep) {
-                    if (m_fastForward) {
-                        // Fast forward: run N extra frames per tick.
-                        // The bridge's cb_audioSampleBatch skip-threshold handles
-                        // queue management during normal play. During FF we also
-                        // need to clear the queue afterward so accumulated FF audio
-                        // doesn't play back at normal speed after releasing the button.
+                    if (m_rewinding) {
+                        // ── Rewind ────────────────────────────────────────────
+                        // Restore the previous captured state, then call runFrame()
+                        // so the core renders it — this makes the picture visibly
+                        // step backward on screen. Audio is muted to avoid the
+                        // weird backward-SPU effect.
+                        SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+                        if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
+
+                        // stepBack() restores state; runFrame() renders it to screen
+                        // so the picture visibly rewinds frame-by-frame.
+                        if (m_rewind->stepBack())
+                            m_core->runFrame();
+
+                        if (audioDev) {
+                            SDL_ClearQueuedAudio(audioDev);
+                            SDL_PauseAudioDevice(audioDev, 0);
+                        }
+
+                        // Periodic rumble pulse while rewinding
+                        Uint32 nowMs = SDL_GetTicks();
+                        if (nowMs >= m_rumbleNextAt) {
+                            if (m_nav) m_nav->rumbleConfirm();
+                            m_rumbleNextAt = nowMs + RUMBLE_PULSE_INTERVAL_MS;
+                        }
+
+                    } else if (m_fastForward) {
+                        // ── Fast Forward ──────────────────────────────────────
                         int idx  = std::max(0, std::min(
                             m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1));
                         int mult = FF_MULTIPLIERS[idx];
 
-                        // Mute output (use device ID from bridge, not hardcoded 0)
                         SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
                         if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
 
@@ -240,17 +269,28 @@ int HaackApp::run() {
                             if (m_ra && m_ra->isGameLoaded())
                                 m_ra->doFrame(m_core.get());
                         }
+                        // Still capture rewind states during FF (optional but nice)
+                        m_rewind->captureFrame();
 
-                        // Clear whatever audio the core queued during FF frames,
-                        // then resume — prevents FF audio playing back after release
                         if (audioDev) {
                             SDL_ClearQueuedAudio(audioDev);
                             SDL_PauseAudioDevice(audioDev, 0);
                         }
+
+                        // Periodic rumble pulse while fast-forwarding
+                        Uint32 nowMs = SDL_GetTicks();
+                        if (nowMs >= m_rumbleNextAt) {
+                            if (m_nav) m_nav->rumbleConfirm();
+                            m_rumbleNextAt = nowMs + RUMBLE_PULSE_INTERVAL_MS;
+                        }
+
                     } else {
+                        // ── Normal frame ──────────────────────────────────────
                         m_core->runFrame();
                         if (m_ra && m_ra->isGameLoaded())
                             m_ra->doFrame(m_core.get());
+                        // Capture rewind snapshot every N frames
+                        m_rewind->captureFrame();
                     }
                     accumulator -= fixedStep;
                 }
@@ -318,6 +358,12 @@ void HaackApp::handleEvents() {
                             m_ffHeldSince = SDL_GetTicks();
                         continue;
                     }
+                    // Backtick / grave = rewind (keyboard equivalent of L2)
+                    if (key == SDLK_BACKQUOTE) {
+                        if (m_rewindHeldSince == 0)
+                            m_rewindHeldSince = SDL_GetTicks();
+                        continue;
+                    }
                     break;
                 }
                 if (m_state == AppState::GAME_BROWSER) {
@@ -354,6 +400,12 @@ void HaackApp::handleEvents() {
                 if (e.key.keysym.sym == SDLK_f) {
                     m_fastForward = false;
                     m_ffHeldSince = 0;
+                    m_rumbleNextAt = 0;
+                }
+                if (e.key.keysym.sym == SDLK_BACKQUOTE) {
+                    m_rewinding       = false;
+                    m_rewindHeldSince = 0;
+                    m_rumbleNextAt    = 0;
                 }
                 break;
 
@@ -470,7 +522,6 @@ void HaackApp::update(float deltaMs) {
                 auto* game = m_browser->selectedGameEntry();
                 if (game) {
                     m_details->open(*game, m_saveStates.get());
-                    // getCoverArt needs allGames index — use the path to find it
                     SDL_Texture* cover = m_browser->getCoverArtForGame(game->path);
                     m_details->setCoverTexture(cover);
                 }
@@ -548,6 +599,9 @@ void HaackApp::render() {
             }
             if (m_inGameMenu->isOpen()) m_inGameMenu->render();
             if (m_fastForward)          renderFastForwardIndicator();
+            if (m_rewinding)            renderRewindIndicator();
+            if (m_screenshotNotifyUntil > SDL_GetTicks())
+                renderScreenshotNotification();
             break;
         case AppState::SETTINGS:     m_settings->render(); break;
         case AppState::SCRAPING:     m_scraper->render();  break;
@@ -583,6 +637,81 @@ void HaackApp::renderFastForwardIndicator() {
         pal.accent, FontSize::SMALL);
 }
 
+// ─── renderRewindIndicator ────────────────────────────────────────────────────
+// Shown top-right below the FF badge when rewinding.
+// Purple/violet accent to visually distinguish from orange FF badge.
+void HaackApp::renderRewindIndicator() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    // Buffer fill fraction (0.0 = empty, 1.0 = full)
+    float fill = m_rewind->capacity() > 0
+        ? (float)m_rewind->depth() / (float)m_rewind->capacity()
+        : 0.0f;
+
+    std::string label = "<<RW";
+
+    int badgeW = 64, badgeH = 28;
+    int badgeX = w - badgeW - 12;
+    int badgeY = 12 + 36; // below FF indicator slot (even if FF not visible)
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 20, 10, 40, 200);
+    SDL_Rect bg = { badgeX, badgeY, badgeW, badgeH };
+    SDL_RenderFillRect(m_renderer, &bg);
+
+    // Fill bar behind badge showing buffer remaining
+    SDL_SetRenderDrawColor(m_renderer, 100, 40, 160, 120);
+    SDL_Rect fillRect = { badgeX, badgeY, (int)(badgeW * fill), badgeH };
+    SDL_RenderFillRect(m_renderer, &fillRect);
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // Violet border
+    SDL_SetRenderDrawColor(m_renderer, 160, 80, 255, 255);
+    SDL_RenderDrawRect(m_renderer, &bg);
+
+    SDL_Color violet = { 200, 150, 255, 255 };
+    m_theme->drawTextCentered(label,
+        badgeX + badgeW / 2, badgeY + (badgeH - 14) / 2,
+        violet, FontSize::SMALL);
+}
+
+// ─── renderScreenshotNotification ────────────────────────────────────────────
+// Brief toast in the top-left: "Screenshot saved" fades in instantly,
+// stays 2 seconds, then disappears.
+void HaackApp::renderScreenshotNotification() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    // Fade out in the last 400ms
+    Uint32 now       = SDL_GetTicks();
+    Uint32 remaining = m_screenshotNotifyUntil - now;
+    Uint8  alpha     = 220;
+    if (remaining < 400)
+        alpha = (Uint8)(220 * remaining / 400);
+
+    int toastW = 200, toastH = 32;
+    int toastX = 12;
+    int toastY = 12;
+
+    const auto& pal = m_theme->palette();
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 20, 20, 40, alpha);
+    SDL_Rect bg = { toastX, toastY, toastW, toastH };
+    SDL_RenderFillRect(m_renderer, &bg);
+
+    // Green accent border (success colour)
+    SDL_SetRenderDrawColor(m_renderer, 60, 180, 60, alpha);
+    SDL_RenderDrawRect(m_renderer, &bg);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    SDL_Color textCol = { 200, 255, 200, alpha };
+    m_theme->drawText("Screenshot saved",
+        toastX + 10, toastY + 8, textCol, FontSize::SMALL);
+}
+
 void HaackApp::setState(AppState next) { m_state = next; }
 
 void HaackApp::launchGame(const std::string& path) {
@@ -591,11 +720,6 @@ void HaackApp::launchGame(const std::string& path) {
         m_core->setBiosPath(m_haackSettings.biosPath);
 
     // ── Fast Boot fix ─────────────────────────────────────────────────────────
-    // beetle_psx_hw_skip_bios must be in m_coreOptions BEFORE retro_init()
-    // fires. On first launch the core isn't loaded yet, so loadGame() would
-    // call loadCore() internally — which calls retro_init() before we ever
-    // get to set the option. Fix: explicitly load the core here first so our
-    // setCoreOption call happens before retro_init(), every time.
     if (!m_core->isCoreLoaded()) {
         std::string corePath = LibretroBridge::defaultCorePath();
         if (!m_core->loadCore(corePath)) {
@@ -606,7 +730,6 @@ void HaackApp::launchGame(const std::string& path) {
         }
     }
 
-    // Now set fast boot — core is loaded, option will be read at game load time
     m_core->setCoreOption("beetle_psx_hw_skip_bios",
         m_haackSettings.fastBoot ? "enabled" : "disabled");
 
@@ -620,11 +743,21 @@ void HaackApp::launchGame(const std::string& path) {
         fs::path p(path);
         std::string title = p.stem().string();
         m_saveStates->setCurrentGame(title, path);
+
         // Record in play history (moves to front if already present)
         if (m_playHistory)
             m_playHistory->recordPlay(path, title);
         if (m_ra && m_ra->isLoggedIn())
             m_ra->loadGame(path, m_core.get());
+
+        // ── Initialise rewind buffer for this game ─────────────────────────
+        if (m_rewind) {
+            if (m_rewind->init(m_core.get()))
+                std::cout << "[HaackStation] Rewind ready\n";
+            else
+                std::cout << "[HaackStation] Rewind not available for this core\n";
+        }
+
         setState(AppState::IN_GAME);
     }
 }
@@ -679,9 +812,16 @@ void HaackApp::applySettings() {
 
 void HaackApp::stopGame() {
     m_fastForward     = false;
+    m_rewinding       = false;
+    m_ffHeldSince     = 0;
+    m_rewindHeldSince = 0;
+    m_rumbleNextAt    = 0;
     m_currentGamePath.clear();
+
+    // Reset rewind buffer so it doesn't hold stale state across games
+    if (m_rewind) m_rewind->reset();
+
     // Always fully close/reset the in-game menu so it doesn't carry over
-    // to the next game. Escape can exit mid-menu leaving slots loaded.
     if (m_inGameMenu) m_inGameMenu->close();
     if (m_saveStates && m_core->isGameLoaded()) {
         SDL_Surface* screenshot = m_saveStates->captureCleanScreenshot();
@@ -703,13 +843,40 @@ void HaackApp::toggleFullscreen() {
     m_haackSettings.fullscreen = goingFs;
 }
 
-// ─── takeScreenshot ───────────────────────────────────────────────────────────
-// Captures the clean game framebuffer (no UI overlays) and saves it to:
-//   screenshots/[game title]/[YYYY-MM-DD_HH-MM-SS].png
+// ─── stripRomRegion ───────────────────────────────────────────────────────────
+// Strips region / revision tags from a ROM filename stem so it matches
+// the clean name ScreenScraper uses for its media folders.
 //
-// Uses captureCleanScreenshot() so the saved image is pure gameplay,
-// identical to what save state thumbnails use. The folder is created
-// automatically. A brief on-screen notification confirms the save.
+// Rules (applied left-to-right, all parenthetical/bracketed groups stripped):
+//   (USA)  (Europe)  (Japan)  (World)  (En)  etc.  → removed
+//   (Rev X)  (v1.0)  (Disc 1)                       → removed
+//   [!]  [b]  [h]  [T+Eng]                          → removed
+//   Leading/trailing whitespace trimmed after stripping.
+//
+// Examples:
+//   "Crash Bandicoot (USA)"              → "Crash Bandicoot"
+//   "Final Fantasy VII (USA) (Disc 1)"  → "Final Fantasy VII"
+//   "Castlevania - Symphony of the Night (USA) (Track 1)" → "Castlevania - Symphony of the Night"
+//   "Spyro the Dragon [!]"              → "Spyro the Dragon"
+//
+std::string HaackApp::stripRomRegion(const std::string& stem) {
+    // Remove all parenthetical (...) and bracketed [...] groups
+    static const std::regex tagPattern(R"(\s*[\(\[][^\)\]]*[\)\]])");
+    std::string result = std::regex_replace(stem, tagPattern, "");
+
+    // Trim leading/trailing whitespace
+    auto start = result.find_first_not_of(" \t");
+    auto end   = result.find_last_not_of(" \t");
+    if (start == std::string::npos) return stem; // nothing left — keep original
+    return result.substr(start, end - start + 1);
+}
+
+// ─── takeScreenshot ───────────────────────────────────────────────────────────
+// Captures the clean game framebuffer and saves it to:
+//   media/screenshots/[clean game title]/capture_YYYY-MM-DD_HH-MM-SS.png
+//
+// The folder name uses stripRomRegion() so it matches ScreenScraper's
+// "Crash Bandicoot" folder (not "Crash Bandicoot (USA)").
 void HaackApp::takeScreenshot() {
     if (!m_saveStates || !m_core->isGameLoaded()) return;
 
@@ -719,36 +886,34 @@ void HaackApp::takeScreenshot() {
         return;
     }
 
-    // Build output path: screenshots/[title]/[timestamp].png
-    // Derive title from the current game path (same logic as launchGame)
+    // Derive clean title from the ROM path
     std::string title = "Unknown";
     if (!m_currentGamePath.empty()) {
         fs::path p(m_currentGamePath);
-        title = p.stem().string();
+        title = stripRomRegion(p.stem().string());
     }
 
-    // Sanitize title for use as a folder name
-    std::string safeTitle = title;
+    // Sanitize for filesystem (strip invalid chars)
     const std::string invalid = "\\/:*?\"<>|";
-    for (auto& c : safeTitle)
+    for (auto& c : title)
         if (invalid.find(c) != std::string::npos) c = '_';
 
-    // Create directory
-    std::string dir = "screenshots/" + safeTitle + "/";
+    // Determine media dir (mirrors scraper logic)
+    std::string mediaDir = m_haackSettings.romsPath.empty()
+        ? "media/" : m_haackSettings.romsPath + "/media/";
+    std::string dir = mediaDir + "screenshots/" + title + "/";
     fs::create_directories(dir);
 
-    // Timestamp filename: YYYY-MM-DD_HH-MM-SS
+    // Timestamp filename
     time_t now = time(nullptr);
     tm* t = localtime(&now);
     char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", t);
-
+    strftime(timestamp, sizeof(timestamp), "capture_%Y-%m-%d_%H-%M-%S", t);
     std::string path = dir + timestamp + ".png";
 
-    // Save using SDL2_image
     if (IMG_SavePNG(shot, path.c_str()) == 0) {
         std::cout << "[Screenshot] Saved: " << path << "\n";
-        // TODO: brief on-screen notification (Phase 3 polish)
+        m_screenshotNotifyUntil = SDL_GetTicks() + 2000;
     } else {
         std::cerr << "[Screenshot] Failed to save: " << SDL_GetError() << "\n";
     }
@@ -789,21 +954,45 @@ void HaackApp::updateGameInput() {
 
         Sint16 l2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
         Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-        if (l2 > 8000) mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2);
 
-        // R2 = fast forward with hold delay — prevents accidental triggers.
-        // Track how long R2 has been held; only activate after FF_HOLD_DELAY_MS.
+        // ── L2: rewind with hold delay ─────────────────────────────────────
+        // L2 as a PS1 button is also needed in-game, so we treat a SHORT press
+        // as the PS1 L2 button, and activate rewind only after REWIND_HOLD_DELAY_MS.
+        // This mirrors how FF works on R2.
+        if (l2 > 8000) {
+            mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2); // pass through always
+            if (m_rewindHeldSince == 0)
+                m_rewindHeldSince = SDL_GetTicks();
+            if (SDL_GetTicks() - m_rewindHeldSince >= REWIND_HOLD_DELAY_MS) {
+                m_rewinding = true;
+                // Don't pass L2 to the game while rewinding
+                mask &= ~(1 << RETRO_DEVICE_ID_JOYPAD_L2);
+            }
+        } else {
+            m_rewinding       = false;
+            m_rewindHeldSince = 0;
+            // Clear rumble timer when released
+            if (!m_fastForward) m_rumbleNextAt = 0;
+            // Also clear backtick hold (they share the same rewind state)
+            const Uint8* ks2 = SDL_GetKeyboardState(nullptr);
+            if (!ks2[SDL_SCANCODE_GRAVE]) {
+                m_rewinding       = false;
+                m_rewindHeldSince = 0;
+            }
+        }
+
+        // R2 = fast forward with hold delay
         if (r2 > 8000) {
             if (m_ffHeldSince == 0)
                 m_ffHeldSince = SDL_GetTicks();
             if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
                 m_fastForward = true;
         } else {
-            // R2 released — clear FF only if F key also not held
             const Uint8* ks2 = SDL_GetKeyboardState(nullptr);
             if (!ks2[SDL_SCANCODE_F]) {
                 m_fastForward = false;
                 m_ffHeldSince = 0;
+                if (!m_rewinding) m_rumbleNextAt = 0;
             }
         }
 
@@ -818,6 +1007,14 @@ void HaackApp::updateGameInput() {
             m_ffHeldSince = SDL_GetTicks();
         if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
             m_fastForward = true;
+    }
+
+    // Backtick / grave = rewind
+    if (ks[SDL_SCANCODE_GRAVE]) {
+        if (m_rewindHeldSince == 0)
+            m_rewindHeldSince = SDL_GetTicks();
+        if (SDL_GetTicks() - m_rewindHeldSince >= REWIND_HOLD_DELAY_MS)
+            m_rewinding = true;
     }
 
     if (ks[SDL_SCANCODE_X])         mask |= (1 << RETRO_DEVICE_ID_JOYPAD_B);

@@ -357,10 +357,12 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
         std::string type;       // ScreenScraper media type key
         std::string filename;   // Output filename inside the per-game folder
     };
+    // Order: fanart first (most visually striking), then in-game screenshot,
+    // then title screen. User capture screenshots sort after by timestamp prefix.
     const std::vector<MediaSlot> screenshotSlots = {
-        { "screenshot", "01_screenshot.jpg"  },
-        { "ss",         "02_titlescreen.jpg" },
-        { "fanart",     "03_fanart.jpg"      },
+        { "fanart",     "01_fanart.jpg"      },  // shown first in details panel
+        { "screenshot", "02_screenshot.jpg"  },  // in-game action shot
+        { "ss",         "03_titlescreen.jpg" },  // title screen last
     };
 
     for (const auto& slot : screenshotSlots) {
