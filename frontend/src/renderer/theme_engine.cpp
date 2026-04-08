@@ -301,66 +301,77 @@ void ThemeEngine::measureText(const std::string& text, FontSize size,
 // ─── Game card ────────────────────────────────────────────────────────────────
 void ThemeEngine::drawGameCard(const SDL_Rect& r, const std::string& title,
                                 bool selected, bool isMultiDisc, int discCount,
-                                SDL_Texture* coverArt, float selectionAnim)
+                                SDL_Texture* coverArt, float selectionAnim,
+                                bool isFavorite)
 {
-    const int RADIUS = 10;
+    (void)title; // title shown in bottom bar, not on card
 
-    // Shadow (only for selected card, grows with animation)
-    if (selected) {
-        int spread = (int)(8 * selectionAnim);
-        drawShadow(r, RADIUS, spread);
-    }
-
-    // Card background
-    SDL_Color bg = selected
-        ? SDL_Color{ (Uint8)Ease::lerp(m_palette.bgCard.r, m_palette.bgCardHover.r, selectionAnim),
-                     (Uint8)Ease::lerp(m_palette.bgCard.g, m_palette.bgCardHover.g, selectionAnim),
-                     (Uint8)Ease::lerp(m_palette.bgCard.b, m_palette.bgCardHover.b, selectionAnim),
-                     255 }
-        : m_palette.bgCard;
-
-    drawRoundRect(r, bg, RADIUS);
-
-    // Selection accent border
-    if (selected) {
-        Uint8 alpha = (Uint8)(255 * selectionAnim);
-        SDL_Color accent = m_palette.accent;
-        accent.a = alpha;
-        drawRoundRectOutline(r, accent, RADIUS, 3);
-    }
-
-    // Cover art area (top portion of card, ~70% of height)
-    int coverH = (int)(r.h * 0.68f);
-    SDL_Rect coverRect = { r.x + 4, r.y + 4, r.w - 8, coverH };
+    // ── Cover art — fit inside card, preserve aspect ratio ───────────────────
+    // img = the actual drawn image rect (may be smaller than r if art isn't
+    // exactly the card's aspect ratio). ALL overlays (border, badges, bookmark)
+    // reference img so they always align with the image edges, never the card.
+    SDL_Rect img = r; // default: image fills card (used for placeholder too)
 
     if (coverArt) {
-        SDL_RenderCopy(m_renderer, coverArt, nullptr, &coverRect);
+        int texW = 0, texH = 0;
+        SDL_QueryTexture(coverArt, nullptr, nullptr, &texW, &texH);
+        if (texW > 0 && texH > 0) {
+            float scale = std::min((float)r.w / texW, (float)r.h / texH);
+            int dw = (int)(texW * scale);
+            int dh = (int)(texH * scale);
+            img = { r.x + (r.w - dw) / 2,
+                    r.y + (r.h - dh) / 2, dw, dh };
+        }
+        SDL_RenderCopy(m_renderer, coverArt, nullptr, &img);
     } else {
-        // Placeholder cover art: gradient-style dark rect with PS1 icon style
-        drawRoundRect(coverRect, m_palette.bgPanel, 6);
-
-        // Draw a stylized "?" or PS1-ish placeholder
-        SDL_Color iconColor = selected ? m_palette.accent : m_palette.textDisable;
-        drawTextCentered("?", coverRect.x + coverRect.w/2,
-                         coverRect.y + coverRect.h/2 - 16,
-                         iconColor, FontSize::HERO);
+        // Placeholder: card-coloured background + big ?
+        drawRoundRect(img, m_palette.bgCard, 8);
+        SDL_Color iconCol = selected ? m_palette.accent : m_palette.textDisable;
+        drawTextCentered("?", img.x + img.w/2,
+                         img.y + img.h/2 - (int)FontSize::HERO/2,
+                         iconCol, FontSize::HERO);
     }
 
-    // Title text (bottom portion of card)
-    int titleY = r.y + coverH + 8;
-    int titleMaxW = r.w - 10;
-    drawTextTruncated(title, r.x + 5, titleY, titleMaxW,
-                      selected ? m_palette.textPrimary : m_palette.textSecond,
-                      FontSize::SMALL);
+    // ── All overlays reference img, not r ─────────────────────────────────────
+    // This ensures border, disc badge and bookmark always sit on the image
+    // edges regardless of the image's aspect ratio or the card's dimensions.
 
-    // Multi-disc badge (top-right corner)
+    // Selection border — accent outline drawn on image edges
+    if (selected) {
+        Uint8 alpha  = (Uint8)(255 * selectionAnim);
+        int   spread = (int)(6 * selectionAnim);
+        drawShadow(img, 6, spread);
+        SDL_Color accent = m_palette.accent;
+        accent.a = alpha;
+        drawRoundRectOutline(img, accent, 6, 3);
+    }
+
+    // Disc badge — top-LEFT of image (metadata tag, like a product label)
     if (isMultiDisc) {
         std::string badge = std::to_string(discCount) + "D";
-        int bw = 28, bh = 18;
-        SDL_Rect badgeRect = { r.x + r.w - bw - 4, r.y + 4, bw, bh };
-        drawRoundRect(badgeRect, m_palette.multiDisc, 4);
-        drawTextCentered(badge, badgeRect.x + bw/2, badgeRect.y + 2,
-                         m_palette.white, FontSize::TINY);
+        int tw = 0, th = 0;
+        measureText(badge, FontSize::SMALL, tw, th);
+        int bw = tw + 10;
+        int bh = th + 6;
+        // Anchor to image top-left corner
+        SDL_Rect badgeRect = { img.x + 3, img.y + 3, bw, bh };
+        drawRoundRect(badgeRect, m_palette.multiDisc, 3);
+        drawTextCentered(badge, badgeRect.x + bw/2,
+                         badgeRect.y + (bh - th) / 2,
+                         m_palette.white, FontSize::SMALL);
+    }
+
+    // Bookmark — top-RIGHT of image, slightly inset from right edge.
+    // Height ~20% of image height so it's tasteful. Hangs from the top edge.
+    if (isFavorite) {
+        int bw = std::max(10, img.w * 9 / 100);
+        int bh = std::max(18, img.h * 20 / 100);
+        // Sit just inside the right edge of the image
+        int bx = img.x + img.w - bw - img.w / 14;
+        int by = img.y; // hangs from top of image
+        SDL_Color gold    = { 255, 200, 40, 235 };
+        SDL_Color outline = { 160, 110,  5, 220 };
+        drawBookmark(bx, by, bw, bh, gold, outline);
     }
 }
 
@@ -376,27 +387,34 @@ void ThemeEngine::drawHeader(int w, int /*h*/, const std::string& title,
     drawLine(0, m_layout.headerH - 2, w, m_layout.headerH - 2, m_palette.accent);
     drawLine(0, m_layout.headerH - 1, w, m_layout.headerH - 1, m_palette.accentDim);
 
-    // Title
-    drawText(title, 24, 14, m_palette.textPrimary, FontSize::HEADER);
+    // Title — vertically centred in header
+    int titleY = (m_layout.headerH - (int)FontSize::HEADER) / 2 - 2;
+    drawText(title, 28, titleY, m_palette.textPrimary, FontSize::HEADER);
 
-    // Subtitle (version or current filter)
+    // Subtitle (version string)
     if (!subtitle.empty()) {
         int tw, th;
         measureText(title, FontSize::HEADER, tw, th);
-        drawText(subtitle, 24 + tw + 12, 22, m_palette.textSecond, FontSize::BODY);
+        int subY = titleY + (int)FontSize::HEADER - (int)FontSize::BODY - 2;
+        drawText(subtitle, 28 + tw + 14, subY, m_palette.textSecond, FontSize::BODY);
     }
 
     // Game count (right-aligned)
-    std::string countStr = std::to_string(gameCount) + " game" + (gameCount != 1 ? "s" : "");
-    int cw, ch;
-    measureText(countStr, FontSize::BODY, cw, ch);
-    drawText(countStr, w - cw - 24, (m_layout.headerH - ch) / 2,
-             m_palette.textSecond, FontSize::BODY);
+    if (gameCount > 0) {
+        std::string countStr = std::to_string(gameCount) + " game" + (gameCount != 1 ? "s" : "");
+        int cw, ch;
+        measureText(countStr, FontSize::BODY, cw, ch);
+        drawText(countStr, w - cw - 28, (m_layout.headerH - ch) / 2,
+                 m_palette.textSecond, FontSize::BODY);
+    }
 }
 
 // ─── Footer button hints ──────────────────────────────────────────────────────
-void ThemeEngine::drawFooterHints(int w, int h, const std::string& confirmLabel,
-                                   const std::string& optionsLabel)
+void ThemeEngine::drawFooterHints(int w, int h,
+                                   const std::string& confirmLabel,
+                                   const std::string& backLabel,
+                                   const std::string& xLabel,
+                                   const std::string& yLabel)
 {
     int y = h - m_layout.footerH;
 
@@ -405,33 +423,165 @@ void ThemeEngine::drawFooterHints(int w, int h, const std::string& confirmLabel,
     drawRect(bar, m_palette.bgPanel);
     drawLine(0, y, w, y, m_palette.gridLine);
 
-    int xPos = 24;
-    int cy = y + m_layout.footerH / 2 - 10;
+    int xPos = 28;
+    int cy   = y + (m_layout.footerH - 34) / 2;
 
-    // Cross / A button
+    // A = confirm/launch
     drawButtonHint(xPos, cy, "A", confirmLabel, m_palette.accent);
-    xPos += 120;
+    xPos += 160;
 
-    // Circle / B button
-    drawButtonHint(xPos, cy, "B", "Back", m_palette.textSecond);
-    xPos += 100;
+    // B = back (always shown)
+    std::string bLabel = backLabel.empty() ? "Back" : backLabel;
+    drawButtonHint(xPos, cy, "B", bLabel, m_palette.textSecond);
+    xPos += 150;
 
-    // Triangle / Y button
-    if (!optionsLabel.empty()) {
-        drawButtonHint(xPos, cy, "Y", optionsLabel, m_palette.textSecond);
+    // X = tertiary action (e.g. Details)
+    if (!xLabel.empty()) {
+        drawButtonHint(xPos, cy, "X", xLabel, m_palette.textSecond);
+        xPos += 150;
+    }
+
+    // Y = quaternary action (e.g. Favorite)
+    if (!yLabel.empty()) {
+        drawButtonHint(xPos, cy, "Y", yLabel, m_palette.textSecond);
     }
 }
 
 void ThemeEngine::drawButtonHint(int x, int y, const std::string& button,
                                   const std::string& label, SDL_Color btnColor)
 {
-    // Button circle
-    SDL_Rect circle = { x, y, 24, 24 };
-    drawRoundRect(circle, btnColor, 12);
-    drawTextCentered(button, x + 12, y + 4, m_palette.white, FontSize::TINY);
+    // Button circle — sized for TV readability
+    const int BTN_SIZE = 34;
+    SDL_Rect circle = { x, y, BTN_SIZE, BTN_SIZE };
+    drawRoundRect(circle, btnColor, BTN_SIZE / 2);
+    // Centre letter vertically: (BTN_SIZE - font_height) / 2
+    // FontSize::SMALL pt is roughly that many pixels tall
+    int textY = y + (BTN_SIZE - (int)FontSize::SMALL) / 2 - 1;
+    drawTextCentered(button, x + BTN_SIZE / 2, textY, m_palette.white, FontSize::SMALL);
 
-    // Label
-    drawText(label, x + 30, y + 4, m_palette.textSecond, FontSize::SMALL);
+    // Label — vertically aligned with button centre
+    drawText(label, x + BTN_SIZE + 8, textY, m_palette.textSecond, FontSize::SMALL);
+}
+
+// ─── Star polygon ────────────────────────────────────────────────────────────
+// Draws a filled 5-point star centred at (cx,cy). Uses scanline fill so it
+// works on any SDL renderer without geometry extensions.
+void ThemeEngine::drawStar(int cx, int cy, int outerR, SDL_Color fill, SDL_Color outline) {
+    // Build the 10 vertices of a 5-point star (alternating outer/inner points)
+    const int    POINTS  = 5;
+    const float  PI      = 3.14159265f;
+    const float  innerR  = outerR * 0.42f; // classic star inner/outer ratio
+    const float  startA  = -PI / 2.f;      // top point
+
+    float vx[10], vy[10];
+    for (int i = 0; i < POINTS * 2; i++) {
+        float angle  = startA + i * (PI / POINTS);
+        float radius = (i % 2 == 0) ? (float)outerR : innerR;
+        vx[i] = cx + radius * std::cos(angle);
+        vy[i] = cy + radius * std::sin(angle);
+    }
+
+    // Scanline fill — find y min/max
+    float yMin = vy[0], yMax = vy[0];
+    for (int i = 1; i < 10; i++) {
+        if (vy[i] < yMin) yMin = vy[i];
+        if (vy[i] > yMax) yMax = vy[i];
+    }
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, fill.r, fill.g, fill.b, fill.a);
+
+    for (int y = (int)yMin; y <= (int)yMax; y++) {
+        // Find all x intersections of the scanline with polygon edges
+        float xs[10];
+        int   cnt = 0;
+        for (int i = 0; i < 10; i++) {
+            int j = (i + 1) % 10;
+            float y0 = vy[i], y1 = vy[j];
+            if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+                float t = (y - y0) / (y1 - y0);
+                xs[cnt++] = vx[i] + t * (vx[j] - vx[i]);
+            }
+        }
+        // Sort intersections and fill between pairs
+        for (int a = 0; a < cnt - 1; a++)
+            for (int b = a + 1; b < cnt; b++)
+                if (xs[a] > xs[b]) { float tmp = xs[a]; xs[a] = xs[b]; xs[b] = tmp; }
+        for (int k = 0; k + 1 < cnt; k += 2)
+            SDL_RenderDrawLine(m_renderer, (int)xs[k], y, (int)xs[k+1], y);
+    }
+
+    // Draw outline
+    SDL_SetRenderDrawColor(m_renderer, outline.r, outline.g, outline.b, outline.a);
+    for (int i = 0; i < 10; i++) {
+        int j = (i + 1) % 10;
+        SDL_RenderDrawLine(m_renderer, (int)vx[i], (int)vy[i], (int)vx[j], (int)vy[j]);
+    }
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+}
+
+// ─── Bookmark badge ──────────────────────────────────────────────────────────
+// Bookmark ribbon matching the standard icon: a rectangle where the bottom
+// has a V-notch cut upward from the centre.
+//
+// Shape (viewed from front):
+//   ┌──────┐   ← top edge (y)
+//   │      │   ← straight sides
+//   │      │
+//   └─┐  ┌─┘   ← bottom corners (y + bh)
+//      \/       ← notch apex points UP, sits notchDepth above bottom corners
+//
+// So the two OUTER bottom corners are at y+bh, and the notch apex is ABOVE them.
+// This matches the standard bookmark/ribbon icon shape.
+void ThemeEngine::drawBookmark(int x, int y, int bw, int bh,
+                                SDL_Color fill, SDL_Color outline) {
+    int midX      = x + bw / 2;
+    int bottomY   = y + bh;          // outer bottom corners
+    int notchDepth= bh / 3;          // how far up the apex sits from the bottom
+    int apexY     = bottomY - notchDepth; // V-notch apex Y (above bottom corners)
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+
+    // ── Fill — scanline from top to bottom ───────────────────────────────────
+    SDL_SetRenderDrawColor(m_renderer, fill.r, fill.g, fill.b, fill.a);
+
+    for (int sy = y; sy <= bottomY; sy++) {
+        if (sy <= apexY) {
+            // Above the notch zone: full-width horizontal line
+            SDL_RenderDrawLine(m_renderer, x, sy, x + bw - 1, sy);
+        } else {
+            // Inside the notch zone: two separate segments either side of the V.
+            // The notch opens from width=0 at apexY to full-width at bottomY.
+            float t = (float)(sy - apexY) / (float)(bottomY - apexY);
+            // Left segment: x  →  midX - gap
+            // Right segment: midX + gap  →  x+bw-1
+            // gap grows from 0 at apex to bw/2 at bottom
+            int gap = (int)(t * (bw / 2));
+            int leftEnd    = midX - gap;
+            int rightStart = midX + gap;
+            if (leftEnd > x)
+                SDL_RenderDrawLine(m_renderer, x, sy, leftEnd - 1, sy);
+            if (rightStart < x + bw)
+                SDL_RenderDrawLine(m_renderer, rightStart, sy, x + bw - 1, sy);
+        }
+    }
+
+    // ── Outline — trace the perimeter ────────────────────────────────────────
+    // Top → right side → right bottom corner → right diagonal up to apex
+    //      → left diagonal down to left bottom corner → left side → top
+    SDL_SetRenderDrawColor(m_renderer, outline.r, outline.g, outline.b, outline.a);
+    // Top edge
+    SDL_RenderDrawLine(m_renderer, x,        y,       x + bw - 1, y);
+    // Right vertical side
+    SDL_RenderDrawLine(m_renderer, x + bw - 1, y,     x + bw - 1, bottomY);
+    // Right diagonal: bottom-right corner up to apex
+    SDL_RenderDrawLine(m_renderer, x + bw - 1, bottomY, midX,     apexY);
+    // Left diagonal: apex down to bottom-left corner
+    SDL_RenderDrawLine(m_renderer, midX,      apexY,   x,         bottomY);
+    // Left vertical side
+    SDL_RenderDrawLine(m_renderer, x,         bottomY, x,         y);
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 }
 
 // ─── Scrollbar ────────────────────────────────────────────────────────────────

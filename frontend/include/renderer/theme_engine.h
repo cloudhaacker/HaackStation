@@ -36,39 +36,67 @@ struct Palette {
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 struct Layout {
-    // Game shelf grid
-    int cardW         = 160;   // Game card width
-    int cardH         = 220;   // Game card height (taller than wide, like a box)
-    int cardPadX      = 18;    // Horizontal gap between cards
+    // ── Grid geometry — all derived in recalculate(), never set directly ──────
+    int cardW         = 200;   // Derived from column count + window width
+    int cardH         = 260;   // Derived from cardW (PS1 box is ~0.72 aspect: w*1.3)
+    int cardPadX      = 20;    // Horizontal gap between cards
     int cardPadY      = 24;    // Vertical gap between cards
     int shelfPadLeft  = 48;    // Left margin of the shelf
-    int shelfPadTop   = 120;   // Top margin (below header bar)
+    int shelfPadTop   = 130;   // Top margin (below header bar)
 
     // Header bar
-    int headerH       = 80;    // Height of top bar
+    int headerH       = 90;    // Height of top bar (larger for TV)
 
     // Footer hint bar
-    int footerH       = 48;    // Height of bottom button hint bar
+    int footerH       = 60;    // Height of bottom button hint bar (larger for TV)
 
-    // Cards per row (recalculated on window resize)
-    int cardsPerRow   = 6;
+    // Cards per row (set by recalculate based on library size)
+    int cardsPerRow   = 4;
 
-    void recalculate(int windowW, int windowH) {
-        // How many cards fit across with padding
+    // recalculate() — call whenever window resizes OR library changes.
+    // gameCount drives column choice; card dimensions fill available width.
+    // Always pass gameCount so column count stays correct every frame.
+    void recalculate(int windowW, int windowH, int gameCount = -1) {
+        // ── Choose column count based on library size ─────────────────────────
+        // gameCount == -1 means "keep current cardsPerRow" (called from render
+        // without a count — don't override what was set by rebuildActiveList).
+        if (gameCount >= 0) {
+            if      (gameCount <  7)  cardsPerRow = 3;  // small: 3 nice big cards
+            else if (gameCount < 20)  cardsPerRow = 4;  // medium: 4 columns
+            else if (gameCount < 50)  cardsPerRow = 5;  // large: 5 columns
+            else                      cardsPerRow = 6;  // very large: 6 max
+        }
+
+        // ── Derive card size from column count and available width ────────────
+        // Cards fill the shelf width exactly — padding between, margin at sides.
+        // shelfPadLeft is the outer margin; inner gaps are cardPadX.
         int available = windowW - shelfPadLeft * 2;
-        cardsPerRow = std::max(2, available / (cardW + cardPadX));
+        cardW = (available - cardPadX * (cardsPerRow - 1)) / cardsPerRow;
+        cardW = std::max(120, cardW); // safety floor only, no ceiling
+
+        // PS1 case art with PlayStation spine is roughly square.
+        // Title strip (~20%) below image area makes card slightly taller.
+        // PS1 cases are slightly portrait (spine + cover ~1:1.05).
+        // We use a mild portrait ratio so the card area suits the art naturally.
+        // Cover art is drawn fit-to-card (letterbox/pillarbox with shelf bg
+        // showing through gaps) so any aspect ratio image looks correct.
+        cardH = (int)(cardW * 1.05f);
+
+        // shelfPadTop must fit: headerH + shelf-indicator bar (name + dots + margin)
+        // Shelf indicator needs ~46px: name text (~22px) + dots row (~14px) + gaps
+        shelfPadTop = headerH + 50;
         (void)windowH;
     }
 };
 
 // ─── Font sizes ───────────────────────────────────────────────────────────────
 enum class FontSize {
-    TINY   = 11,
-    SMALL  = 14,
-    BODY   = 18,
-    TITLE  = 24,
-    HEADER = 32,
-    HERO   = 48,
+    TINY   = 14,   // was 11 — readable at TV distance
+    SMALL  = 17,   // was 14
+    BODY   = 22,   // was 18
+    TITLE  = 28,   // was 24
+    HEADER = 38,   // was 32
+    HERO   = 56,   // was 48
 };
 
 // ─── Easing functions ────────────────────────────────────────────────────────
@@ -113,15 +141,25 @@ public:
     void drawGameCard(const SDL_Rect& r, const std::string& title,
                       bool selected, bool isMultiDisc, int discCount,
                       SDL_Texture* coverArt = nullptr,
-                      float selectionAnim = 1.f);
+                      float selectionAnim = 1.f,
+                      bool isFavorite = false);
 
     // ── UI components ─────────────────────────────────────────────────────────
     void drawHeader(int w, int h, const std::string& title,
                     const std::string& subtitle, int gameCount);
     void drawFooterHints(int w, int h,
                          const std::string& confirmLabel = "Launch",
-                         const std::string& optionsLabel = "Options");
+                         const std::string& backLabel    = "Back",
+                         const std::string& xLabel       = "",
+                         const std::string& yLabel       = "");
     void drawScrollBar(int x, int y, int h, int total, int visible, int offset);
+
+    // Draw a filled 5-point star centred at (cx, cy) with outer radius r
+    void drawStar(int cx, int cy, int outerR, SDL_Color fill, SDL_Color outline);
+
+    // Draw a bookmark shape (rectangle with triangular notch cut from bottom)
+    // Top-left corner at (x, y), width bw, total height bh
+    void drawBookmark(int x, int y, int bw, int bh, SDL_Color fill, SDL_Color outline);
     void drawLoadingSpinner(int cx, int cy, float angle, SDL_Color c);
     void drawButtonHint(int x, int y, const std::string& button,
                         const std::string& label, SDL_Color btnColor);
@@ -131,7 +169,7 @@ public:
     const Layout&  layout()  const { return m_layout; }
     Layout&        layout()        { return m_layout; }
 
-    void onWindowResize(int w, int h) { m_layout.recalculate(w, h); }
+    void onWindowResize(int w, int h, int gameCount = 0) { m_layout.recalculate(w, h, gameCount); }
 
 private:
     TTF_Font* getFont(FontSize size, bool displayFont = false);

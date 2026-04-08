@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 #include <memory>
 #include <string>
+#include <vector>
 #include "settings_screen.h"
 #include "scrape_screen.h"
 #include "game_scraper.h"
@@ -10,6 +11,10 @@
 #include "ra_manager.h"
 #include "game_details_panel.h"
 #include "play_history.h"
+#include "per_game_settings.h"
+#include "per_game_settings_screen.h"
+#include "disc_memory.h"
+#include "favorites.h"
 #include "rewind_manager.h"   // ← NEW
 
 class GameBrowser;
@@ -41,9 +46,12 @@ public:
     void stopGame();
     void toggleFullscreen();
     void applySettings();
+    void applyPerGameSettings(const std::string& gamePath, const std::string& serial);
+    void revertPerGameSettings(); // restore global settings after game exits
     void saveRaToken(const std::string& token);
     void processInGameMenuActions();
-    void takeScreenshot();          // Save framebuffer to screenshots/ folder
+    void takeScreenshot();          // Save game framebuffer to screenshots/
+    void takeUIScreenshot();        // F10 — capture any screen to screenshots/HaackStation/
 
 private:
     void init();
@@ -61,6 +69,7 @@ private:
     // from a ROM filename stem so screenshot folders match ScreenScraper names.
     // e.g. "Crash Bandicoot (USA)" → "Crash Bandicoot"
     static std::string stripRomRegion(const std::string& stem);
+    static std::vector<std::string> parseM3uDiscs(const std::string& path);
 
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
@@ -78,8 +87,12 @@ private:
     std::unique_ptr<SaveStateManager> m_saveStates;
     std::unique_ptr<InGameMenu>       m_inGameMenu;
     std::unique_ptr<RAManager>        m_ra;
-    std::unique_ptr<GameDetailsPanel> m_details;
+    std::unique_ptr<GameDetailsPanel>        m_details;
+    std::unique_ptr<PerGameSettingsScreen>   m_perGameScreen;
     std::unique_ptr<PlayHistory>      m_playHistory;
+    DiscMemory                         m_discMemory;  // persists last disc per game
+    PerGameSettings                    m_perGameSettings; // per-game overrides
+    FavoriteManager                    m_favorites;   // persists favorited games
     std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
 
     Uint32 m_inputCooldownUntil = 0;

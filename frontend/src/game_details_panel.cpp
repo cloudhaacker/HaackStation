@@ -280,28 +280,46 @@ void GameDetailsPanel::renderCoverHero() {
     int panelX      = m_w - panelW + slideOffset;
     int shelfW      = panelX;
 
-    int coverW = (int)(shelfW * 0.55f);
-    int coverH = (int)(coverW * 1.25f);
-    int coverX = (shelfW - coverW) / 2;
-    int coverY = (m_h - coverH) / 2;
+    // Maximum bounds the cover can occupy (55% of shelf width, centred)
+    int maxW = (int)(shelfW * 0.55f);
+    int maxH = (int)(m_h * 0.70f);  // never taller than 70% of screen height
+    int areaX = (shelfW - maxW) / 2;
+    int areaY = (m_h - maxH) / 2;
 
+    // Compute actual image rect using the same fit-to-box logic as the shelf cards:
+    // scale uniformly so the image fits within maxW × maxH, preserving aspect ratio.
+    // img is the ONLY rect that matters — shadow, image and title all reference it.
+    SDL_Rect img = { areaX, areaY, maxW, maxH }; // fallback if texture query fails
+    {
+        int texW = 0, texH = 0;
+        SDL_QueryTexture(m_coverTexture, nullptr, nullptr, &texW, &texH);
+        if (texW > 0 && texH > 0) {
+            float scale = std::min((float)maxW / texW, (float)maxH / texH);
+            int dw = (int)(texW * scale);
+            int dh = (int)(texH * scale);
+            img = { areaX + (maxW - dw) / 2,
+                    areaY + (maxH - dh) / 2, dw, dh };
+        }
+    }
+
+    // Shadow — behind the image rect only, so it exactly traces the cover edge
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 120);
-    SDL_Rect shadow = { coverX + 8, coverY + 8, coverW, coverH };
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 130);
+    SDL_Rect shadow = { img.x + 10, img.y + 10, img.w, img.h };
     SDL_RenderFillRect(m_renderer, &shadow);
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-    SDL_Rect coverRect = { coverX, coverY, coverW, coverH };
-    SDL_RenderCopy(m_renderer, m_coverTexture, nullptr, &coverRect);
+    // Draw image — no background fill behind or around it, dimmed shelf shows through
+    SDL_RenderCopy(m_renderer, m_coverTexture, nullptr, &img);
 
     m_theme->drawTextCentered(m_game.title,
-        shelfW / 2, coverY + coverH + 16,
+        shelfW / 2, img.y + img.h + 16,
         m_theme->palette().textPrimary, FontSize::BODY);
 
     if (m_game.isMultiDisc) {
         std::string discStr = std::to_string(m_game.discCount) + " discs";
         m_theme->drawTextCentered(discStr,
-            shelfW / 2, coverY + coverH + 40,
+            shelfW / 2, img.y + img.h + 40,
             m_theme->palette().multiDisc, FontSize::SMALL);
     }
 }

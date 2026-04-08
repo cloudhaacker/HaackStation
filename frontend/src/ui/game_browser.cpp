@@ -4,8 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
-static constexpr float SCROLL_SPRING      = 12.f;
-static constexpr float SCROLL_DAMP        = 0.75f;
+static constexpr float SCROLL_SPRING      = 22.f;   // was 12 — snappier scroll
+static constexpr float SCROLL_DAMP        = 0.82f;   // was 0.75 — less oscillation
 static constexpr float SELECTION_ANIM_SPD = 8.f;
 static constexpr float LAUNCH_ANIM_SPD    = 3.f;
 
@@ -16,7 +16,7 @@ GameBrowser::GameBrowser(SDL_Renderer* renderer, ThemeEngine* theme, ControllerN
     : m_renderer(renderer), m_theme(theme), m_nav(nav), m_wantsDetails(false)
 {
     SDL_GetRendererOutputSize(renderer, &m_windowW, &m_windowH);
-    m_theme->layout().recalculate(m_windowW, m_windowH);
+    m_theme->layout().recalculate(m_windowW, m_windowH, 0);
 }
 
 GameBrowser::~GameBrowser() {
@@ -32,6 +32,7 @@ void GameBrowser::setLibrary(const std::vector<GameEntry>& games) {
     m_scrollOffset = 0.f;
     m_scrollTarget = 0.f;
     rebuildActiveList();
+    m_theme->layout().recalculate(m_windowW, m_windowH, (int)m_activeGames.size());
     std::cout << "[GameBrowser] Library set: " << games.size() << " games\n";
 }
 
@@ -70,7 +71,17 @@ void GameBrowser::rebuildActiveList() {
             break;
 
         case ShelfMode::FAVORITES:
-            // Phase 4 — stub, empty for now
+            if (m_favorites) {
+                for (const auto& favPath : m_favorites->paths()) {
+                    for (int i = 0; i < (int)m_allGames.size(); i++) {
+                        if (m_allGames[i].path == favPath) {
+                            m_activeGames.push_back(m_allGames[i]);
+                            m_activeToAllIndex.push_back(i);
+                            break;
+                        }
+                    }
+                }
+            }
             break;
     }
 
@@ -81,6 +92,9 @@ void GameBrowser::rebuildActiveList() {
         m_state = BrowserState::EMPTY;    // Shelf is empty (no history, no favorites)
     else
         m_state = BrowserState::BROWSING;
+
+    // Recalculate layout with the new game count so column count is correct
+    m_theme->layout().recalculate(m_windowW, m_windowH, (int)m_activeGames.size());
 
     std::cout << "[GameBrowser] Shelf '" << SHELF_NAMES[(int)m_shelfMode]
               << "': " << m_activeGames.size() << " games\n";
@@ -99,8 +113,9 @@ void GameBrowser::cycleShelf(int direction) {
 void GameBrowser::onWindowResize(int w, int h) {
     m_windowW = w;
     m_windowH = h;
-    m_theme->layout().recalculate(w, h);
-    m_theme->onWindowResize(w, h);
+    int count = (int)m_activeGames.size();
+    m_theme->layout().recalculate(w, h, count);
+    m_theme->onWindowResize(w, h, count);
 }
 
 // ─── Event handling ───────────────────────────────────────────────────────────
@@ -114,11 +129,24 @@ void GameBrowser::handleEvent(const SDL_Event& e) {
         return;
     }
 
+    // X button (SDL_CONTROLLER_BUTTON_X) = Details Panel
+    // Y button handled via NavAction::OPTIONS = Favorite toggle
+    if (e.type == SDL_CONTROLLERBUTTONDOWN &&
+        e.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
+        m_wantsDetails = true;
+        return;
+    }
+    // Keyboard: F2 = Details (same as before)
+    if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F2) {
+        m_wantsDetails = true;
+        return;
+    }
+
     NavAction action = m_nav->processEvent(e);
-    if (action != NavAction::NONE) moveSelection(action);
+    if (action != NavAction::NONE) moveSelection(action, false);
 }
 
-void GameBrowser::moveSelection(NavAction action) {
+void GameBrowser::moveSelection(NavAction action, bool isRepeat) {
     const auto& lay = m_theme->layout();
     int cols = lay.cardsPerRow;
 
@@ -152,9 +180,13 @@ void GameBrowser::moveSelection(NavAction action) {
         case NavAction::RIGHT: {
             int nextCol = m_selectedCol + 1;
             int nextIdx = m_selectedRow * cols + nextCol;
-            if (nextCol >= cols || nextIdx >= (int)m_activeGames.size()) {
-                // End of row or library — wrap to very first item
+            if (nextIdx >= (int)m_activeGames.size()) {
+                // Past the very last game — wrap to first item (fresh press only)
                 m_selectedRow = 0;
+                m_selectedCol = 0;
+            } else if (nextCol >= cols) {
+                // End of this row but more games exist — advance to next row
+                m_selectedRow++;
                 m_selectedCol = 0;
             } else {
                 m_selectedCol = nextCol;
@@ -165,14 +197,15 @@ void GameBrowser::moveSelection(NavAction action) {
         case NavAction::UP:
             if (m_selectedRow > 0) {
                 m_selectedRow--;
-            } else {
-                // Wrap: top → last row (clamp col if row is short)
+            } else if (!isRepeat) {
+                // Fresh press at top → wrap to last row
                 m_selectedRow = rows - 1;
                 int newIdx = selectedIndex();
                 if (newIdx >= (int)m_activeGames.size()) {
                     m_selectedCol = (int)m_activeGames.size() - m_selectedRow * cols - 1;
                     m_selectedCol = std::max(0, m_selectedCol);
                 }
+                // else clamp: hold at top (isRepeat && row==0 → do nothing)
             }
             break;
 
@@ -184,10 +217,11 @@ void GameBrowser::moveSelection(NavAction action) {
                     m_selectedCol = (int)m_activeGames.size() - m_selectedRow * cols - 1;
                     m_selectedCol = std::max(0, m_selectedCol);
                 }
-            } else {
-                // Wrap: last row → first row
+            } else if (!isRepeat) {
+                // Fresh press at bottom → wrap to first row
                 m_selectedRow = 0;
             }
+            // else clamp: hold at bottom → do nothing
             break;
 
         case NavAction::CONFIRM: {
@@ -204,8 +238,12 @@ void GameBrowser::moveSelection(NavAction action) {
         }
 
         case NavAction::OPTIONS:
-            m_wantsDetails = true;
+            // Y button = toggle favorite
+            m_wantsFavoriteToggle = true;
             break;
+
+        // NavAction::DETAILS handled via raw SDL_CONTROLLER_BUTTON_X
+        // check in handleEvent() below, not through the nav system
 
         default: break;
     }
@@ -222,7 +260,7 @@ void GameBrowser::update(float deltaMs) {
     // updateHeld fires every frame so d-pad hold works even between SDL events
     if (m_state == BrowserState::BROWSING) {
         NavAction held = m_nav->updateHeld(SDL_GetTicks());
-        if (held != NavAction::NONE) moveSelection(held);
+        if (held != NavAction::NONE) moveSelection(held, true);
     }
 
     float dt = deltaMs / 1000.f;
@@ -252,18 +290,19 @@ void GameBrowser::update(float deltaMs) {
 }
 
 void GameBrowser::ensureSelectionVisible() {
-    float visRows = (float)visibleRows();
-    if ((float)m_selectedRow < m_scrollTarget)
-        m_scrollTarget = (float)m_selectedRow;
-    else if ((float)m_selectedRow >= m_scrollTarget + visRows - 1)
-        m_scrollTarget = (float)m_selectedRow - visRows + 1.f;
-    m_scrollTarget = std::max(0.f, m_scrollTarget);
+    // Always snap scroll so the selected row sits at the top of the viewport.
+    // This means moving down always fully reveals the new row at the top,
+    // and moving up always brings the selected row into full view.
+    // Row 0 can't scroll above the top, so clamp to 0.
+    m_scrollTarget = std::max(0.f, (float)m_selectedRow);
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 void GameBrowser::render() {
     SDL_GetRendererOutputSize(m_renderer, &m_windowW, &m_windowH);
-    m_theme->layout().recalculate(m_windowW, m_windowH);
+    // Always recalculate with the real game count so columns are correct
+    // from first boot and after every shelf switch.
+    m_theme->layout().recalculate(m_windowW, m_windowH, (int)m_activeGames.size());
 
     const auto& pal = m_theme->palette();
     SDL_SetRenderDrawColor(m_renderer, pal.bg.r, pal.bg.g, pal.bg.b, 255);
@@ -295,7 +334,7 @@ void GameBrowser::render() {
     }
 
     // Footer — hint changes based on shelf availability
-    m_theme->drawFooterHints(m_windowW, m_windowH, "Launch", "Options");
+    m_theme->drawFooterHints(m_windowW, m_windowH, "Launch", "Back", "Details", "Favorite");
 
     if (totalRows() > visibleRows()) {
         m_theme->drawScrollBar(
@@ -324,9 +363,15 @@ void GameBrowser::renderShelfIndicator() {
     const auto& pal = m_theme->palette();
     const auto& lay = m_theme->layout();
 
-    // Position: just below header, above the shelf content
-    int barY = lay.shelfPadTop - 28;
-    if (barY < 50) barY = 50; // Safety clamp
+    // Position: centred in the gap between header bottom and shelfPadTop.
+    // shelfPadTop = headerH + 50, so we have 50px. Use middle of that space.
+    int gapStart = lay.headerH;
+    int gapEnd   = lay.shelfPadTop;
+    int barH     = gapEnd - gapStart; // 50px
+    // Name text is ~SMALL px tall; dots row is 8px; gap between = 6px
+    // Total block ≈ SMALL + 6 + 8 = ~31px → centre in 50px gap
+    int blockH2  = (int)FontSize::SMALL + 6 + 8;
+    int barY     = gapStart + (barH - blockH2) / 2;
 
     int cx = m_windowW / 2;
 
@@ -335,11 +380,11 @@ void GameBrowser::renderShelfIndicator() {
     m_theme->drawTextCentered(name, cx, barY, pal.accent, FontSize::SMALL);
 
     // Dot indicators
-    int dotSize    = 6;
-    int dotPad     = 10;
+    int dotSize    = 8;
+    int dotPad     = 12;
     int totalDotW  = NUM_SHELVES * dotSize + (NUM_SHELVES - 1) * dotPad;
     int dotStartX  = cx - totalDotW / 2;
-    int dotY       = barY + 18;
+    int dotY       = barY + (int)FontSize::SMALL + 6;
 
     for (int i = 0; i < NUM_SHELVES; i++) {
         int dx = dotStartX + i * (dotSize + dotPad);
@@ -357,17 +402,27 @@ void GameBrowser::renderShelfIndicator() {
         }
     }
 
-    // L1 / R1 arrows at edges
-    m_theme->drawText("< L1", lay.shelfPadLeft, barY, pal.textDisable, FontSize::TINY);
+    // L1 / R1 arrows — vertically centred with the shelf name
+    int l1Y = barY + ((int)FontSize::SMALL - (int)FontSize::TINY) / 2;
+    m_theme->drawText("< L1", lay.shelfPadLeft, l1Y, pal.textDisable, FontSize::TINY);
     int r1W = 0, r1H = 0;
     m_theme->measureText("R1 >", FontSize::TINY, r1W, r1H);
-    m_theme->drawText("R1 >", m_windowW - lay.shelfPadLeft - r1W, barY,
+    m_theme->drawText("R1 >", m_windowW - lay.shelfPadLeft - r1W, l1Y,
                        pal.textDisable, FontSize::TINY);
 }
 
 // ─── renderGrid ───────────────────────────────────────────────────────────────
 void GameBrowser::renderGrid() {
     const auto& lay = m_theme->layout();
+
+    // Clip to the shelf area so cards never render over the header or footer
+    SDL_Rect clipRect = {
+        0,
+        lay.shelfPadTop,
+        m_windowW,
+        m_windowH - lay.shelfPadTop - lay.footerH
+    };
+    SDL_RenderSetClipRect(m_renderer, &clipRect);
 
     for (int row = 0; row < totalRows(); row++) {
         for (int col = 0; col < lay.cardsPerRow; col++) {
@@ -381,6 +436,7 @@ void GameBrowser::renderGrid() {
             bool selected = (row == m_selectedRow && col == m_selectedCol);
             const GameEntry& game = m_activeGames[activeIdx];
 
+            bool favored = m_favorites && m_favorites->isFavorite(game.path);
             m_theme->drawGameCard(
                 r,
                 game.title,
@@ -388,24 +444,40 @@ void GameBrowser::renderGrid() {
                 game.isMultiDisc,
                 game.discCount,
                 activeCoverArt(activeIdx),
-                selected ? Ease::outQuad(m_selectionAnim) : 0.f
+                selected ? Ease::outQuad(m_selectionAnim) : 0.f,
+                favored
             );
         }
     }
 
-    // Selected game title above footer
+    // Restore full-screen clip before drawing the title bar
+    SDL_RenderSetClipRect(m_renderer, nullptr);
+
+    // Selected game title — drawn in a semi-transparent bar above the footer
+    // so it's always readable and never overlaps cards.
     if (selectionValid()) {
         const GameEntry& sel = *selectedGame();
+        const auto& pal      = m_theme->palette();
+        int lineH  = (int)FontSize::BODY + 4;
         int lineCount = sel.isMultiDisc ? 2 : 1;
-        int blockH    = lineCount * 24 + 8;
-        int infoY     = m_windowH - lay.footerH - blockH - 8;
+        int blockH = lineCount * lineH + 12;
+        int barY   = m_windowH - lay.footerH - blockH;
 
-        m_theme->drawTextCentered(sel.title, m_windowW / 2, infoY,
-                                   m_theme->palette().textPrimary, FontSize::BODY);
+        // Background bar so text reads cleanly over any card colour
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer,
+            pal.bg.r, pal.bg.g, pal.bg.b, 210);
+        SDL_Rect bar = { 0, barY, m_windowW, blockH };
+        SDL_RenderFillRect(m_renderer, &bar);
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+        int textY = barY + 6;
+        m_theme->drawTextCentered(sel.title, m_windowW / 2, textY,
+                                   pal.textPrimary, FontSize::BODY);
         if (sel.isMultiDisc) {
             std::string discInfo = std::to_string(sel.discCount) + " discs";
-            m_theme->drawTextCentered(discInfo, m_windowW / 2, infoY + 24,
-                                       m_theme->palette().multiDisc, FontSize::SMALL);
+            m_theme->drawTextCentered(discInfo, m_windowW / 2, textY + lineH,
+                                       pal.multiDisc, FontSize::SMALL);
         }
     }
 }
@@ -469,7 +541,11 @@ int GameBrowser::totalRows() const {
 int GameBrowser::visibleRows() const {
     const auto& lay = m_theme->layout();
     int availH = m_windowH - lay.shelfPadTop - lay.footerH;
-    return std::max(1, availH / (lay.cardH + lay.cardPadY));
+    // Use ceiling division so we always show at least one full row
+    // and ensureSelectionVisible scrolls by the right amount.
+    int rowH = lay.cardH + lay.cardPadY;
+    if (rowH <= 0) return 1;
+    return std::max(1, (availH + rowH - 1) / rowH);
 }
 
 bool GameBrowser::selectionValid() const {
@@ -498,8 +574,9 @@ std::string GameBrowser::consumeLaunchPath() {
 void GameBrowser::resetAfterGame() {
     m_launchAnim    = 0.f;
     m_selectionAnim = 1.f;
-    m_pendingLaunch = false;
-    m_wantsDetails  = false;
+    m_pendingLaunch        = false;
+    m_wantsDetails         = false;
+    m_wantsFavoriteToggle  = false;
     // Refresh active list in case history changed during play
     rebuildActiveList();
     if (m_allGames.empty())

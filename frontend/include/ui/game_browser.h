@@ -19,6 +19,7 @@
 #include "theme_engine.h"
 #include "game_scanner.h"
 #include "play_history.h"
+#include "favorites.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <string>
@@ -45,6 +46,11 @@ public:
 
     void setLibrary(const std::vector<GameEntry>& games);
     void setPlayHistory(const PlayHistory* history) { m_playHistory = history; }
+    void setFavoriteManager(FavoriteManager* favs) { m_favorites = favs; }
+
+    // Returns true when the player pressed Y to toggle a favorite
+    bool wantsFavoriteToggle() const { return m_wantsFavoriteToggle; }
+    void clearFavoriteToggle()       { m_wantsFavoriteToggle = false; }
 
     // Which shelf to start on: 0=All Games  1=Recently Played  2=Favorites
     void setShelfMode(int mode) {
@@ -78,7 +84,7 @@ public:
     void resetAfterGame();
 
 private:
-    void moveSelection(NavAction action);
+    void moveSelection(NavAction action, bool isRepeat = false);
     void ensureSelectionVisible();
     void cycleShelf(int direction);  // +1=right, -1=left
     void rebuildActiveList();        // Rebuild m_activeGames for current shelf
@@ -109,7 +115,9 @@ private:
     BrowserState m_state     = BrowserState::EMPTY;
     ShelfMode    m_shelfMode = ShelfMode::ALL_GAMES;
 
-    const PlayHistory* m_playHistory = nullptr;
+    const PlayHistory*  m_playHistory         = nullptr;
+    FavoriteManager*   m_favorites            = nullptr;
+    bool               m_wantsFavoriteToggle  = false;
 
     int   m_selectedRow = 0;
     int   m_selectedCol = 0;

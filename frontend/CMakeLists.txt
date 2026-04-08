@@ -21,6 +21,7 @@ set(FRONTEND_SOURCES
     src/core_bridge/libretro_bridge.cpp
     src/settings_manager.cpp
     src/per_game_settings.cpp
+	src/per_game_settings_screen.cpp
     src/memcard_manager.cpp
     src/game_scraper.cpp
     src/scrape_screen.cpp

@@ -1,7 +1,10 @@
 #include "ingame_menu.h"
+#include <SDL2/SDL_image.h>
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 InGameMenu::InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme,
                         ControllerNav* nav, SaveStateManager* saveStates)
@@ -10,20 +13,45 @@ InGameMenu::InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme,
 {
     SDL_GetRendererOutputSize(renderer, &m_w, &m_h);
 
-    m_items = {
-        { "Resume",        "Return to game",          InGameMenuAction::RESUME        },
-        { "Save State",    "Save current progress",   InGameMenuAction::SAVE_STATE    },
-        { "Load State",    "Load a saved state",      InGameMenuAction::LOAD_STATE    },
-        { "Quit to Shelf", "Return to game library",  InGameMenuAction::QUIT_TO_SHELF },
-    };
+    rebuildMenuItems();
+}
+
+void InGameMenu::rebuildMenuItems() {
+    m_items.clear();
+    m_items.push_back({ "Resume",        "Return to game",         InGameMenuAction::RESUME        });
+    m_items.push_back({ "Save State",    "Save current progress",  InGameMenuAction::SAVE_STATE    });
+    m_items.push_back({ "Load State",    "Load a saved state",     InGameMenuAction::LOAD_STATE    });
+    if (!m_discPaths.empty())
+        m_items.push_back({ "Change Disc",   "Switch to another disc", InGameMenuAction::CHANGE_DISC   });
+    m_items.push_back({ "Quit to Shelf", "Return to game library", InGameMenuAction::QUIT_TO_SHELF });
+}
+
+void InGameMenu::setDiscInfo(const std::vector<std::string>& discPaths,
+                              int currentDisc) {
+    m_discPaths      = discPaths;
+    m_currentDisc    = currentDisc;
+    m_highlightedDisc= currentDisc;
+    m_pendingDiscIndex = currentDisc;
+    rebuildMenuItems();
+    std::cout << "[InGameMenu] Disc info set: " << discPaths.size()
+              << " discs, current=" << currentDisc << "\n";
+}
+
+void InGameMenu::clearDiscInfo() {
+    m_discPaths.clear();
+    m_currentDisc     = 0;
+    m_highlightedDisc = 0;
+    m_pendingDiscIndex= 0;
+    rebuildMenuItems();
 }
 
 void InGameMenu::open() {
-    m_open          = true;
-    m_section       = InGameMenuSection::MAIN;
-    m_selectedItem  = 0;
-    m_openAnim      = 1.f;  // instant open — no slide animation for now
-    m_pendingAction = InGameMenuAction::NONE;
+    m_open            = true;
+    m_section         = InGameMenuSection::MAIN;
+    m_selectedItem    = 0;
+    m_openAnim        = 1.f;
+    m_pendingAction   = InGameMenuAction::NONE;
+    m_highlightedDisc = m_currentDisc; // reset highlight to current disc
     std::cout << "[InGameMenu] Opened\n";
 }
 
@@ -71,13 +99,13 @@ void InGameMenu::handleEvent(const SDL_Event& e) {
     if (!m_open) return;
 
     NavAction action = m_nav->processEvent(e);
-    if (action == NavAction::NONE)
-        action = m_nav->updateHeld(SDL_GetTicks());
+    if (action == NavAction::NONE) return;
 
     switch (m_section) {
         case InGameMenuSection::MAIN:        navigateMain(action);         break;
         case InGameMenuSection::SAVE_STATES:
         case InGameMenuSection::LOAD_STATES: navigateSaveStates(action);   break;
+        case InGameMenuSection::DISC_SELECT: navigateDiscSelect(action);   break;
     }
 }
 
@@ -100,8 +128,11 @@ void InGameMenu::navigateMain(NavAction action) {
                 m_section      = InGameMenuSection::LOAD_STATES;
                 m_selectedSlot = 0;
                 loadThumbnails();
+            } else if (chosen == InGameMenuAction::CHANGE_DISC) {
+                m_section         = InGameMenuSection::DISC_SELECT;
+                m_highlightedDisc = m_currentDisc;
             } else {
-                // RESUME or QUIT_TO_SHELF — set action for app to process
+                // RESUME or QUIT_TO_SHELF
                 m_pendingAction = chosen;
             }
             break;
@@ -109,6 +140,34 @@ void InGameMenu::navigateMain(NavAction action) {
         case NavAction::BACK:
         case NavAction::MENU:
             m_pendingAction = InGameMenuAction::RESUME;
+            break;
+        default: break;
+    }
+}
+
+void InGameMenu::navigateDiscSelect(NavAction action) {
+    int total = (int)m_discPaths.size();
+    if (total == 0) { m_section = InGameMenuSection::MAIN; return; }
+
+    switch (action) {
+        case NavAction::LEFT:
+        case NavAction::SHOULDER_L:
+            m_highlightedDisc = (m_highlightedDisc - 1 + total) % total;
+            m_nav->rumbleConfirm();
+            break;
+        case NavAction::RIGHT:
+        case NavAction::SHOULDER_R:
+            m_highlightedDisc = (m_highlightedDisc + 1) % total;
+            m_nav->rumbleConfirm();
+            break;
+        case NavAction::CONFIRM:
+            m_pendingDiscIndex = m_highlightedDisc;
+            m_pendingAction    = InGameMenuAction::CHANGE_DISC;
+            m_nav->rumbleConfirm();
+            break;
+        case NavAction::BACK:
+        case NavAction::MENU:
+            m_section = InGameMenuSection::MAIN;
             break;
         default: break;
     }
@@ -164,6 +223,17 @@ void InGameMenu::update(float deltaMs) {
     if (!m_open) return;
     SDL_GetRendererOutputSize(m_renderer, &m_w, &m_h);
     m_spinAngle += 2.f * (deltaMs / 1000.f);
+
+    // updateHeld fires every frame so d-pad/stick hold works in the menu
+    NavAction held = m_nav->updateHeld(SDL_GetTicks());
+    if (held != NavAction::NONE) {
+        switch (m_section) {
+            case InGameMenuSection::MAIN:        navigateMain(held);        break;
+            case InGameMenuSection::SAVE_STATES:
+            case InGameMenuSection::LOAD_STATES: navigateSaveStates(held);  break;
+            case InGameMenuSection::DISC_SELECT: navigateDiscSelect(held);  break;
+        }
+    }
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -182,6 +252,7 @@ void InGameMenu::render(SDL_Texture*) {
         case InGameMenuSection::MAIN:        renderMain();              break;
         case InGameMenuSection::SAVE_STATES: renderSaveStates(true);   break;
         case InGameMenuSection::LOAD_STATES: renderSaveStates(false);  break;
+        case InGameMenuSection::DISC_SELECT: renderDiscSelect();        break;
     }
 }
 
@@ -341,4 +412,234 @@ void InGameMenu::renderSlotCard(const SaveSlot& slot, int x, int y,
         m_theme->drawTextCentered("Empty",
             x + w/2, y + h/2 + 14, pal.textDisable, FontSize::TINY);
     }
+}
+
+// ─── renderDiscSelect ─────────────────────────────────────────────────────────
+// Stacked disc UI matching the concept design:
+//   • Cover art panel — far left, with game title and disc count
+//   • Stacked disc graphics — centre, back discs peeking behind, selected lifted
+//   • L1/R1 hint badges flanking the stack
+//   • Footer: A=launch  B=back
+//
+// Disc numbering is 1-based in the UI, 0-based internally.
+void InGameMenu::renderDiscSelect() {
+    const auto& pal = m_theme->palette();
+    int total = (int)m_discPaths.size();
+    if (total == 0) return;
+
+    // ── Full-screen dim already applied by render() ────────────────────────────
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    m_theme->drawTextCentered("disc select",
+        m_w / 2, 28, pal.textSecond, FontSize::SMALL);
+    // Extract game title from first disc path stem (strip region tags crudely)
+    std::string gameTitle;
+    if (!m_discPaths.empty()) {
+        fs::path p(m_discPaths[0]);
+        std::string stem = p.stem().string();
+        // Strip trailing parenthetical e.g. " (Disc 1) (USA)"
+        auto paren = stem.find(" (");
+        if (paren != std::string::npos) stem = stem.substr(0, paren);
+        gameTitle = stem;
+    }
+    m_theme->drawTextCentered(gameTitle,
+        m_w / 2, 52, pal.textPrimary, FontSize::BODY);
+
+    // ── Layout constants ──────────────────────────────────────────────────────
+    int centreX  = m_w / 2 + 30;    // shift right to make room for cover
+    int centreY  = m_h / 2 - 10;
+    int discR    = std::min(72, m_h / 6);
+    int stackOffX=  22;              // each back disc steps right by this
+    int stackOffY= -5;              // each back disc steps up slightly
+
+    // ── Cover art panel — left side ───────────────────────────────────────────
+    int coverW = 90, coverH = 120;
+    int coverX = 30;
+    int coverY = centreY - coverH / 2 - 20;
+
+    SDL_Rect coverRect = { coverX, coverY, coverW, coverH };
+    // Background placeholder
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 26, 18, 64, 220);
+    SDL_RenderFillRect(m_renderer, &coverRect);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // Accent border
+    SDL_SetRenderDrawColor(m_renderer,
+        pal.accent.r, pal.accent.g, pal.accent.b, 255);
+    SDL_RenderDrawRect(m_renderer, &coverRect);
+
+    if (m_coverTexture) {
+        // Letterbox the cover art to fit the panel
+        int texW = 0, texH = 0;
+        SDL_QueryTexture(m_coverTexture, nullptr, nullptr, &texW, &texH);
+        if (texW > 0 && texH > 0) {
+            float aspect   = (float)texW / (float)texH;
+            float panelAsp = (float)coverW / (float)coverH;
+            int dw, dh;
+            if (aspect > panelAsp) { dw = coverW; dh = (int)(coverW / aspect); }
+            else                   { dh = coverH; dw = (int)(coverH * aspect); }
+            SDL_Rect dst = { coverX + (coverW - dw)/2,
+                             coverY + (coverH - dh)/2, dw, dh };
+            SDL_RenderCopy(m_renderer, m_coverTexture, nullptr, &dst);
+        }
+    } else {
+        // Placeholder text
+        m_theme->drawTextCentered("cover",
+            coverX + coverW/2, coverY + coverH/2,
+            pal.textDisable, FontSize::TINY);
+    }
+
+    // Disc label under cover
+    std::string discLabel = "disc " + std::to_string(m_highlightedDisc + 1);
+    m_theme->drawTextCentered(discLabel,
+        coverX + coverW/2, coverY + coverH + 14,
+        pal.accent, FontSize::TINY);
+
+    // Disc count
+    std::string countStr = std::to_string(total) + " discs";
+    m_theme->drawTextCentered(countStr,
+        coverX + coverW/2, coverY + coverH + 30,
+        pal.textSecond, FontSize::TINY);
+
+    // ── Stacked discs — back to front ─────────────────────────────────────────
+    // Draw non-highlighted discs as a receding stack behind, highlighted lifted
+    for (int i = total - 1; i >= 0; --i) {
+        if (i == m_highlightedDisc) continue; // draw highlighted last (on top)
+        int   dist    = std::abs(i - m_highlightedDisc);
+        float opacity = std::max(0.2f, 1.0f - dist * 0.25f);
+        int   cx      = centreX + (i - m_highlightedDisc) * stackOffX;
+        int   cy      = centreY + (i - m_highlightedDisc) * stackOffY;
+        renderDiscGraphic(i, cx, cy, discR, opacity, false, false);
+    }
+
+    // Highlighted disc — lifted up 20px, full opacity, accent ring
+    {
+        int cx = centreX;
+        int cy = centreY - 20; // lift
+        renderDiscGraphic(m_highlightedDisc, cx, cy, discR, 1.0f,
+                          true, true);
+
+        // "selected" text below
+        m_theme->drawTextCentered("\xe2\x96\xb2 disc " +
+            std::to_string(m_highlightedDisc + 1),
+            cx, cy + discR + 26, pal.accent, FontSize::TINY);
+
+        // Currently-inserted indicator
+        if (m_highlightedDisc == m_currentDisc) {
+            m_theme->drawTextCentered("(current)",
+                cx, cy + discR + 42, pal.textSecond, FontSize::TINY);
+        }
+    }
+
+    // ── L1 / R1 hint badges ────────────────────────────────────────────────────
+    auto drawBadge = [&](int bx, int by, const std::string& txt) {
+        int bw = 64, bh = 26;
+        SDL_Rect br = { bx - bw/2, by - bh/2, bw, bh };
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer, 48, 48, 46, 220);
+        SDL_RenderFillRect(m_renderer, &br);
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(m_renderer, 100, 100, 100, 255);
+        SDL_RenderDrawRect(m_renderer, &br);
+        m_theme->drawTextCentered(txt, bx, by - 5, pal.textSecond, FontSize::TINY);
+    };
+
+    drawBadge(centreX - discR - 60, centreY, "prev  L1");
+    drawBadge(centreX + discR + 60, centreY, "R1  next");
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    std::string confirmHint = (m_highlightedDisc == m_currentDisc)
+        ? "Disc " + std::to_string(m_currentDisc + 1) + " (current)"
+        : "Launch disc " + std::to_string(m_highlightedDisc + 1);
+    m_theme->drawFooterHints(m_w, m_h, confirmHint, "Back");
+}
+
+// ─── renderDiscGraphic ────────────────────────────────────────────────────────
+// Draws a single disc graphic at (cx, cy) with given radius and opacity.
+// Uses SDL_SetRenderDrawBlendMode for the translucent rings.
+// selected=true adds the accent ring; lifted=true adds a drop shadow.
+void InGameMenu::renderDiscGraphic(int discIndex, int cx, int cy,
+                                    int radius, float opacity,
+                                    bool selected, bool lifted) {
+    const auto& pal = m_theme->palette();
+    Uint8 a = (Uint8)(255 * opacity);
+
+    // Drop shadow when lifted
+    if (lifted) {
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 60);
+        // Simple ellipse shadow below
+        for (int dy = -6; dy <= 6; dy++) {
+            int sw = (int)(radius * 1.05f * std::sqrt(1.0 - (dy/(double)7) * (dy/(double)7)));
+            SDL_RenderDrawLine(m_renderer, cx - sw, cy + radius + 10 + dy,
+                               cx + sw, cy + radius + 10 + dy);
+        }
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+    }
+
+    // Helper: draw a filled circle
+    auto fillCircle = [&](int x, int y, int r, SDL_Color col, Uint8 alpha) {
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer, col.r, col.g, col.b, alpha);
+        for (int dy = -r; dy <= r; dy++) {
+            int dx = (int)std::sqrt((double)(r*r - dy*dy));
+            SDL_RenderDrawLine(m_renderer, x - dx, y + dy, x + dx, y + dy);
+        }
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+    };
+
+    // Helper: draw a circle outline
+    auto drawCircle = [&](int x, int y, int r, SDL_Color col, Uint8 alpha) {
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer, col.r, col.g, col.b, alpha);
+        // Midpoint circle algorithm
+        int dx = r, dy = 0, err = 0;
+        while (dx >= dy) {
+            SDL_RenderDrawPoint(m_renderer, x+dx, y+dy);
+            SDL_RenderDrawPoint(m_renderer, x+dy, y+dx);
+            SDL_RenderDrawPoint(m_renderer, x-dy, y+dx);
+            SDL_RenderDrawPoint(m_renderer, x-dx, y+dy);
+            SDL_RenderDrawPoint(m_renderer, x-dx, y-dy);
+            SDL_RenderDrawPoint(m_renderer, x-dy, y-dx);
+            SDL_RenderDrawPoint(m_renderer, x+dy, y-dx);
+            SDL_RenderDrawPoint(m_renderer, x+dx, y-dy);
+            dy++;
+            err += 1 + 2*dy;
+            if (2*(err-dx) + 1 > 0) { dx--; err += 1 - 2*dx; }
+        }
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+    };
+
+    // Disc body — dark blue-black
+    SDL_Color bodyCol  = { 26, 26, 46, 255 };
+    SDL_Color hubCol   = { 42, 30, 96, 255 };
+    SDL_Color holeCol  = { 13, 10, 32, 255 };
+    SDL_Color rimCol   = selected
+        ? SDL_Color{ pal.accent.r, pal.accent.g, pal.accent.b, 255 }
+        : SDL_Color{ 68, 68, 88, 255 };
+
+    fillCircle(cx, cy, radius, bodyCol, a);
+    drawCircle(cx, cy, radius, rimCol, a);
+
+    // Rainbow sheen rings (selected only)
+    if (selected) {
+        SDL_Color r1 = { 124, 93,  232, 255 };
+        SDL_Color r2 = {  91, 163, 217, 255 };
+        SDL_Color r3 = {  96, 200, 154, 255 };
+        drawCircle(cx, cy, (int)(radius * 0.90f), r1, (Uint8)(128 * opacity));
+        drawCircle(cx, cy, (int)(radius * 0.69f), r2, (Uint8)(102 * opacity));
+        drawCircle(cx, cy, (int)(radius * 0.49f), r3, (Uint8)(77  * opacity));
+    }
+
+    // Hub
+    fillCircle(cx, cy, radius / 3, hubCol, a);
+    // Centre hole
+    fillCircle(cx, cy, radius / 11, holeCol, a);
+
+    // Disc number label
+    std::string label = "disc " + std::to_string(discIndex + 1);
+    SDL_Color textCol = selected ? SDL_Color{ 226, 217, 255, a }
+                                 : SDL_Color{ 160, 160, 180, a };
+    m_theme->drawTextCentered(label, cx, cy - 6, textCol, FontSize::TINY);
 }
