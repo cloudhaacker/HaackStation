@@ -53,6 +53,12 @@ struct HaackSettings {
     // audio glitches or missed frames on slower machines.
     int  fastForwardSpeed   = 1;  // Default: 4×
 
+    // Turbo mode speed index (persistent speed boost, toggled with R1+R2):
+    //   0 = 1.5×   1 = 2×   2 = 3×   3 = 4×   4 = 6×
+    // Unlike fast-forward, turbo stays active until toggled off, and keeps
+    // audio running at speed (no mute). Great for grinding or long cutscenes.
+    int  turboSpeed         = 0;  // Default: 1.5×
+
     // Top row mode — what shows above the main game shelf:
     //   0 = Recently Played   1 = Favorites   2 = None
     int  topRowMode         = 0;  // Default: Recently Played

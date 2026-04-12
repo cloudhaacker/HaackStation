@@ -5,29 +5,19 @@
 // Layout (right 45% panel slides in from edge):
 //
 //  ┌─────────────────────┬──────────────────────────────────┐
-//  │                     │  [Screenshot strip — 40% height  │
-//  │  Dimmed shelf       │   16:9 letterboxed. Hidden when  │
-//  │  still visible      │   no scraped screenshots exist]  │
+//  │                     │  [Screenshot strip — 40% height] │
+//  │  Dimmed shelf       │  ─────────────────────────────   │
+//  │  still visible      │  [Trophy / achievement row]      │
 //  │  behind panel       │  ─────────────────────────────   │
-//  │                     │  [Trophy / achievement row]      │
+//  │                     │  [Game description text]         │
 //  │  Cover art large    │  ─────────────────────────────   │
-//  │  centered left      │  [Game description text]         │
-//  │                     │  ─────────────────────────────   │
-//  │                     │  [Save System] [Shaders    ]     │
+//  │  centered left      │  [Save System] [Shaders    ]     │
 //  │                     │  [AI Upscale ] [Translation]     │
 //  │                     │  [Game Settings]                 │
 //  └─────────────────────┴──────────────────────────────────┘
 //
-// Controls:
-//   Arrows          → navigate menu grid
-//   L1/R1           → cycle screenshots (Page Up/Down on keyboard)
-//   X / Confirm     → activate selected menu item
-//   Z / Back / Esc  → close panel
-//
-// Screenshot source:
-//   media/screenshots/[game title]/  — per-game folder
-//   Any .jpg or .png files found, sorted by filename, up to MAX_SCREENSHOTS.
-//   Strip is hidden entirely when folder is empty or missing.
+// Metadata (description, developer, etc.) is loaded from a sidecar JSON file
+// at media/info/[safe game title].json, written by the scraper.
 
 #include "theme_engine.h"
 #include "controller_nav.h"
@@ -80,7 +70,13 @@ public:
     // Called by app.cpp after opening — cover texture already loaded by browser
     void setCoverTexture(SDL_Texture* tex) { m_coverTexture = tex; }
 
-    // Called by scraper integration when description is available
+    // Set the media root directory — must be called before open() so that
+    // screenshot and metadata sidecar paths resolve correctly.
+    // Defaults to "media/" if not set (works when no romsPath is configured).
+    void setMediaDir(const std::string& dir) { m_mediaDir = dir; }
+
+    // Optionally override the description (e.g. set from a ScrapeResult in memory).
+    // If not called, description is loaded from the media/info/ sidecar on open().
     void setDescription(const std::string& desc) { m_description = desc; }
 
     // Supplement the auto-discovered folder screenshots with explicit paths
@@ -90,13 +86,15 @@ public:
     void setTrophyInfo(int unlocked, int total,
                        const std::vector<std::string>& recentBadgePaths);
 
-    // Max screenshots loaded per game (01_screenshot, 02_titlescreen, 03_fanart, + extras)
     static constexpr int MAX_SCREENSHOTS = 10;
 
 private:
     void buildMenuItems();
     void navigateMenu(NavAction action);
     void activateSelected();
+
+    // Load description + metadata from media/info/[title].json sidecar
+    void loadMetadataSidecar();
 
     void renderDimLayer();
     void renderCoverHero();
@@ -116,7 +114,17 @@ private:
     GameEntry         m_game;
 
     SDL_Texture*               m_coverTexture    = nullptr;
+
+    // Media root directory — set by setMediaDir() before open()
+    std::string                m_mediaDir        = "media/";
+
+    // Metadata — loaded from sidecar JSON or set externally
     std::string                m_description;
+    std::string                m_developer;
+    std::string                m_publisher;
+    std::string                m_releaseDate;
+    std::string                m_genre;
+
     std::vector<std::string>   m_screenshotPaths;
     std::vector<SDL_Texture*>  m_screenshotTextures;
     std::vector<std::string>   m_trophyBadgePaths;

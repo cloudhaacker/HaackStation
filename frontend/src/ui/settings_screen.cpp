@@ -110,6 +110,13 @@ void SettingsScreen::buildTabs() {
             { "2x", "4x", "6x", "8x" },
             &m_settings->fastForwardSpeed));
         tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("turbo_header", "Turbo Mode",
+            "Hold R1+R2 (controller) or T key (keyboard) to toggle"));
+        tab.items.push_back(makeChoice("turbo_speed", "Turbo Speed",
+            "Speed when turbo is active — audio stays on at game speed",
+            { "1.5x", "2x", "3x", "4x", "6x" },
+            &m_settings->turboSpeed));
+        tab.items.push_back(makeSep());
         tab.items.push_back(makeLabel("ff_note", "Fast Forward toggle",
             "Per-game toggle option coming in per-game settings"));
         m_tabs.push_back(tab);

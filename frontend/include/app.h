@@ -61,8 +61,9 @@ private:
     void render();
     void updateGameInput();
     void renderFastForwardIndicator();
-    void renderRewindIndicator();                    // ← NEW
-    void renderScreenshotNotification(); // Brief toast after screenshot capture
+    void renderRewindIndicator();
+    void renderTurboIndicator();                     // ← NEW
+    void renderScreenshotNotification();
 
     // ── Rewind helpers ────────────────────────────────────────────────────────
     // stripRomRegion() removes parenthetical / bracketed region & revision tags
@@ -118,6 +119,17 @@ private:
 
     std::string m_currentGamePath;           // Set on launch, used for screenshot naming
     Uint32      m_screenshotNotifyUntil = 0; // Show screenshot toast until this tick
+
+    // ── Turbo mode ────────────────────────────────────────────────────────────
+    // Persistent speed multiplier — toggled ON/OFF by holding R1+R2 (or T key)
+    // for TURBO_HOLD_DELAY_MS. Unlike fast-forward it stays active until toggled
+    // again. No rumble while active. Green badge indicator top-right.
+    bool   m_turboActive      = false;
+    Uint32 m_turboHeldSince   = 0;
+    static constexpr Uint32 TURBO_HOLD_DELAY_MS = 600;
+    static constexpr int    TURBO_TABLE_SIZE    = 5;
+    // NOTE: Multiplier table lives in app.cpp as TURBO_MULTS[] to avoid
+    // MSVC ODR issues with static constexpr arrays in class definitions.
 
     HaackSettings m_haackSettings;
 };

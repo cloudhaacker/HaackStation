@@ -4,6 +4,7 @@
 #include <sstream>
 #include <filesystem>
 #include <algorithm>
+#include <map>
 #include <SDL2/SDL.h>
 
 #ifdef _WIN32
@@ -40,9 +41,26 @@ std::string GameScraper::safeFilename(const std::string& name) const {
     return safe;
 }
 
-// ─── Screenshot folder path for a game ───────────────────────────────────────
-// All screenshots live in: media/screenshots/[safe title]/
-// This is the canonical location the details panel looks in.
+// ─── Disc art path helpers ────────────────────────────────────────────────────
+// Canonical path for a single disc's art. discNumber is 1-based.
+// e.g. media/discs/Legend of Dragoon_disc1.png
+std::string GameScraper::discArtPath(const std::string& gameTitle,
+                                      int discNumber) const {
+    return m_mediaDir + "discs/" + safeFilename(gameTitle)
+           + "_disc" + std::to_string(discNumber) + ".png";
+}
+
+// Returns paths for all discs (discCount entries, index 0 = disc 1).
+std::vector<std::string> GameScraper::discArtPaths(const std::string& gameTitle,
+                                                    int discCount) const {
+    std::vector<std::string> paths;
+    paths.reserve(discCount);
+    for (int i = 1; i <= discCount; i++)
+        paths.push_back(discArtPath(gameTitle, i));
+    return paths;
+}
+
+// ─── Path helpers ─────────────────────────────────────────────────────────────
 static std::string screenshotDir(const std::string& mediaDir,
                                   const std::string& safeTitle) {
     return mediaDir + "screenshots/" + safeTitle + "/";
@@ -51,7 +69,6 @@ static std::string screenshotDir(const std::string& mediaDir,
 // ─── Already-scraped checks ───────────────────────────────────────────────────
 bool GameScraper::isScraped(const GameEntry& game) const {
     std::string safe = safeFilename(game.title);
-    // Cover check (front only)
     if (fs::exists(m_mediaDir + "covers/" + safe + ".png")) return true;
     if (fs::exists(m_mediaDir + "covers/" + safe + ".jpg")) return true;
     return false;
@@ -60,13 +77,19 @@ bool GameScraper::isScraped(const GameEntry& game) const {
 bool GameScraper::screenshotsScraped(const GameEntry& game) const {
     std::string dir = screenshotDir(m_mediaDir, safeFilename(game.title));
     if (!fs::exists(dir)) return false;
-    // Non-empty folder = already scraped
     for (const auto& e : fs::directory_iterator(dir)) {
         std::string ext = e.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (ext == ".jpg" || ext == ".png") return true;
     }
     return false;
+}
+
+// Disc art is considered scraped when disc 1 is present.
+// (If the game is single-disc, that's the only one. Multi-disc games always
+// have a disc 1, so this is a reliable "we've tried to scrape discs" sentinel.)
+bool GameScraper::discArtScraped(const GameEntry& game) const {
+    return fs::exists(discArtPath(game.title, 1));
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
@@ -210,14 +233,13 @@ std::string GameScraper::extractField(const std::string& json,
     return "";
 }
 
-// ─── Extract media URL with region preference ─────────────────────────────────
+// ─── Extract standard media URL with region preference ────────────────────────
 std::string GameScraper::extractMediaUrl(const std::string& json,
                                           const std::string& mediaType) const {
     std::vector<std::string> regionPref = {"us", "wor", "eu", "ss", "jp"};
     std::string bestUrl;
     int bestRank = 999;
 
-    // Build type search strings — SS uses both "key":"val" and "key": "val"
     std::string t1, t2;
     t1 += '"'; t1 += "type"; t1 += '"'; t1 += ':';       t1 += '"'; t1 += mediaType; t1 += '"';
     t2 += '"'; t2 += "type"; t2 += '"'; t2 += ':'; t2 += ' '; t2 += '"'; t2 += mediaType; t2 += '"';
@@ -265,16 +287,160 @@ std::string GameScraper::extractMediaUrl(const std::string& json,
     return bestUrl;
 }
 
-// ─── Parse ScreenScraper response ────────────────────────────────────────────
-// Downloads all available media from the single API response:
-//   Front cover (box-2D)         → covers/[title].ext
-//   Back cover  (box-2D-back)    → covers/[title]_back.ext
-//   Screenshot  (screenshot)     → screenshots/[title]/01_screenshot.jpg
-//   Title screen (ss)            → screenshots/[title]/02_titlescreen.jpg
-//   Fan art      (fanart)        → screenshots/[title]/03_fanart.jpg
+// ─── Extract disc art URLs ────────────────────────────────────────────────────
+// ScreenScraper stores per-disc art under media type "support-texture".
+// Each entry has a "support" field containing the 1-based disc number as a
+// string ("1", "2", "3", "4"...) and a "region" field.
+// We pick the best region per disc number using the same preference order.
+// Falls back to "support-2D" if no support-texture entries are found.
 //
-// Each media type is downloaded independently — a failure on one doesn't
-// block the others. The screenshot folder skip check happens in scrapeGame().
+// Returns: map of discNumber (int, 1-based) → best URL string
+std::map<int, std::string> GameScraper::extractDiscUrls(
+        const std::string& json) const {
+
+    std::vector<std::string> regionPref = {"us", "wor", "eu", "ss", "jp"};
+
+    // Try "support-texture" first, then "support-2D" as fallback
+    const std::vector<std::string> discTypes = { "support-texture", "support-2D" };
+
+    // bestUrl[discNum] = {url, regionRank}
+    std::map<int, std::pair<std::string, int>> best;
+
+    for (const auto& mediaType : discTypes) {
+        std::string t1, t2;
+        t1 += '"'; t1 += "type"; t1 += '"'; t1 += ':';
+        t1 += '"'; t1 += mediaType; t1 += '"';
+        t2 += '"'; t2 += "type"; t2 += '"'; t2 += ':'; t2 += ' ';
+        t2 += '"'; t2 += mediaType; t2 += '"';
+
+        size_t searchFrom = 0;
+        while (true) {
+            size_t p1 = json.find(t1, searchFrom);
+            size_t p2 = json.find(t2, searchFrom);
+            if (p1 == std::string::npos && p2 == std::string::npos) break;
+
+            size_t pos;
+            if      (p1 == std::string::npos) pos = p2;
+            else if (p2 == std::string::npos) pos = p1;
+            else pos = std::min(p1, p2);
+            searchFrom = pos + 1;
+
+            // Find the enclosing JSON object
+            size_t objStart = pos;
+            while (objStart > 0 && json[objStart] != '{') objStart--;
+            size_t objEnd = objStart;
+            int depth = 0;
+            for (size_t i = objStart; i < json.size(); i++) {
+                if      (json[i] == '{') depth++;
+                else if (json[i] == '}') {
+                    depth--;
+                    if (depth == 0) { objEnd = i + 1; break; }
+                }
+            }
+
+            std::string obj     = json.substr(objStart, objEnd - objStart);
+            std::string url     = extractField(obj, "url");
+            std::string region  = extractField(obj, "region");
+            std::string support = extractField(obj, "support");
+
+            if (url.empty() || url.find("http") == std::string::npos) continue;
+
+            // Parse disc number from the "support" field ("1", "2", "3"...).
+            // Single-disc games have NO "support" field at all — ScreenScraper
+            // simply omits it. Treat absent/empty support as disc 1.
+            int discNum = 1;
+            if (!support.empty()) {
+                try { discNum = std::stoi(support); } catch (...) { continue; }
+                if (discNum < 1) continue;
+            }
+
+            int rank = (int)regionPref.size();
+            for (int i = 0; i < (int)regionPref.size(); i++)
+                if (region == regionPref[i]) { rank = i; break; }
+
+            auto it = best.find(discNum);
+            if (it == best.end() || rank < it->second.second)
+                best[discNum] = { url, rank };
+        }
+
+        // If we found any entries for this type, don't try the fallback
+        if (!best.empty()) break;
+    }
+
+    // Convert to plain url map
+    std::map<int, std::string> result;
+    for (const auto& [discNum, urlRank] : best)
+        result[discNum] = urlRank.first;
+
+    if (result.empty())
+        std::cout << "[Scraper] No support-texture or support-2D entries found "
+                     "(game may not have disc art on ScreenScraper)\n";
+    else
+        for (const auto& [disc, url] : result)
+            std::cout << "[Scraper] Disc " << disc << " art URL found\n";
+
+    return result;
+}
+
+// ─── Save metadata sidecar ────────────────────────────────────────────────────
+// Writes a small JSON file to media/info/[safe title].json containing the
+// game's text metadata so GameDetailsPanel can load description, developer,
+// publisher, release date, and genre without keeping the full API response.
+//
+// Format:
+// {
+//   "title": "Legend of Dragoon, The",
+//   "description": "The story of ...",
+//   "developer": "Sony Computer Entertainment",
+//   "publisher": "Sony Computer Entertainment America",
+//   "releaseDate": "1999",
+//   "genre": "Role-Playing"
+// }
+//
+// Call this from parseResponse() after all metadata fields are populated.
+void GameScraper::saveMetadataSidecar(const ScrapeResult& result,
+                                       const std::string& safeTitle) const {
+    std::string infoDir  = m_mediaDir + "info/";
+    std::string infoPath = infoDir + safeTitle + ".json";
+    fs::create_directories(infoDir);
+
+    // Helper: escape a string for JSON (backslashes, quotes, control chars)
+    auto escJson = [](const std::string& s) -> std::string {
+        std::string out;
+        out.reserve(s.size() + 16);
+        for (unsigned char c : s) {
+            if      (c == '"')  out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
+            else if (c < 0x20) { /* skip other control chars */ }
+            else out += (char)c;
+        }
+        return out;
+    };
+
+    std::ofstream f(infoPath);
+    if (!f.is_open()) {
+        std::cerr << "[Scraper] Cannot write info sidecar: " << infoPath << "\n";
+        return;
+    }
+
+    f << "{\n";
+    f << "  \"title\": \""       << escJson(result.title)       << "\",\n";
+    f << "  \"description\": \"" << escJson(result.description) << "\",\n";
+    f << "  \"developer\": \""   << escJson(result.developer)   << "\",\n";
+    f << "  \"publisher\": \""   << escJson(result.publisher)   << "\",\n";
+    f << "  \"releaseDate\": \"" << escJson(result.releaseDate) << "\",\n";
+    f << "  \"genre\": \""       << escJson(result.genre)       << "\"\n";
+    f << "}\n";
+
+    std::cout << "[Scraper] Metadata sidecar: " << infoPath << "\n";
+}
+
+
+
+// ─── Parse ScreenScraper response ────────────────────────────────────────────
 ScrapeResult GameScraper::parseResponse(const std::string& json,
                                          const GameEntry& game) const {
     ScrapeResult result;
@@ -314,8 +480,8 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
         try { result.rating = std::stof(ratingStr) / 20.f; } catch (...) {}
     }
 
-    std::string safe      = safeFilename(game.title);
-    std::string ssDir     = screenshotDir(m_mediaDir, safe);
+    std::string safe  = safeFilename(game.title);
+    std::string ssDir = screenshotDir(m_mediaDir, safe);
 
     // ── Front cover ───────────────────────────────────────────────────────────
     {
@@ -350,26 +516,47 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
         }
     }
 
-    // ── Screenshots (per-game folder) ─────────────────────────────────────────
-    // We try three distinct media types and save each to its own numbered file.
-    // The folder is created only if at least one download succeeds.
-    struct MediaSlot {
-        std::string type;       // ScreenScraper media type key
-        std::string filename;   // Output filename inside the per-game folder
-    };
-    // Order: fanart first (most visually striking), then in-game screenshot,
-    // then title screen. User capture screenshots sort after by timestamp prefix.
+    // ── Disc art — one file per disc ──────────────────────────────────────────
+    // extractDiscUrls() reads "support-texture" entries (falling back to
+    // "support-2D"), keyed by 1-based disc number. We download each one to
+    // media/discs/[title]_disc1.png, _disc2.png, etc.
+    {
+        auto discUrls = extractDiscUrls(json);
+        if (discUrls.empty()) {
+            std::cout << "[Scraper] No disc art found for: " << game.title << "\n";
+        } else {
+            std::cout << "[Scraper] Found disc art for "
+                      << discUrls.size() << " disc(s)\n";
+        }
+
+        for (const auto& [discNum, url] : discUrls) {
+            std::string path = discArtPath(game.title, discNum);
+            if (downloadFile(url, path)) {
+                // Grow result.discArtPaths to fit discNum (0-based index = discNum-1)
+                if ((int)result.discArtPaths.size() < discNum)
+                    result.discArtPaths.resize(discNum);
+                result.discArtPaths[discNum - 1] = path;
+                std::cout << "[Scraper] Disc " << discNum << " art: " << path << "\n";
+            } else {
+                std::cerr << "[Scraper] Disc " << discNum
+                          << " art download failed\n";
+            }
+        }
+    }
+
+    // ── Screenshots ───────────────────────────────────────────────────────────
+    struct MediaSlot { std::string type; std::string filename; };
     const std::vector<MediaSlot> screenshotSlots = {
-        { "fanart",     "01_fanart.jpg"      },  // shown first in details panel
-        { "screenshot", "02_screenshot.jpg"  },  // in-game action shot
-        { "ss",         "03_titlescreen.jpg" },  // title screen last
+        { "fanart",     "01_fanart.jpg"      },
+        { "screenshot", "02_screenshot.jpg"  },
+        { "ss",         "03_titlescreen.jpg" },
     };
 
     for (const auto& slot : screenshotSlots) {
         std::string url = extractMediaUrl(json, slot.type);
         if (url.empty()) {
             std::cout << "[Scraper] No " << slot.type
-                      << " found for: " << game.title << "\n";
+                      << " for: " << game.title << "\n";
             continue;
         }
         std::string path = ssDir + slot.filename;
@@ -381,6 +568,12 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
         }
     }
 
+
+    // ── Metadata sidecar ──────────────────────────────────────────────────────
+    // Always save — even if description is empty, the file records title/genre
+    // so GameDetailsPanel knows a scrape was attempted and shows whatever is there.
+    saveMetadataSidecar(result, safe);
+
     result.success = true;
     return result;
 }
@@ -389,34 +582,67 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
 ScrapeResult GameScraper::scrapeGame(const GameEntry& game) {
     std::cout << "[Scraper] Scraping: " << game.title << "\n";
 
-    // Build a "fully skipped" result for when everything is already present
     bool coverDone       = isScraped(game);
     bool screenshotsDone = screenshotsScraped(game);
+    bool discDone        = discArtScraped(game);
 
-    if (coverDone && screenshotsDone) {
+    if (coverDone && screenshotsDone && discDone) {
+        std::string safe = safeFilename(game.title);
+
+        // Write metadata sidecar if it doesn't exist yet — read from the
+        // cached API JSON (always present after first scrape) so we don't
+        // need to hit the network again.
+        std::string infoPath   = m_mediaDir + "info/" + safe + ".json";
+        std::string jsonCached = m_mediaDir + "cache/" + safe + ".json";
+        if (!fs::exists(infoPath) && fs::exists(jsonCached)) {
+            std::ifstream cf(jsonCached);
+            if (cf.is_open()) {
+                std::stringstream css; css << cf.rdbuf();
+                // Build a minimal ScrapeResult just for the sidecar fields
+                ScrapeResult tmp;
+                tmp.title       = extractField(css.str(), "text");
+                if (tmp.title.empty()) tmp.title = extractField(css.str(), "nom");
+                if (tmp.title.empty()) tmp.title = game.title;
+                tmp.description = extractField(css.str(), "synopsis");
+                tmp.developer   = extractField(css.str(), "developpeur");
+                tmp.publisher   = extractField(css.str(), "editeur");
+                tmp.releaseDate = extractField(css.str(), "date");
+                if (tmp.releaseDate.empty())
+                    tmp.releaseDate = extractField(css.str(), "dateSortie");
+                tmp.genre       = extractField(css.str(), "genre");
+                saveMetadataSidecar(tmp, safe);
+            }
+        }
+
         std::cout << "[Scraper] Already fully scraped, skipping\n";
         ScrapeResult r;
-        r.success   = true;
-        std::string safe = safeFilename(game.title);
-        // Reconstruct cover path
+        r.success = true;
+
         r.coverPath = m_mediaDir + "covers/" + safe + ".png";
         if (!fs::exists(r.coverPath))
             r.coverPath = m_mediaDir + "covers/" + safe + ".jpg";
-        // Reconstruct screenshot paths from folder
-        std::string dir = screenshotDir(m_mediaDir, safe);
-        for (const auto& e : fs::directory_iterator(dir)) {
-            std::string ext = e.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            if (ext == ".jpg" || ext == ".png")
-                r.screenshotPaths.push_back(e.path().string());
+
+        for (int d = 1; d <= 10; d++) {
+            std::string p = discArtPath(game.title, d);
+            if (!fs::exists(p)) break;
+            r.discArtPaths.push_back(p);
         }
-        std::sort(r.screenshotPaths.begin(), r.screenshotPaths.end());
+
+        std::string dir = screenshotDir(m_mediaDir, safe);
+        if (fs::exists(dir)) {
+            for (const auto& e : fs::directory_iterator(dir)) {
+                std::string ext = e.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".jpg" || ext == ".png")
+                    r.screenshotPaths.push_back(e.path().string());
+            }
+            std::sort(r.screenshotPaths.begin(), r.screenshotPaths.end());
+        }
         return r;
     }
 
     respectRateLimit();
 
-    // Download and cache the API JSON response
     std::string url      = buildApiUrl(game.title, game.serial);
     std::string jsonPath = m_mediaDir + "cache/" +
                            safeFilename(game.title) + ".json";
@@ -430,22 +656,28 @@ ScrapeResult GameScraper::scrapeGame(const GameEntry& game) {
 
     std::ifstream f(jsonPath);
     if (!f.is_open()) {
-        ScrapeResult r;
-        r.errorReason = "Cannot read API response";
-        return r;
+        ScrapeResult r; r.errorReason = "Cannot read API response"; return r;
     }
     std::stringstream ss;
     ss << f.rdbuf();
 
     ScrapeResult result = parseResponse(ss.str(), game);
 
-    // If cover was already present, restore that path (parseResponse may have
-    // skipped it since we only call downloadFile, not check existence first)
+    // Restore already-present cover path if parseResponse didn't download it
     if (coverDone && result.coverPath.empty()) {
         std::string safe = safeFilename(game.title);
         result.coverPath = m_mediaDir + "covers/" + safe + ".png";
         if (!fs::exists(result.coverPath))
             result.coverPath = m_mediaDir + "covers/" + safe + ".jpg";
+    }
+
+    // Restore already-present disc paths if parseResponse skipped them
+    if (discDone && result.discArtPaths.empty()) {
+        for (int d = 1; d <= 10; d++) {
+            std::string p = discArtPath(game.title, d);
+            if (!fs::exists(p)) break;
+            result.discArtPaths.push_back(p);
+        }
     }
 
     return result;
@@ -463,11 +695,11 @@ void GameScraper::scrapeLibrary(std::vector<GameEntry>& games,
 
         bool coverDone       = isScraped(game);
         bool screenshotsDone = screenshotsScraped(game);
+        bool discDone        = discArtScraped(game);
 
-        if (coverDone && screenshotsDone) {
+        if (coverDone && screenshotsDone && discDone) {
             progress.skipped++;
             progress.done++;
-            // Restore cover path so browser can display it
             std::string safe = safeFilename(game.title);
             game.coverArtPath = m_mediaDir + "covers/" + safe + ".png";
             if (!fs::exists(game.coverArtPath))
@@ -505,7 +737,19 @@ void GameScraper::clearScrapedData(const GameEntry& game) {
     fs::remove(m_mediaDir + "covers/" + safe + "_back.jpg");
     fs::remove(m_mediaDir + "covers/" + safe + "_back.png");
     fs::remove(m_mediaDir + "cache/"  + safe + ".json");
-    // Remove entire screenshot folder
+
+    // Remove all disc art files (probe up to 10 discs)
+    for (int d = 1; d <= 10; d++) {
+        std::string p = discArtPath(game.title, d);
+        if (!fs::exists(p)) break;
+        fs::remove(p);
+    }
+
     std::string dir = screenshotDir(m_mediaDir, safe);
     if (fs::exists(dir)) fs::remove_all(dir);
+	
+	// ADD TO clearScrapedData() after the screenshot folder removal:
+     fs::remove(m_mediaDir + "info/" + safe + ".json");
+// ════════════════════════════════════════════════════════════════════════════
+
 }

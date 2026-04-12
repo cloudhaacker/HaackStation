@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -19,6 +21,95 @@ GameDetailsPanel::~GameDetailsPanel() {
     freeTrophyTextures();
 }
 
+// ─── Sanitize filename (mirrors GameScraper logic) ────────────────────────────
+static std::string safeFilename(const std::string& name) {
+    std::string safe = name;
+    const std::string invalid = "\\/:*?\"<>|";
+    for (auto& c : safe)
+        if (invalid.find(c) != std::string::npos) c = '_';
+    return safe;
+}
+
+// ─── Minimal JSON string field extractor ─────────────────────────────────────
+// Extracts the value of a simple "key": "value" pair from a JSON string.
+// Handles basic escape sequences. Not a full JSON parser — only used for
+// our own controlled sidecar format so this is sufficient.
+static std::string jsonExtract(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\t'||
+                                  json[pos]=='\r'||json[pos]=='\n')) pos++;
+    if (pos >= json.size() || json[pos] != '"') return "";
+    pos++; // skip opening quote
+    std::string val;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos+1 < json.size()) {
+            pos++;
+            if      (json[pos] == 'n') val += '\n';
+            else if (json[pos] == 't') val += '\t';
+            else if (json[pos] == '"') val += '"';
+            else if (json[pos] == '\\') val += '\\';
+            else                        val += json[pos];
+        } else {
+            val += json[pos];
+        }
+        pos++;
+    }
+    return val;
+}
+
+// ─── Load metadata sidecar ────────────────────────────────────────────────────
+// Looks for media/info/[safe title].json and extracts the description.
+// Also tries media/info/[rom stem].json as fallback.
+// If found, populates m_description (only if not already set by setDescription()).
+void GameDetailsPanel::loadMetadataSidecar() {
+    if (!m_description.empty()) return; // already set externally, don't overwrite
+
+    // Try scraped title first, then ROM stem as fallback
+    std::vector<std::string> candidates = {
+        m_mediaDir + "info/" + safeFilename(m_game.title) + ".json",
+    };
+    fs::path romPath(m_game.path);
+    std::string romStem = safeFilename(romPath.stem().string());
+    if (romStem != safeFilename(m_game.title))
+        candidates.push_back(m_mediaDir + "info/" + romStem + ".json");
+
+    for (const auto& infoPath : candidates) {
+        if (!fs::exists(infoPath)) continue;
+
+        std::ifstream f(infoPath);
+        if (!f.is_open()) continue;
+
+        std::stringstream ss;
+        ss << f.rdbuf();
+        std::string json = ss.str();
+
+        std::string desc = jsonExtract(json, "description");
+        if (!desc.empty()) {
+            m_description = desc;
+            // Also load other fields if the game entry didn't have them
+            std::string dev = jsonExtract(json, "developer");
+            std::string pub = jsonExtract(json, "publisher");
+            std::string dat = jsonExtract(json, "releaseDate");
+            std::string gen = jsonExtract(json, "genre");
+            // Store for potential display (future expansion)
+            if (m_developer.empty())   m_developer   = dev;
+            if (m_publisher.empty())   m_publisher   = pub;
+            if (m_releaseDate.empty()) m_releaseDate = dat;
+            if (m_genre.empty())       m_genre       = gen;
+
+            std::cout << "[Details] Loaded metadata from: " << infoPath << "\n";
+            return;
+        }
+    }
+
+    std::cout << "[Details] No metadata sidecar found for: " << m_game.title << "\n";
+}
+
 void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     freeScreenshotTextures();
     freeTrophyTextures();
@@ -31,6 +122,10 @@ void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     m_pendingAction = DetailsPanelAction::NONE;
     m_coverTexture  = nullptr;
     m_description.clear();
+    m_developer.clear();
+    m_publisher.clear();
+    m_releaseDate.clear();
+    m_genre.clear();
     m_screenshotPaths.clear();
     m_trophyBadgePaths.clear();
     m_screenshotIndex  = 0;
@@ -38,6 +133,7 @@ void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     m_trophiesTotal    = 0;
 
     buildMenuItems();
+    loadMetadataSidecar();    // ← Load description from disk
     loadScreenshotTextures();
     loadTrophyTextures();
     std::cout << "[Details] Opened for: " << game.title << "\n";
@@ -65,11 +161,6 @@ void GameDetailsPanel::buildMenuItems() {
 }
 
 // ─── Screenshot loading ───────────────────────────────────────────────────────
-// Looks in: media/screenshots/[safe game title]/
-// Also tries the ROM filename stem as a fallback folder name.
-// Loads ALL .jpg and .png files found, sorted by filename, up to MAX_SCREENSHOTS.
-// If no scraped screenshots are found, the strip is hidden entirely.
-// Save state thumbnails are NOT shown here — they belong in the save/load grid.
 void GameDetailsPanel::setScreenshots(const std::vector<std::string>& paths) {
     m_screenshotPaths = paths;
     if (m_open) {
@@ -78,32 +169,20 @@ void GameDetailsPanel::setScreenshots(const std::vector<std::string>& paths) {
     }
 }
 
-// Sanitize a name for use as a filename/folder name (mirrors GameScraper logic)
-static std::string safeFilename(const std::string& name) {
-    std::string safe = name;
-    const std::string invalid = "\\/:*?\"<>|";
-    for (auto& c : safe)
-        if (invalid.find(c) != std::string::npos) c = '_';
-    return safe;
-}
-
 void GameDetailsPanel::loadScreenshotTextures() {
     freeScreenshotTextures();
 
-    // Build candidate folder list — try clean title first, then ROM stem
-    std::string mediaDir = "media/";
     std::vector<std::string> folders;
 
     std::string safeTitle = safeFilename(m_game.title);
-    folders.push_back(mediaDir + "screenshots/" + safeTitle + "/");
+    folders.push_back(m_mediaDir + "screenshots/" + safeTitle + "/");
 
     fs::path romPath(m_game.path);
     std::string romStem     = romPath.stem().string();
     std::string safeRomStem = safeFilename(romStem);
     if (safeRomStem != safeTitle)
-        folders.push_back(mediaDir + "screenshots/" + safeRomStem + "/");
+        folders.push_back(m_mediaDir + "screenshots/" + safeRomStem + "/");
 
-    // Collect all image files from the first folder that exists and has images
     std::vector<std::string> imagePaths;
     for (const auto& folder : folders) {
         if (!fs::exists(folder)) continue;
@@ -119,14 +198,11 @@ void GameDetailsPanel::loadScreenshotTextures() {
         }
     }
 
-    // Also include any explicitly-set paths (from setScreenshots() calls)
     for (const auto& p : m_screenshotPaths)
         if (fs::exists(p)) imagePaths.push_back(p);
 
-    // Sort so numbered files (01_, 02_, 03_) appear in the right order
     std::sort(imagePaths.begin(), imagePaths.end());
 
-    // Load up to MAX_SCREENSHOTS textures
     for (const auto& path : imagePaths) {
         SDL_Texture* tex = IMG_LoadTexture(m_renderer, path.c_str());
         if (tex) {
@@ -154,10 +230,7 @@ void GameDetailsPanel::setTrophyInfo(int unlocked, int total,
     m_trophiesUnlocked = unlocked;
     m_trophiesTotal    = total;
     m_trophyBadgePaths = badgePaths;
-    if (m_open) {
-        freeTrophyTextures();
-        loadTrophyTextures();
-    }
+    if (m_open) { freeTrophyTextures(); loadTrophyTextures(); }
 }
 
 void GameDetailsPanel::loadTrophyTextures() {
@@ -181,35 +254,27 @@ void GameDetailsPanel::freeTrophyTextures() {
 void GameDetailsPanel::handleEvent(const SDL_Event& e) {
     if (!m_open) return;
     NavAction action = m_nav->processEvent(e);
-    if (action != NavAction::NONE)
-        navigateMenu(action);
+    if (action != NavAction::NONE) navigateMenu(action);
     action = m_nav->updateHeld(SDL_GetTicks());
-    if (action != NavAction::NONE)
-        navigateMenu(action);
+    if (action != NavAction::NONE) navigateMenu(action);
 }
 
 void GameDetailsPanel::navigateMenu(NavAction action) {
     int cols = 2;
-
     switch (action) {
-        // ── Menu grid (arrows) ─────────────────────────────────────────────
         case NavAction::UP:
-            if (m_selectedItem >= cols) m_selectedItem -= cols;
-            break;
+            if (m_selectedItem >= cols) m_selectedItem -= cols; break;
         case NavAction::DOWN:
             if (m_selectedItem + cols < (int)m_items.size())
                 m_selectedItem += cols;
             break;
         case NavAction::LEFT:
-            if (m_selectedItem % cols != 0) m_selectedItem--;
-            break;
+            if (m_selectedItem % cols != 0) m_selectedItem--; break;
         case NavAction::RIGHT:
             if (m_selectedItem % cols != cols - 1 &&
                 m_selectedItem + 1 < (int)m_items.size())
                 m_selectedItem++;
             break;
-
-        // ── Screenshot cycling (L1/R1 or Page Up/Down) ────────────────────
         case NavAction::SHOULDER_L:
             if ((int)m_screenshotTextures.size() > 1)
                 m_screenshotIndex = (m_screenshotIndex - 1 +
@@ -221,10 +286,8 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
                 m_screenshotIndex = (m_screenshotIndex + 1) %
                     (int)m_screenshotTextures.size();
             break;
-
         case NavAction::CONFIRM:
-            activateSelected();
-            break;
+            activateSelected(); break;
         case NavAction::BACK:
         case NavAction::MENU:
             m_pendingAction = DetailsPanelAction::CLOSE;
@@ -280,16 +343,12 @@ void GameDetailsPanel::renderCoverHero() {
     int panelX      = m_w - panelW + slideOffset;
     int shelfW      = panelX;
 
-    // Maximum bounds the cover can occupy (55% of shelf width, centred)
     int maxW = (int)(shelfW * 0.55f);
-    int maxH = (int)(m_h * 0.70f);  // never taller than 70% of screen height
+    int maxH = (int)(m_h * 0.70f);
     int areaX = (shelfW - maxW) / 2;
     int areaY = (m_h - maxH) / 2;
 
-    // Compute actual image rect using the same fit-to-box logic as the shelf cards:
-    // scale uniformly so the image fits within maxW × maxH, preserving aspect ratio.
-    // img is the ONLY rect that matters — shadow, image and title all reference it.
-    SDL_Rect img = { areaX, areaY, maxW, maxH }; // fallback if texture query fails
+    SDL_Rect img = { areaX, areaY, maxW, maxH };
     {
         int texW = 0, texH = 0;
         SDL_QueryTexture(m_coverTexture, nullptr, nullptr, &texW, &texH);
@@ -297,19 +356,16 @@ void GameDetailsPanel::renderCoverHero() {
             float scale = std::min((float)maxW / texW, (float)maxH / texH);
             int dw = (int)(texW * scale);
             int dh = (int)(texH * scale);
-            img = { areaX + (maxW - dw) / 2,
-                    areaY + (maxH - dh) / 2, dw, dh };
+            img = { areaX + (maxW - dw) / 2, areaY + (maxH - dh) / 2, dw, dh };
         }
     }
 
-    // Shadow — behind the image rect only, so it exactly traces the cover edge
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 130);
     SDL_Rect shadow = { img.x + 10, img.y + 10, img.w, img.h };
     SDL_RenderFillRect(m_renderer, &shadow);
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-    // Draw image — no background fill behind or around it, dimmed shelf shows through
     SDL_RenderCopy(m_renderer, m_coverTexture, nullptr, &img);
 
     m_theme->drawTextCentered(m_game.title,
@@ -325,14 +381,6 @@ void GameDetailsPanel::renderCoverHero() {
 }
 
 // ─── renderPanel ─────────────────────────────────────────────────────────────
-// Top-to-bottom layout, right panel:
-//   [Screenshot strip — 40% panel height, only if screenshots exist]
-//   [Divider]
-//   [Trophy row]
-//   [Divider]
-//   [Game description]
-//   [Menu grid — anchored to bottom, always visible]
-//   [Footer]
 void GameDetailsPanel::renderPanel() {
     const auto& pal = m_theme->palette();
     int panelW      = (int)(m_w * PANEL_FRACTION);
@@ -341,8 +389,7 @@ void GameDetailsPanel::renderPanel() {
 
     SDL_Rect panel = { panelX, 0, panelW, m_h };
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(m_renderer,
-        pal.bgPanel.r, pal.bgPanel.g, pal.bgPanel.b, 245);
+    SDL_SetRenderDrawColor(m_renderer, pal.bgPanel.r, pal.bgPanel.g, pal.bgPanel.b, 245);
     SDL_RenderFillRect(m_renderer, &panel);
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
@@ -369,28 +416,21 @@ void GameDetailsPanel::renderPanel() {
 
     renderDescription(contentX, contentW, y);
 
-    // Menu grid always anchored to bottom
     renderMenuGrid(contentX, contentW);
 
-    // Footer — include screenshot hint if multiple shots exist
     m_theme->drawFooterHints(m_w, m_h, "Select", "Back");
     if (hasScreenshots && (int)m_screenshotTextures.size() > 1) {
         m_theme->drawText(
             "PgUp/PgDn or L1/R1: cycle screenshots",
-            contentX,
-            m_h - m_theme->layout().footerH + 8,
+            contentX, m_h - m_theme->layout().footerH + 8,
             pal.textDisable, FontSize::TINY);
     }
 }
 
 // ─── Screenshot strip ─────────────────────────────────────────────────────────
-// 40% of panel height. Image is letterboxed/pillarboxed to fill the area
-// correctly regardless of whether it's 4:3 native, 16:9, or anything else.
-// Black bars fill any unused space — no stretching, no cropping.
 void GameDetailsPanel::renderScreenshotStrip(int contentX, int contentW, int topY) {
     const auto& pal = m_theme->palette();
 
-    // Header row
     std::string header = "Screenshots";
     if ((int)m_screenshotTextures.size() > 1)
         header += "  " + std::to_string(m_screenshotIndex + 1)
@@ -399,39 +439,24 @@ void GameDetailsPanel::renderScreenshotStrip(int contentX, int contentW, int top
     topY += 20;
 
     int areaW = contentW;
-    int areaH = (int)(m_h * 0.40f) - 20; // subtract header row
+    int areaH = (int)(m_h * 0.40f) - 20;
 
     SDL_Rect area = { contentX, topY, areaW, areaH };
-
-    // Black background always — covers letterbox bars cleanly
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
     SDL_RenderFillRect(m_renderer, &area);
 
     if (m_screenshotIndex < (int)m_screenshotTextures.size()) {
         SDL_Texture* tex = m_screenshotTextures[m_screenshotIndex];
-
         int texW = 0, texH = 0;
         SDL_QueryTexture(tex, nullptr, nullptr, &texW, &texH);
-
         if (texW > 0 && texH > 0) {
             float texAspect  = (float)texW / (float)texH;
             float areaAspect = (float)areaW / (float)areaH;
-
             int drawW, drawH;
-            if (texAspect > areaAspect) {
-                // Image wider than area — fit width, letterbox top/bottom
-                drawW = areaW;
-                drawH = (int)(areaW / texAspect);
-            } else {
-                // Image taller than area — fit height, pillarbox left/right
-                drawH = areaH;
-                drawW = (int)(areaH * texAspect);
-            }
-
-            int drawX = area.x + (areaW - drawW) / 2;
-            int drawY = area.y + (areaH - drawH) / 2;
-
-            SDL_Rect dst = { drawX, drawY, drawW, drawH };
+            if (texAspect > areaAspect) { drawW = areaW; drawH = (int)(areaW / texAspect); }
+            else                        { drawH = areaH; drawW = (int)(areaH * texAspect); }
+            SDL_Rect dst = { area.x + (areaW - drawW) / 2,
+                             area.y + (areaH - drawH) / 2, drawW, drawH };
             SDL_RenderCopy(m_renderer, tex, nullptr, &dst);
         }
     }
@@ -440,15 +465,12 @@ void GameDetailsPanel::renderScreenshotStrip(int contentX, int contentW, int top
 // ─── Trophy row ───────────────────────────────────────────────────────────────
 void GameDetailsPanel::renderTrophyRow(int contentX, int contentW, int y) {
     const auto& pal = m_theme->palette();
-
     if (m_trophiesTotal > 0) {
         std::string str = std::to_string(m_trophiesUnlocked) +
                           "/" + std::to_string(m_trophiesTotal) + " achievements";
         m_theme->drawText(str, contentX, y, pal.textSecond, FontSize::SMALL);
         y += 20;
-
-        int badgeSize = 40;
-        int bx = contentX;
+        int badgeSize = 40, bx = contentX;
         for (auto* tex : m_trophyTextures) {
             SDL_Rect br = { bx, y, badgeSize, badgeSize };
             SDL_RenderCopy(m_renderer, tex, nullptr, &br);
@@ -470,8 +492,9 @@ void GameDetailsPanel::renderTrophyRow(int contentX, int contentW, int y) {
 void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
     const auto& pal = m_theme->palette();
     if (!m_description.empty()) {
+        // Truncate at 220 chars — enough for 3-4 wrapped lines at TINY font size
         std::string desc = m_description;
-        if (desc.size() > 180) desc = desc.substr(0, 177) + "...";
+        if (desc.size() > 220) desc = desc.substr(0, 217) + "...";
         m_theme->drawTextWrapped(desc, contentX, y, contentW,
             pal.textSecond, FontSize::TINY);
     } else {
@@ -481,11 +504,8 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
 }
 
 // ─── Menu grid ────────────────────────────────────────────────────────────────
-// Anchored to the bottom of the panel so it's always reachable regardless
-// of how much content is stacked above it.
 void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
     const auto& pal = m_theme->palette();
-
     int footerH = m_theme->layout().footerH;
     int cols    = 2;
     int itemH   = 72;
@@ -497,33 +517,25 @@ void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
                        contentX + contentW, gridY - 8, pal.gridLine);
 
     int itemW = (contentW - 8) / cols;
-
     for (int i = 0; i < (int)m_items.size(); i++) {
-        int col = i % cols;
-        int row = i / cols;
+        int col = i % cols, row = i / cols;
         int x   = contentX + col * (itemW + 8);
         int y   = gridY + row * (itemH + 8);
         bool sel = (i == m_selectedItem);
 
         SDL_Rect itemRect = { x, y, itemW, itemH };
-
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
         SDL_Color bg = sel ? pal.bgCardHover : pal.bgCard;
         SDL_SetRenderDrawColor(m_renderer, bg.r, bg.g, bg.b, 220);
         SDL_RenderFillRect(m_renderer, &itemRect);
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
-
         if (sel) {
-            SDL_SetRenderDrawColor(m_renderer,
-                pal.accent.r, pal.accent.g, pal.accent.b, 255);
+            SDL_SetRenderDrawColor(m_renderer, pal.accent.r, pal.accent.g, pal.accent.b, 255);
             SDL_RenderDrawRect(m_renderer, &itemRect);
         }
-
         m_theme->drawTextCentered(m_items[i].icon,
-            x + itemW/2, y + 12,
-            sel ? pal.accent : pal.textSecond, FontSize::TITLE);
+            x + itemW/2, y + 12, sel ? pal.accent : pal.textSecond, FontSize::TITLE);
         m_theme->drawTextCentered(m_items[i].label,
-            x + itemW/2, y + 46,
-            sel ? pal.textPrimary : pal.textSecond, FontSize::TINY);
+            x + itemW/2, y + 46, sel ? pal.textPrimary : pal.textSecond, FontSize::TINY);
     }
 }

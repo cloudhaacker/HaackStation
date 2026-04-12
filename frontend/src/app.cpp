@@ -44,6 +44,13 @@ static constexpr int DEFAULT_H = 720;
 static constexpr int FF_MULTIPLIERS[] = { 2, 4, 6, 8 };
 static constexpr int FF_TABLE_SIZE    = 4;
 
+// Turbo multiplier table — index matches turboSpeed setting
+// 0=1.5x  1=2x  2=3x  3=4x  4=6x
+// We run TURBO_MULTS[idx] frames per fixed step.
+// Frame counts chosen so effective speed ≈ label: 3 frames ≈ 1.5x at 60fps, etc.
+static constexpr int TURBO_MULTS[] = { 3, 4, 6, 8, 12 };
+static const char*   TURBO_SPEED_LABELS[] = { "1.5x", "2x", "3x", "4x", "6x" };
+
 HaackApp::HaackApp() {
 #ifdef _WIN32
     {
@@ -293,6 +300,27 @@ int HaackApp::run() {
                             m_rumbleNextAt = nowMs + RUMBLE_PULSE_INTERVAL_MS;
                         }
 
+                    } else if (m_turboActive) {
+                        // ── Turbo ─────────────────────────────────────────────
+                        // Persistent speed boost — audio plays at game speed
+                        // (slightly fast), no mute, no rumble. Toggled on/off
+                        // by holding R1+R2 for TURBO_HOLD_DELAY_MS.
+                        const int turboMax = 4;
+                        int idx  = m_haackSettings.turboSpeed;
+                        if (idx < 0)        idx = 0;
+                        if (idx > turboMax) idx = turboMax;
+                        int mult = TURBO_MULTS[idx];
+
+                        // Run extra frames but keep audio — this makes audio
+                        // run slightly fast which matches how other emulators
+                        // handle turbo (same as playing a tape faster).
+                        for (int t = 0; t < mult; ++t) {
+                            m_core->runFrame();
+                            if (m_ra && m_ra->isGameLoaded())
+                                m_ra->doFrame(m_core.get());
+                        }
+                        m_rewind->captureFrame();
+
                     } else {
                         // ── Normal frame ──────────────────────────────────────
                         m_core->runFrame();
@@ -360,7 +388,12 @@ void HaackApp::handleEvents() {
                         continue;
                     }
                     if (key == SDLK_F12) {
-                        takeScreenshot();
+                        // Capture with overlay when in-game menu is open (disc select etc.)
+                        // Otherwise capture clean game framebuffer only.
+                        if (m_inGameMenu && m_inGameMenu->isOpen())
+                            takeUIScreenshot();
+                        else
+                            takeScreenshot();
                         continue;
                     }
                     if (key == SDLK_f) {
@@ -453,8 +486,14 @@ void HaackApp::handleEvents() {
                             if (m_inGameMenu->isOpen()) m_inGameMenu->close();
                             else                        m_inGameMenu->open();
                         } else if (SDL_GameControllerGetButton(ctrl, SDL_CONTROLLER_BUTTON_BACK)) {
-                            // Select+Y = screenshot
-                            takeScreenshot();
+                            // Select+Y = screenshot.
+                            // When in-game menu (disc select etc.) is open, capture
+                            // the full screen with overlay via takeUIScreenshot().
+                            // Otherwise capture the clean game framebuffer.
+                            if (m_inGameMenu && m_inGameMenu->isOpen())
+                                takeUIScreenshot();
+                            else
+                                takeScreenshot();
                         }
                     }
                 }
@@ -539,6 +578,29 @@ void HaackApp::processInGameMenuActions() {
             }
             // Remember this disc for next launch
             m_discMemory.setDisc(m_currentGamePath, disc);
+
+            // Build disc art paths using the scraper's naming convention:
+            // media/discs/[safe game title]_disc1.png, _disc2.png, etc.
+            // Uses the GameEntry title (from the browser) for accurate matching.
+            {
+                std::string mediaDir = m_haackSettings.romsPath.empty()
+                    ? "media/" : m_haackSettings.romsPath + "/media/";
+                const GameEntry* ge = m_browser->selectedGameEntry();
+                std::string artTitle = (ge && !ge->title.empty())
+                    ? ge->title
+                    : stripRomRegion(fs::path(m_currentGamePath).stem().string());
+                // Sanitize title the same way the scraper does
+                const std::string invalid = "\\/:*?\"<>|";
+                for (auto& c : artTitle)
+                    if (invalid.find(c) != std::string::npos) c = '_';
+                std::vector<std::string> artPaths;
+                artPaths.reserve(discPaths.size());
+                for (int d = 1; d <= (int)discPaths.size(); d++)
+                    artPaths.push_back(mediaDir + "discs/" + artTitle
+                                       + "_disc" + std::to_string(d) + ".png");
+                m_inGameMenu->setDiscArtPaths(artPaths);
+            }
+
             // Reload core on the new disc
             std::string savedPath = m_currentGamePath;
             if (m_core->isGameLoaded()) m_core->unloadGame();
@@ -599,6 +661,10 @@ void HaackApp::update(float deltaMs) {
                 m_browser->clearWantsDetails();
                 auto* game = m_browser->selectedGameEntry();
                 if (game) {
+                    // Tell the panel where media lives before opening
+                    std::string mediaDir = m_haackSettings.romsPath.empty()
+                        ? "media/" : m_haackSettings.romsPath + "/media/";
+                    m_details->setMediaDir(mediaDir);
                     m_details->open(*game, m_saveStates.get());
                     SDL_Texture* cover = m_browser->getCoverArtForGame(game->path);
                     m_details->setCoverTexture(cover);
@@ -704,6 +770,7 @@ void HaackApp::render() {
             if (m_inGameMenu->isOpen()) m_inGameMenu->render();
             if (m_fastForward)          renderFastForwardIndicator();
             if (m_rewinding)            renderRewindIndicator();
+            if (m_turboActive)          renderTurboIndicator();
             break;
         case AppState::SETTINGS:     m_settings->render(); break;
         case AppState::SCRAPING:     m_scraper->render();  break;
@@ -781,6 +848,44 @@ void HaackApp::renderRewindIndicator() {
     m_theme->drawTextCentered(label,
         badgeX + badgeW / 2, textY,
         violet, FontSize::SMALL);
+}
+
+// ─── renderTurboIndicator ────────────────────────────────────────────────────
+// Persistent green badge shown top-right whenever turbo is active.
+// Stacks below the FF and rewind badges if those are also showing.
+// No fill bar (turbo has no buffer) — just a steady label.
+void HaackApp::renderTurboIndicator() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    const int turboMax = 4;
+    int idx = m_haackSettings.turboSpeed;
+    if (idx < 0)        idx = 0;
+    if (idx > turboMax) idx = turboMax;
+    // Display the effective speed as a fraction string: 1.5x, 2x, 3x, 4x, 6x
+    
+    std::string label = std::string("TRB ") + TURBO_SPEED_LABELS[idx];
+
+    int badgeW = 86, badgeH = 34;
+    int badgeX = w - badgeW - 14;
+    // Stack below FF badge (14px) and RW badge (14+42=56px)
+    int badgeY = 14 + 42 + 42;
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 10, 30, 10, 210);
+    SDL_Rect bg = { badgeX, badgeY, badgeW, badgeH };
+    SDL_RenderFillRect(m_renderer, &bg);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // Green border
+    SDL_SetRenderDrawColor(m_renderer, 60, 200, 80, 255);
+    SDL_RenderDrawRect(m_renderer, &bg);
+
+    SDL_Color green = { 100, 230, 110, 255 };
+    int textY = badgeY + (badgeH - (int)FontSize::SMALL) / 2 - 1;
+    m_theme->drawTextCentered(label,
+        badgeX + badgeW / 2, textY,
+        green, FontSize::SMALL);
 }
 
 // ─── renderScreenshotNotification ────────────────────────────────────────────
@@ -900,6 +1005,26 @@ void HaackApp::launchGame(const std::string& path) {
                 m_inGameMenu->setDiscInfo(discPaths, lastDisc);
                 SDL_Texture* cover = m_browser->getCoverArtForGame(path);
                 m_inGameMenu->setCoverTexture(cover);
+
+                // Build disc art paths — media/discs/[safe title]_disc1.png etc.
+                {
+                    std::string mediaDir = m_haackSettings.romsPath.empty()
+                        ? "media/" : m_haackSettings.romsPath + "/media/";
+                    const GameEntry* ge = m_browser->selectedGameEntry();
+                    std::string artTitle = (ge && !ge->title.empty())
+                        ? ge->title
+                        : stripRomRegion(fs::path(path).stem().string());
+                    const std::string invalid = "\\/:*?\"<>|";
+                    for (auto& c : artTitle)
+                        if (invalid.find(c) != std::string::npos) c = '_';
+                    std::vector<std::string> artPaths;
+                    artPaths.reserve(discPaths.size());
+                    for (int d = 1; d <= (int)discPaths.size(); d++)
+                        artPaths.push_back(mediaDir + "discs/" + artTitle
+                                           + "_disc" + std::to_string(d) + ".png");
+                    m_inGameMenu->setDiscArtPaths(artPaths);
+                }
+
                 std::cout << "[HaackStation] Multi-disc: "
                           << discPaths.size() << " discs, on disc "
                           << (lastDisc + 1) << "\n";
@@ -1018,6 +1143,8 @@ void HaackApp::stopGame() {
     revertPerGameSettings(); // restore global before clearing game state
     m_fastForward     = false;
     m_rewinding       = false;
+    m_turboActive     = false;   // ← reset turbo on game exit
+    m_turboHeldSince  = 0;
     m_ffHeldSince     = 0;
     m_rewindHeldSince = 0;
     m_rumbleNextAt    = 0;
@@ -1218,11 +1345,27 @@ void HaackApp::updateGameInput() {
 
     int mask = 0;
 
+    // Use SDL_GameControllerFromInstanceID to get the already-open controller
+    // handle from ControllerNav rather than opening a second handle with
+    // SDL_GameControllerOpen. Opening it again each frame can return a
+    // different internal state and makes the close at the end redundant.
     SDL_GameController* ctrl = nullptr;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
-            ctrl = SDL_GameControllerOpen(i);
+            SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
+            ctrl = SDL_GameControllerFromInstanceID(id);
+            if (!ctrl) ctrl = SDL_GameControllerOpen(i); // fallback: open if needed
             break;
+        }
+    }
+    bool ctrlOpenedHere = false; // track if WE opened it (so we close it)
+    if (!ctrl) {
+        for (int i = 0; i < SDL_NumJoysticks(); i++) {
+            if (SDL_IsGameController(i)) {
+                ctrl = SDL_GameControllerOpen(i);
+                ctrlOpenedHere = true;
+                break;
+            }
         }
     }
     if (ctrl) {
@@ -1273,22 +1416,54 @@ void HaackApp::updateGameInput() {
             }
         }
 
-        // R2 = fast forward with hold delay
-        if (r2 > 8000) {
-            if (m_ffHeldSince == 0)
-                m_ffHeldSince = SDL_GetTicks();
-            if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
-                m_fastForward = true;
+        // ── R1 + R2 combo = Turbo toggle (checked FIRST, takes priority over FF) ──
+        // We must read R1 and R2 together before deciding what each does alone.
+        // If BOTH are held for TURBO_HOLD_DELAY_MS, turbo toggles on or off.
+        // While R1+R2 are both held, R2 does NOT activate fast-forward, and
+        // R1 is NOT passed to the PS1 game — the combo is fully consumed.
+        bool r1Held       = btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+        bool r2Held       = (r2 > 8000);
+        bool turboCombo   = r1Held && r2Held;
+
+        if (turboCombo) {
+            // Start or continue the hold timer
+            if (m_turboHeldSince == 0)
+                m_turboHeldSince = SDL_GetTicks();
+
+            if (SDL_GetTicks() - m_turboHeldSince >= TURBO_HOLD_DELAY_MS) {
+                // Toggle turbo and set sentinel so we don't re-fire until released
+                m_turboActive    = !m_turboActive;
+                m_turboHeldSince = 0xFFFFFFFF;  // sentinel: held but already fired
+                std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF") << "\n";
+            }
+
+            // Suppress both FF and R button while combo is held
+            m_fastForward = false;
+            m_ffHeldSince = 0;
+            // Strip R1 (PS1 R button) from the mask — combo shouldn't fire in-game
+            mask &= ~(1 << RETRO_DEVICE_ID_JOYPAD_R);
+
         } else {
-            const Uint8* ks2 = SDL_GetKeyboardState(nullptr);
-            if (!ks2[SDL_SCANCODE_F]) {
-                m_fastForward = false;
-                m_ffHeldSince = 0;
-                if (!m_rewinding) m_rumbleNextAt = 0;
+            // Combo released — reset the hold timer (sentinel or normal)
+            m_turboHeldSince = 0;
+
+            // ── R2 alone = fast-forward ───────────────────────────────────────
+            if (r2Held) {
+                if (m_ffHeldSince == 0)
+                    m_ffHeldSince = SDL_GetTicks();
+                if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
+                    m_fastForward = true;
+            } else {
+                const Uint8* ks2 = SDL_GetKeyboardState(nullptr);
+                if (!ks2[SDL_SCANCODE_F]) {
+                    m_fastForward = false;
+                    m_ffHeldSince = 0;
+                    if (!m_rewinding) m_rumbleNextAt = 0;
+                }
             }
         }
 
-        SDL_GameControllerClose(ctrl);
+        if (ctrlOpenedHere) SDL_GameControllerClose(ctrl);
     }
 
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
@@ -1299,6 +1474,24 @@ void HaackApp::updateGameInput() {
             m_ffHeldSince = SDL_GetTicks();
         if (SDL_GetTicks() - m_ffHeldSince >= FF_HOLD_DELAY_MS)
             m_fastForward = true;
+    }
+
+    // T key = turbo toggle — hold for TURBO_HOLD_DELAY_MS to activate/deactivate.
+    // Uses same sentinel pattern as controller: 0xFFFFFFFF means "already fired,
+    // wait for key release before allowing another toggle".
+    if (ks[SDL_SCANCODE_T]) {
+        if (m_turboHeldSince == 0)
+            m_turboHeldSince = SDL_GetTicks();
+        if (m_turboHeldSince != 0xFFFFFFFF &&
+            SDL_GetTicks() - m_turboHeldSince >= TURBO_HOLD_DELAY_MS) {
+            m_turboActive    = !m_turboActive;
+            m_turboHeldSince = 0xFFFFFFFF;  // sentinel: don't re-fire until released
+            std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF")
+                      << " (keyboard)\n";
+        }
+    } else {
+        // Key released — clear sentinel so next press can fire
+        m_turboHeldSince = 0;
     }
 
     // Backtick / grave = rewind
