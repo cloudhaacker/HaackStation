@@ -100,6 +100,12 @@ private:
     std::string extractMediaUrl(const std::string& json,
                                  const std::string& mediaType) const;
 
+    // Extract game description from ScreenScraper's synopsis array.
+    // ScreenScraper returns synopsis as: [{"langue":"en","text":"..."},...]
+    // extractField() cannot handle arrays so this dedicated function is required.
+    // Falls back to the first entry if no English entry is found.
+    std::string extractSynopsis(const std::string& json) const;
+
     // Extract disc art URLs from "support-texture" entries.
     // Returns map of discNumber (1-based int) → best URL for that disc.
     // Falls back to "support-2D" if support-texture entries are absent.

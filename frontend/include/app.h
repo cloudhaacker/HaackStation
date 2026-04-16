@@ -63,6 +63,7 @@ private:
     void renderFastForwardIndicator();
     void renderRewindIndicator();
     void renderTurboIndicator();                     // ← NEW
+    void renderTurboDiagnostic();                    // TEMP: remove once turbo confirmed working
     void renderScreenshotNotification();
 
     // ── Rewind helpers ────────────────────────────────────────────────────────

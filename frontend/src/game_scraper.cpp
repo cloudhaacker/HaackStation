@@ -440,7 +440,56 @@ void GameScraper::saveMetadataSidecar(const ScrapeResult& result,
 
 
 
-// ─── Parse ScreenScraper response ────────────────────────────────────────────
+// ─── Synopsis extractor ───────────────────────────────────────────────────────
+// ScreenScraper returns synopsis as a JSON array of language objects:
+//   "synopsis": [{"langue": "en", "text": "..."}, {"langue": "fr", "text": "..."}, ...]
+// extractField() stops at the '[' and returns empty. This function walks the
+// array, preferring "langue":"en", falling back to the first entry found.
+std::string GameScraper::extractSynopsis(const std::string& json) const {
+    std::string search = "\"synopsis\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return "";
+
+    // Advance to the opening '[' of the array
+    pos = json.find('[', pos + search.size());
+    if (pos == std::string::npos) return "";
+
+    std::string firstText;
+
+    while (true) {
+        // Find next object in the array
+        size_t objStart = json.find('{', pos);
+        if (objStart == std::string::npos) break;
+
+        // Find the matching closing brace
+        size_t objEnd = objStart;
+        int depth = 0;
+        for (size_t i = objStart; i < json.size(); i++) {
+            if      (json[i] == '{') depth++;
+            else if (json[i] == '}') {
+                depth--;
+                if (depth == 0) { objEnd = i + 1; break; }
+            }
+        }
+
+        std::string obj  = json.substr(objStart, objEnd - objStart);
+        std::string lang = extractField(obj, "langue");
+        std::string text = extractField(obj, "text");
+
+        if (firstText.empty() && !text.empty())
+            firstText = text;
+
+        if (lang == "en" && !text.empty())
+            return text;    // Preferred: English entry found
+
+        pos = objEnd;
+        if (pos >= json.size() || json[pos] == ']') break;
+    }
+
+    return firstText;   // Fallback: first language entry
+}
+
+
 ScrapeResult GameScraper::parseResponse(const std::string& json,
                                          const GameEntry& game) const {
     ScrapeResult result;
@@ -467,7 +516,7 @@ ScrapeResult GameScraper::parseResponse(const std::string& json,
     if (result.title.empty()) result.title = extractField(json, "nom");
     if (result.title.empty()) result.title = game.title;
 
-    result.description = extractField(json, "synopsis");
+    result.description = extractSynopsis(json);   // synopsis is an array, not a plain string
     result.developer   = extractField(json, "developpeur");
     result.publisher   = extractField(json, "editeur");
     result.releaseDate = extractField(json, "date");

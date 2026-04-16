@@ -50,6 +50,7 @@ static std::string jsonExtract(const std::string& json, const std::string& key) 
         if (json[pos] == '\\' && pos+1 < json.size()) {
             pos++;
             if      (json[pos] == 'n') val += '\n';
+            else if (json[pos] == 'r') val += '\r';   // \r from ScreenScraper
             else if (json[pos] == 't') val += '\t';
             else if (json[pos] == '"') val += '"';
             else if (json[pos] == '\\') val += '\\';
@@ -114,13 +115,15 @@ void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     freeScreenshotTextures();
     freeTrophyTextures();
 
-    m_game          = game;
-    m_saves         = saves;
-    m_open          = true;
-    m_slideAnim     = 0.f;
-    m_selectedItem  = 0;
-    m_pendingAction = DetailsPanelAction::NONE;
-    m_coverTexture  = nullptr;
+    m_game           = game;
+    m_saves          = saves;
+    m_open           = true;
+    m_slideAnim      = 0.f;
+    m_selectedItem   = 0;
+    m_descFocused    = false;
+    m_descScrollOffset = 0;
+    m_pendingAction  = DetailsPanelAction::NONE;
+    m_coverTexture   = nullptr;
     m_description.clear();
     m_developer.clear();
     m_publisher.clear();
@@ -153,11 +156,13 @@ void GameDetailsPanel::onWindowResize(int w, int h) {
 // ─── Menu items ───────────────────────────────────────────────────────────────
 void GameDetailsPanel::buildMenuItems() {
     m_items.clear();
+    // 4 buttons in a 2x2 grid — condensed from the original 5.
+    // Shaders + AI Upscaling merged into Enhancements (opens OPEN_SHADERS
+    // for now; a dedicated Enhancements screen can be wired later).
     m_items.push_back({ "\xF0\x9F\x92\xBE", "Save System",   DetailsPanelAction::OPEN_SAVES,             true, "Save states & memory card" });
-    m_items.push_back({ "\xF0\x9F\x8E\xA8", "Shaders",       DetailsPanelAction::OPEN_SHADERS,           true, "Post-process effects" });
-    m_items.push_back({ "\xE2\x9C\xA8",     "AI Upscaling",  DetailsPanelAction::OPEN_AI_UPSCALE,        true, "Enhance textures" });
-    m_items.push_back({ "\xE7\xBF\xBB",     "Translation",   DetailsPanelAction::OPEN_TRANSLATION,       true, "On-the-fly translation" });
     m_items.push_back({ "\xE2\x9A\x99",     "Game Settings", DetailsPanelAction::OPEN_PER_GAME_SETTINGS, true, "Per-game overrides" });
+    m_items.push_back({ "\xF0\x9F\x8E\xA8", "Enhancements",  DetailsPanelAction::OPEN_SHADERS,           true, "Shaders, upscaling & more" });
+    m_items.push_back({ "\xE7\xBF\xBB",     "Translation",   DetailsPanelAction::OPEN_TRANSLATION,       true, "On-the-fly translation" });
 }
 
 // ─── Screenshot loading ───────────────────────────────────────────────────────
@@ -261,9 +266,36 @@ void GameDetailsPanel::handleEvent(const SDL_Event& e) {
 
 void GameDetailsPanel::navigateMenu(NavAction action) {
     int cols = 2;
+
+    // When the description box is focused, UP/DOWN scroll it.
+    // BACK exits focus back to the menu buttons.
+    if (m_descFocused) {
+        switch (action) {
+            case NavAction::UP:
+                if (m_descScrollOffset > 0) m_descScrollOffset -= 20;
+                break;
+            case NavAction::DOWN:
+                m_descScrollOffset += 20;
+                break;
+            case NavAction::BACK:
+            case NavAction::CONFIRM:
+                m_descFocused = false;
+                break;
+            default: break;
+        }
+        return;
+    }
+
     switch (action) {
         case NavAction::UP:
-            if (m_selectedItem >= cols) m_selectedItem -= cols; break;
+            // If at top row of menu, focus the description box instead
+            if (m_selectedItem < cols) {
+                m_descFocused = true;
+                m_descScrollOffset = 999999; // scroll to bottom so UP scrolls up
+            } else {
+                m_selectedItem -= cols;
+            }
+            break;
         case NavAction::DOWN:
             if (m_selectedItem + cols < (int)m_items.size())
                 m_selectedItem += cols;
@@ -488,18 +520,118 @@ void GameDetailsPanel::renderTrophyRow(int contentX, int contentW, int y) {
     }
 }
 
-// ─── Description ──────────────────────────────────────────────────────────────
+// ─── cleanDescription ────────────────────────────────────────────────────────
+// Fixes all known ScreenScraper text encoding issues:
+//   1. HTML entities: &quot; -> "   &amp; -> &   &lt; -> <   &gt; -> >
+//   2. Stale 'r' artifacts from old sidecars (literal 'r' where \r\n was)
+//   3. Tab indentation characters
+//   4. Excess newline runs collapsed to 2
+static std::string cleanDescription(const std::string& raw) {
+    std::string s = raw;
+
+    // HTML entity decode
+    struct HtmlEnt { const char* entity; char ch; };
+    static const HtmlEnt ents[] = {
+        { "&quot;",  '"'  }, { "&amp;",  '&' }, { "&lt;",  '<' },
+        { "&gt;",   '>'   }, { "&apos;", '\'' }, { nullptr, 0  }
+    };
+    for (int ei = 0; ents[ei].entity; ei++) {
+        std::string from = ents[ei].entity;
+        std::string to(1, ents[ei].ch);
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+    }
+
+    // Fix stale 'r' artifacts and tabs
+    {
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); i++) {
+            if (i + 1 < s.size() && s[i] == 'r' && s[i + 1] == '\n') {
+                bool prevPunct   = i > 0 && (s[i-1]=='.'||s[i-1]=='!'||
+                                             s[i-1]=='?'||s[i-1]==';'||s[i-1]==',');
+                bool prevNewline = i > 0 && s[i-1] == '\n';
+                if (prevPunct || prevNewline) {
+                    out += '\n';
+                    i++;
+                    while (i + 1 < s.size() && (s[i+1]=='\t'||s[i+1]==' ')) i++;
+                    continue;
+                }
+            }
+            out += (s[i] == '\t') ? ' ' : s[i];
+        }
+        s = out;
+    }
+
+    // Collapse 3+ newlines to 2 and trim
+    {
+        std::string out; out.reserve(s.size()); int nl = 0;
+        for (char c : s) { if (c=='\n'){nl++;if(nl<=2)out+=c;}else{nl=0;out+=c;} }
+        s = out;
+    }
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
+}
+
+// ─── Description (scrollable) ─────────────────────────────────────────────────
+// Renders the game description inside a clipped box. When m_descFocused is true,
+// the box has an accent border and UP/DOWN scrolls the text. Users navigate into
+// it by pressing UP from the top row of buttons, and exit with B or A.
 void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
-    const auto& pal = m_theme->palette();
-    if (!m_description.empty()) {
-        // Truncate at 220 chars — enough for 3-4 wrapped lines at TINY font size
-        std::string desc = m_description;
-        if (desc.size() > 220) desc = desc.substr(0, 217) + "...";
-        m_theme->drawTextWrapped(desc, contentX, y, contentW,
-            pal.textSecond, FontSize::TINY);
-    } else {
-        m_theme->drawText("No description available",
-            contentX, y, pal.textDisable, FontSize::TINY);
+    const auto& pal  = m_theme->palette();
+    int footerH      = m_theme->layout().footerH;
+    int cols         = 2;
+    int itemH        = 72;
+    int rows         = ((int)m_items.size() + cols - 1) / cols;
+    int gridH        = rows * itemH + (rows - 1) * 8;
+    // Description box fills the space between the divider and the menu grid
+    int boxBottom    = m_h - footerH - gridH - 24;  // 24px gap above grid
+    int boxH         = boxBottom - y;
+    if (boxH < 40) return;  // not enough room
+
+    SDL_Rect boxRect = { contentX - 4, y - 4, contentW + 8, boxH };
+
+    // Focused state: draw an accent border around the box
+    if (m_descFocused) {
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(m_renderer,
+            pal.accent.r, pal.accent.g, pal.accent.b, 40);
+        SDL_RenderFillRect(m_renderer, &boxRect);
+        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(m_renderer,
+            pal.accent.r, pal.accent.g, pal.accent.b, 200);
+        SDL_RenderDrawRect(m_renderer, &boxRect);
+    }
+
+    std::string text = m_description.empty()
+        ? "No description available."
+        : cleanDescription(m_description);
+
+    // Clip rendering to the box so scrolled text doesn't bleed into buttons
+    SDL_Rect clip = { contentX, y, contentW, boxH };
+    SDL_RenderSetClipRect(m_renderer, &clip);
+
+    // Clamp scroll offset — we don't know total text height without measuring,
+    // so we allow scrolling and clamp on the way in navigateMenu.
+    int drawY = y - m_descScrollOffset;
+    m_theme->drawTextWrapped(text, contentX, drawY, contentW,
+        m_description.empty() ? pal.textDisable : pal.textSecond,
+        FontSize::SMALL);
+
+    SDL_RenderSetClipRect(m_renderer, nullptr);
+
+    // "Scroll to read more" hint when not focused and description is long
+    if (!m_descFocused && (int)text.size() > 180) {
+        m_theme->drawText("[ press up to scroll ]",
+            contentX, boxBottom - 18, pal.textDisable, FontSize::TINY);
+    }
+    if (m_descFocused) {
+        m_theme->drawText("[ B = back to menu ]",
+            contentX, boxBottom - 18, pal.accent, FontSize::TINY);
     }
 }
 
@@ -508,7 +640,7 @@ void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
     const auto& pal = m_theme->palette();
     int footerH = m_theme->layout().footerH;
     int cols    = 2;
-    int itemH   = 72;
+    int itemH   = 68;
     int rows    = ((int)m_items.size() + cols - 1) / cols;
     int gridH   = rows * itemH + (rows - 1) * 8;
     int gridY   = m_h - footerH - gridH - 12;
@@ -521,7 +653,7 @@ void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
         int col = i % cols, row = i / cols;
         int x   = contentX + col * (itemW + 8);
         int y   = gridY + row * (itemH + 8);
-        bool sel = (i == m_selectedItem);
+        bool sel = (!m_descFocused && i == m_selectedItem);
 
         SDL_Rect itemRect = { x, y, itemW, itemH };
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
@@ -530,12 +662,13 @@ void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
         SDL_RenderFillRect(m_renderer, &itemRect);
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
         if (sel) {
-            SDL_SetRenderDrawColor(m_renderer, pal.accent.r, pal.accent.g, pal.accent.b, 255);
+            SDL_SetRenderDrawColor(m_renderer,
+                pal.accent.r, pal.accent.g, pal.accent.b, 255);
             SDL_RenderDrawRect(m_renderer, &itemRect);
         }
         m_theme->drawTextCentered(m_items[i].icon,
-            x + itemW/2, y + 12, sel ? pal.accent : pal.textSecond, FontSize::TITLE);
+            x + itemW/2, y + 10, sel ? pal.accent : pal.textSecond, FontSize::TITLE);
         m_theme->drawTextCentered(m_items[i].label,
-            x + itemW/2, y + 46, sel ? pal.textPrimary : pal.textSecond, FontSize::TINY);
+            x + itemW/2, y + 44, sel ? pal.textPrimary : pal.textSecond, FontSize::TINY);
     }
 }

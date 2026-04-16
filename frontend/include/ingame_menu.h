@@ -176,6 +176,10 @@ private:
     // Fan centre lerp speed (fraction per second — higher = snappier)
     static constexpr float FAN_LERP_SPEED  = 6.f;
 
+    // Cached centreY at the moment SETTLED phase begins — prevents a
+    // single-frame jump when the footer hint bar renders and affects layout.
+    int m_settledCentreY = 0;
+
     // ── General ───────────────────────────────────────────────────────────────
     float m_openAnim  = 0.f;
     float m_spinAngle = 0.f;   // save state spinner

@@ -138,6 +138,10 @@ private:
 
     DetailsPanelAction m_pendingAction = DetailsPanelAction::NONE;
 
+    // Description scroll/focus state
+    bool m_descFocused     = false;  // true when UP from buttons enters desc box
+    int  m_descScrollOffset = 0;     // pixels scrolled down in description
+
     int m_w = 1280;
     int m_h = 720;
 

@@ -677,9 +677,10 @@ void InGameMenu::renderDiscSelect() {
     int centreX    = m_w / 2;
     int centreY    = (int)(m_h * 0.62f);    // selected disc centre
 
-    // Cover large during hold — fills ~45% screen height
-    int coverH_large = (int)(m_h * 0.48f);
-    int coverW_large = (int)(coverH_large / 1.4f);  // portrait ratio
+    // Cover fills 70% of screen height — larger than disc stack so it
+    // looks like the discs are sliding out from behind the case.
+    int coverH_large = (int)(m_h * 0.70f);
+    int coverW_large = (int)(coverH_large * 0.72f);  // PS1 case portrait ratio
 
     // Fan spacing: generous overlap, discs separated enough to read individually
     int fanSpacing = (int)(discR * 1.22f);

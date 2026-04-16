@@ -44,12 +44,10 @@ static constexpr int DEFAULT_H = 720;
 static constexpr int FF_MULTIPLIERS[] = { 2, 4, 6, 8 };
 static constexpr int FF_TABLE_SIZE    = 4;
 
-// Turbo multiplier table — index matches turboSpeed setting
-// 0=1.5x  1=2x  2=3x  3=4x  4=6x
-// We run TURBO_MULTS[idx] frames per fixed step.
-// Frame counts chosen so effective speed ≈ label: 3 frames ≈ 1.5x at 60fps, etc.
-static constexpr int TURBO_MULTS[] = { 3, 4, 6, 8, 12 };
-static const char*   TURBO_SPEED_LABELS[] = { "1.5x", "2x", "3x", "4x", "6x" };
+// Turbo speed ratio table — 0=1.5x  1=2x  2=3x  3=4x  4=6x
+// turboStep = fixedStep / ratio → accumulator drains faster → more frames/sec.
+static constexpr double TURBO_RATIOS[]       = { 1.5, 2.0, 3.0, 4.0, 6.0 };
+static const char*      TURBO_SPEED_LABELS[] = { "1.5x", "2x", "3x", "4x", "6x" };
 
 HaackApp::HaackApp() {
 #ifdef _WIN32
@@ -302,22 +300,18 @@ int HaackApp::run() {
 
                     } else if (m_turboActive) {
                         // ── Turbo ─────────────────────────────────────────────
-                        // Persistent speed boost — audio plays at game speed
-                        // (slightly fast), no mute, no rumble. Toggled on/off
-                        // by holding R1+R2 for TURBO_HOLD_DELAY_MS.
-                        const int turboMax = 4;
-                        int idx  = m_haackSettings.turboSpeed;
-                        if (idx < 0)        idx = 0;
-                        if (idx > turboMax) idx = turboMax;
-                        int mult = TURBO_MULTS[idx];
-
-                        // Run extra frames but keep audio — this makes audio
-                        // run slightly fast which matches how other emulators
-                        // handle turbo (same as playing a tape faster).
-                        for (int t = 0; t < mult; ++t) {
+                        // Shrink the effective step so the accumulator drains
+                        // faster → more frames run per real second.
+                        int idx = std::max(0, std::min(m_haackSettings.turboSpeed, 4));
+                        double turboStep = fixedStep / TURBO_RATIOS[idx];
+                        const int TURBO_MAX_FRAMES = 12;
+                        int turboFrames = 0;
+                        while (accumulator >= turboStep && turboFrames < TURBO_MAX_FRAMES) {
                             m_core->runFrame();
                             if (m_ra && m_ra->isGameLoaded())
                                 m_ra->doFrame(m_core.get());
+                            accumulator -= turboStep;
+                            turboFrames++;
                         }
                         m_rewind->captureFrame();
 
@@ -1421,33 +1415,17 @@ void HaackApp::updateGameInput() {
         // If BOTH are held for TURBO_HOLD_DELAY_MS, turbo toggles on or off.
         // While R1+R2 are both held, R2 does NOT activate fast-forward, and
         // R1 is NOT passed to the PS1 game — the combo is fully consumed.
-        bool r1Held       = btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-        bool r2Held       = (r2 > 8000);
-        bool turboCombo   = r1Held && r2Held;
+        bool r1Held     = btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+        bool r2Held     = (r2 > 8000);
+        bool turboCombo = r1Held && r2Held;
 
         if (turboCombo) {
-            // Start or continue the hold timer
-            if (m_turboHeldSince == 0)
-                m_turboHeldSince = SDL_GetTicks();
-
-            if (SDL_GetTicks() - m_turboHeldSince >= TURBO_HOLD_DELAY_MS) {
-                // Toggle turbo and set sentinel so we don't re-fire until released
-                m_turboActive    = !m_turboActive;
-                m_turboHeldSince = 0xFFFFFFFF;  // sentinel: held but already fired
-                std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF") << "\n";
-            }
-
-            // Suppress both FF and R button while combo is held
+            // R1+R2 held — suppress R button and fast-forward
+            mask &= ~(1 << RETRO_DEVICE_ID_JOYPAD_R);
             m_fastForward = false;
             m_ffHeldSince = 0;
-            // Strip R1 (PS1 R button) from the mask — combo shouldn't fire in-game
-            mask &= ~(1 << RETRO_DEVICE_ID_JOYPAD_R);
-
         } else {
-            // Combo released — reset the hold timer (sentinel or normal)
-            m_turboHeldSince = 0;
-
-            // ── R2 alone = fast-forward ───────────────────────────────────────
+            // R2 alone = fast-forward
             if (r2Held) {
                 if (m_ffHeldSince == 0)
                     m_ffHeldSince = SDL_GetTicks();
@@ -1468,7 +1446,7 @@ void HaackApp::updateGameInput() {
 
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
 
-    // F key fast forward — activate only after hold threshold
+    // F key fast forward
     if (ks[SDL_SCANCODE_F]) {
         if (m_ffHeldSince == 0)
             m_ffHeldSince = SDL_GetTicks();
@@ -1476,22 +1454,40 @@ void HaackApp::updateGameInput() {
             m_fastForward = true;
     }
 
-    // T key = turbo toggle — hold for TURBO_HOLD_DELAY_MS to activate/deactivate.
-    // Uses same sentinel pattern as controller: 0xFFFFFFFF means "already fired,
-    // wait for key release before allowing another toggle".
-    if (ks[SDL_SCANCODE_T]) {
-        if (m_turboHeldSince == 0)
-            m_turboHeldSince = SDL_GetTicks();
-        if (m_turboHeldSince != 0xFFFFFFFF &&
-            SDL_GetTicks() - m_turboHeldSince >= TURBO_HOLD_DELAY_MS) {
-            m_turboActive    = !m_turboActive;
-            m_turboHeldSince = 0xFFFFFFFF;  // sentinel: don't re-fire until released
-            std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF")
-                      << " (keyboard)\n";
+    // ── Unified turbo hold timer ──────────────────────────────────────────────
+    // CRITICAL: Read BOTH inputs here before deciding whether to reset the timer.
+    // The old design had two separate else-branches that each reset
+    // m_turboHeldSince=0, so they fought each other every frame and the
+    // timer could never accumulate. Now: one combined check.
+    {
+        // Re-read controller state (may have been closed above)
+        bool ctrlCombo = false;
+        for (int _i = 0; _i < SDL_NumJoysticks(); _i++) {
+            if (!SDL_IsGameController(_i)) continue;
+            SDL_GameController* tc = SDL_GameControllerFromInstanceID(
+                SDL_JoystickGetDeviceInstanceID(_i));
+            if (!tc) break;
+            Sint16 tr2 = SDL_GameControllerGetAxis(tc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            bool   tr1 = SDL_GameControllerGetButton(
+                tc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0;
+            ctrlCombo = tr1 && (tr2 > 8000);
+            break;
         }
-    } else {
-        // Key released — clear sentinel so next press can fire
-        m_turboHeldSince = 0;
+        bool tKey   = (ks[SDL_SCANCODE_T] != 0);
+        bool active = ctrlCombo || tKey;
+
+        if (active) {
+            if (m_turboHeldSince == 0)
+                m_turboHeldSince = SDL_GetTicks();
+            if (m_turboHeldSince != 0xFFFFFFFF &&
+                SDL_GetTicks() - m_turboHeldSince >= TURBO_HOLD_DELAY_MS) {
+                m_turboActive    = !m_turboActive;
+                m_turboHeldSince = 0xFFFFFFFF;
+                std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF") << "\n";
+            }
+        } else {
+            m_turboHeldSince = 0;  // no input → safe to reset
+        }
     }
 
     // Backtick / grave = rewind
