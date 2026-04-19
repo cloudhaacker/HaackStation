@@ -30,8 +30,6 @@ set(FRONTEND_SOURCES
     src/ra_manager.cpp
     src/game_details_panel.cpp
 	src/rewind_manager.cpp
-    src/ui/input_map.cpp
-    src/ui/remap_screen.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

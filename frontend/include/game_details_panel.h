@@ -139,7 +139,10 @@ private:
     DetailsPanelAction m_pendingAction = DetailsPanelAction::NONE;
 
     // Description scroll/focus state
-    bool m_descFocused     = false;  // true when UP from buttons enters desc box
+    // m_descHighlighted: UP from button grid highlights the desc box (border shown)
+    // m_descFocused:     A while highlighted enters active scroll mode
+    bool m_descHighlighted  = false;
+    bool m_descFocused      = false;
     int  m_descScrollOffset = 0;     // pixels scrolled down in description
 
     int m_w = 1280;

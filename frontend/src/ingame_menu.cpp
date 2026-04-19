@@ -677,10 +677,13 @@ void InGameMenu::renderDiscSelect() {
     int centreX    = m_w / 2;
     int centreY    = (int)(m_h * 0.62f);    // selected disc centre
 
-    // Cover fills 70% of screen height — larger than disc stack so it
-    // looks like the discs are sliding out from behind the case.
-    int coverH_large = (int)(m_h * 0.70f);
-    int coverW_large = (int)(coverH_large * 0.72f);  // PS1 case portrait ratio
+    // Cover height: 63% of screen height. Disc diameter = m_h * 0.50, so
+    // the cover is 26% taller than the disc — clearly bigger but not towering.
+    // Width container is generous (90%) so scale-to-fit is always driven by
+    // height, not width. PS1 box art is ~0.68 w:h so height always wins.
+    // All values are screen-percentage so this scales to any resolution.
+    int coverH_large = (int)(m_h * 0.63f);
+    int coverW_large = (int)(coverH_large * 0.90f);  // wide enough to never be the bottleneck
 
     // Fan spacing: generous overlap, discs separated enough to read individually
     int fanSpacing = (int)(discR * 1.22f);

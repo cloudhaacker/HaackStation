@@ -120,7 +120,8 @@ void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     m_open           = true;
     m_slideAnim      = 0.f;
     m_selectedItem   = 0;
-    m_descFocused    = false;
+    m_descHighlighted  = false;
+    m_descFocused      = false;
     m_descScrollOffset = 0;
     m_pendingAction  = DetailsPanelAction::NONE;
     m_coverTexture   = nullptr;
@@ -267,19 +268,49 @@ void GameDetailsPanel::handleEvent(const SDL_Event& e) {
 void GameDetailsPanel::navigateMenu(NavAction action) {
     int cols = 2;
 
-    // When the description box is focused, UP/DOWN scroll it.
-    // BACK exits focus back to the menu buttons.
+    // Description interaction has two sub-states:
+    //   m_descHighlighted = true  → box has border, UP/DOWN move cursor; A enters scroll
+    //   m_descFocused     = true  → actively scrolling; UP/DOWN scroll text; B exits to highlighted
+    //
+    // Flow: normal nav → UP from top row → highlighted → A → scrolling → B → highlighted → B → normal
+
     if (m_descFocused) {
+        // Actively scrolling the description
         switch (action) {
             case NavAction::UP:
-                if (m_descScrollOffset > 0) m_descScrollOffset -= 20;
+                if (m_descScrollOffset > 0) m_descScrollOffset -= 24;
                 break;
             case NavAction::DOWN:
-                m_descScrollOffset += 20;
+                m_descScrollOffset += 24;
                 break;
             case NavAction::BACK:
-            case NavAction::CONFIRM:
+                // Exit scroll mode, return to highlighted (not yet back in button grid)
                 m_descFocused = false;
+                break;
+            default: break;
+        }
+        return;
+    }
+
+    if (m_descHighlighted) {
+        // Description box is selected/highlighted but not yet scrolling
+        switch (action) {
+            case NavAction::CONFIRM:
+                // A button: enter scroll mode, start from top
+                m_descFocused     = true;
+                m_descScrollOffset = 0;
+                break;
+            case NavAction::DOWN:
+                // Move down into the button grid (top row)
+                m_descHighlighted = false;
+                m_selectedItem    = 0;
+                break;
+            case NavAction::BACK:
+                // B from highlighted: exit panel
+                m_pendingAction = DetailsPanelAction::CLOSE;
+                m_open = false;
+                freeScreenshotTextures();
+                freeTrophyTextures();
                 break;
             default: break;
         }
@@ -288,10 +319,9 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
 
     switch (action) {
         case NavAction::UP:
-            // If at top row of menu, focus the description box instead
+            // If at top row of menu, highlight the description box
             if (m_selectedItem < cols) {
-                m_descFocused = true;
-                m_descScrollOffset = 999999; // scroll to bottom so UP scrolls up
+                m_descHighlighted = true;
             } else {
                 m_selectedItem -= cols;
             }
@@ -578,9 +608,12 @@ static std::string cleanDescription(const std::string& raw) {
 }
 
 // ─── Description (scrollable) ─────────────────────────────────────────────────
-// Renders the game description inside a clipped box. When m_descFocused is true,
-// the box has an accent border and UP/DOWN scrolls the text. Users navigate into
-// it by pressing UP from the top row of buttons, and exit with B or A.
+// Three visual states:
+//   Normal      — plain text, hint "press up to read" if text is long
+//   Highlighted — accent BORDER ONLY (no fill), hint "A = scroll  B = back"
+//   Scrolling   — accent border, text scrolls with UP/DOWN, hint "B = done"
+//
+// The hint text is drawn OUTSIDE the clip rect so it is never covered.
 void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
     const auto& pal  = m_theme->palette();
     int footerH      = m_theme->layout().footerH;
@@ -588,22 +621,22 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
     int itemH        = 72;
     int rows         = ((int)m_items.size() + cols - 1) / cols;
     int gridH        = rows * itemH + (rows - 1) * 8;
-    // Description box fills the space between the divider and the menu grid
+
+    // Reserve 20px at the bottom of the desc area for the hint line.
+    // The clip rect stops here so scrolled text never bleeds into it.
+    int hintH        = 22;
     int boxBottom    = m_h - footerH - gridH - 24;  // 24px gap above grid
-    int boxH         = boxBottom - y;
-    if (boxH < 40) return;  // not enough room
+    int clipBottom   = boxBottom - hintH;            // clip stops before hint
+    int boxH         = clipBottom - y;
+    if (boxH < 40) return;
 
-    SDL_Rect boxRect = { contentX - 4, y - 4, contentW + 8, boxH };
+    SDL_Rect boxRect = { contentX - 4, y - 4, contentW + 8, boxBottom - y };
 
-    // Focused state: draw an accent border around the box
-    if (m_descFocused) {
-        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(m_renderer,
-            pal.accent.r, pal.accent.g, pal.accent.b, 40);
-        SDL_RenderFillRect(m_renderer, &boxRect);
+    // Highlighted or scrolling: draw accent BORDER ONLY — no fill
+    if (m_descHighlighted || m_descFocused) {
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(m_renderer,
-            pal.accent.r, pal.accent.g, pal.accent.b, 200);
+            pal.accent.r, pal.accent.g, pal.accent.b, 220);
         SDL_RenderDrawRect(m_renderer, &boxRect);
     }
 
@@ -611,27 +644,28 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
         ? "No description available."
         : cleanDescription(m_description);
 
-    // Clip rendering to the box so scrolled text doesn't bleed into buttons
+    // Clip to boxH (above the hint line) so scrolled text stays in its lane
     SDL_Rect clip = { contentX, y, contentW, boxH };
     SDL_RenderSetClipRect(m_renderer, &clip);
 
-    // Clamp scroll offset — we don't know total text height without measuring,
-    // so we allow scrolling and clamp on the way in navigateMenu.
     int drawY = y - m_descScrollOffset;
     m_theme->drawTextWrapped(text, contentX, drawY, contentW,
         m_description.empty() ? pal.textDisable : pal.textSecond,
         FontSize::SMALL);
 
-    SDL_RenderSetClipRect(m_renderer, nullptr);
+    SDL_RenderSetClipRect(m_renderer, nullptr);  // ← must clear BEFORE drawing hint
 
-    // "Scroll to read more" hint when not focused and description is long
-    if (!m_descFocused && (int)text.size() > 180) {
-        m_theme->drawText("[ press up to scroll ]",
-            contentX, boxBottom - 18, pal.textDisable, FontSize::TINY);
-    }
+    // Hint text — drawn outside the clip rect so it's always visible
+    int hintY = boxBottom - hintH + 2;
     if (m_descFocused) {
-        m_theme->drawText("[ B = back to menu ]",
-            contentX, boxBottom - 18, pal.accent, FontSize::TINY);
+        m_theme->drawText("B = stop scrolling",
+            contentX, hintY, pal.accent, FontSize::TINY);
+    } else if (m_descHighlighted) {
+        m_theme->drawText("A = scroll   B = back",
+            contentX, hintY, pal.accent, FontSize::TINY);
+    } else if ((int)text.size() > 180) {
+        m_theme->drawText("Press Up to read description",
+            contentX, hintY, pal.textDisable, FontSize::TINY);
     }
 }
 

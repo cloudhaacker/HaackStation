@@ -19,6 +19,7 @@
 #include "game_scanner.h"
 #include "theme_engine.h"
 #include "rewind_manager.h"
+#include "input_map.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdexcept>
@@ -302,6 +303,9 @@ int HaackApp::run() {
                         // ── Turbo ─────────────────────────────────────────────
                         // Shrink the effective step so the accumulator drains
                         // faster → more frames run per real second.
+                        // Uses 'continue' to skip the outer loop's
+                        // "accumulator -= fixedStep" — the inner loop already
+                        // drained it fully. Without this, turbo has no effect.
                         int idx = std::max(0, std::min(m_haackSettings.turboSpeed, 4));
                         double turboStep = fixedStep / TURBO_RATIOS[idx];
                         const int TURBO_MAX_FRAMES = 12;
@@ -314,7 +318,7 @@ int HaackApp::run() {
                             turboFrames++;
                         }
                         m_rewind->captureFrame();
-
+                        continue; // skip outer accumulator -= fixedStep, inner loop drained it
                     } else {
                         // ── Normal frame ──────────────────────────────────────
                         m_core->runFrame();
@@ -1139,6 +1143,7 @@ void HaackApp::stopGame() {
     m_rewinding       = false;
     m_turboActive     = false;   // ← reset turbo on game exit
     m_turboHeldSince  = 0;
+    if (m_core) m_core->setTurboRatio(1.0); // restore normal audio threshold
     m_ffHeldSince     = 0;
     m_rewindHeldSince = 0;
     m_rumbleNextAt    = 0;
@@ -1484,6 +1489,12 @@ void HaackApp::updateGameInput() {
                 m_turboActive    = !m_turboActive;
                 m_turboHeldSince = 0xFFFFFFFF;
                 std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF") << "\n";
+                // Tell the bridge so the audio callback uses the right skip threshold
+                if (m_core) {
+                    int tIdx = std::max(0, std::min(m_haackSettings.turboSpeed, 4));
+                    double ratio = m_turboActive ? TURBO_RATIOS[tIdx] : 1.0;
+                    m_core->setTurboRatio(ratio);
+                }
             }
         } else {
             m_turboHeldSince = 0;  // no input → safe to reset

@@ -58,6 +58,11 @@ public:
     // Audio device access — used by app.cpp for fast forward muting
     SDL_AudioDeviceID getAudioDevice() const { return m_audioDevice; }
 
+    // Turbo speed notification — called by app.cpp when turbo is toggled.
+    // ratio=1.0 means normal speed; ratio=1.5/2.0/3.0 etc. matches TURBO_RATIOS[].
+    // The audio batch callback uses this to pick the right queue skip threshold.
+    void setTurboRatio(double ratio) { m_turboRatio = ratio; }
+
     // System memory access for RetroAchievements
     const uint8_t* getSystemMemory() const;
     size_t         getSystemMemorySize() const;
@@ -124,6 +129,7 @@ private:
     retro_system_timing      m_timing         = {};
     int                      m_audioCoreRate  = 44100;
     int                      m_audioOutputRate= 44100;
+    double                   m_turboRatio     = 1.0;  // 1.0=normal, >1.0=turbo active
 
     int16_t m_inputState[2] = {0, 0};
 

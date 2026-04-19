@@ -339,14 +339,12 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         src = replaceBuf.data();
     }
 
-    // ── Queue depth check ──────────────────────────────────────────────────────
+    // ── Queue depth check ──────────────────────────────────────────────────────────────
     Uint32 queued   = SDL_GetQueuedAudioSize(b.m_audioDevice);
     Uint32 byteRate = (Uint32)(b.m_audioOutputRate * 2 * sizeof(int16_t));
-
-    const Uint32 SKIP_THRESHOLD_MS  = 200;
-    const Uint32 CLEAR_THRESHOLD_MS = 2000;
-
     Uint32 queuedMs = (byteRate > 0) ? (queued * 1000 / byteRate) : 0;
+
+    const Uint32 CLEAR_THRESHOLD_MS = 2000;
 
     if (queuedMs >= CLEAR_THRESHOLD_MS) {
         // Runaway queue — clear it. Should almost never happen.
@@ -358,13 +356,29 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         return frames;
     }
 
-    if (queuedMs >= SKIP_THRESHOLD_MS) {
+    // ── Turbo-aware skip threshold ────────────────────────────────────────────────────
+    // During normal play: 200ms threshold prevents slow queue buildup from
+    // tiny sample-rate mismatches. Skip batches silently; device keeps playing.
+    //
+    // During turbo: runFrame() fires N times per real tick, so this callback
+    // fires N times too, queuing N frames of audio while the device consumes 1.
+    // The queue hits 200ms in ~3 seconds then silences permanently.
+    //
+    // Fix: tighten threshold to ~21ms (one frame at 60fps) during turbo so
+    // only the first batch per real-tick gets through. Queue stays thin,
+    // device stays fed, audio plays at the sped-up pitch with no crackle.
+    // Same approach DuckStation uses for fast-forward audio.
+    Uint32 skipThresholdMs = (b.m_turboRatio > 1.01)
+                             ? 21u    // ~1 frame at 60fps
+                             : 200u;  // normal play
+
+    if (queuedMs >= skipThresholdMs) {
         // Queue has enough buffered — skip this batch silently.
         // Device keeps playing; no gap is created.
         return frames;
     }
 
-    // Normal path
+    // Queue this batch
     SDL_QueueAudio(b.m_audioDevice, src,
                    (Uint32)(frames * 2 * sizeof(int16_t)));
     return frames;
@@ -596,6 +610,12 @@ bool LibretroBridge::unserialize(const void* data, size_t size) {
         return false;
     return m_retro_unserialize(data, size);
 }
+
+// ── Turbo speed notification ──────────────────────────────────────────────────────────────
+// Called by app.cpp when turbo is toggled on/off.
+// The audio batch callback reads m_turboRatio to choose the skip threshold.
+// This is an inline setter in the header; the definition is there too.
+// (No separate .cpp body needed — defined inline in libretro_bridge.h)
 
 void LibretroBridge::shutdownAudio() {
     if (m_audioDevice) {

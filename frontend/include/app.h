@@ -16,6 +16,8 @@
 #include "disc_memory.h"
 #include "favorites.h"
 #include "rewind_manager.h"   // ← NEW
+#include "input_map.h"
+#include "remap_screen.h"
 
 class GameBrowser;
 class ControllerNav;
@@ -96,6 +98,8 @@ private:
     PerGameSettings                    m_perGameSettings; // per-game overrides
     FavoriteManager                    m_favorites;   // persists favorited games
     std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
+    std::unique_ptr<RemapScreen>      m_remapScreen;
+    InputMap                           m_inputMap;    // global button map, loaded from saves/input_map.json
 
     Uint32 m_inputCooldownUntil = 0;
 
