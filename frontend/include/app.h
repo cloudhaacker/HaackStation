@@ -32,6 +32,7 @@ enum class AppState {
     GAME_BROWSER,
     IN_GAME,
     SETTINGS,
+    REMAPPING,
     SCRAPING,
     SHUTDOWN
 };

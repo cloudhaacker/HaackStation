@@ -149,6 +149,11 @@ void HaackApp::init() {
     // Buffer depth can be made a Settings option later; hardcoded for now.
     m_rewind = std::make_unique<RewindManager>(10, 2);
 
+    // Input map — load from disk (falls back to defaults if not found)
+    m_inputMap.load();
+    m_remapScreen = std::make_unique<RemapScreen>(
+        m_renderer, m_theme.get(), m_nav.get(), &m_inputMap);
+
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();
     m_playHistory->load();
@@ -521,6 +526,7 @@ void HaackApp::handleEvents() {
             switch (m_state) {
                 case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
                 case AppState::SETTINGS:     m_settings->handleEvent(e); break;
+                case AppState::REMAPPING:    m_remapScreen->handleEvent(e); break;
                 case AppState::SCRAPING:     m_scraper->handleEvent(e);  break;
                 default: break;
             }
@@ -633,7 +639,12 @@ void HaackApp::update(float deltaMs) {
             if (m_splash->isDone()) setState(AppState::GAME_BROWSER);
             break;
         case AppState::GAME_BROWSER:
-            m_browser->update(deltaMs);
+            // Don't update the browser (which drives shelf scrolling via its
+            // held-repeat logic) while the details panel is open. The details
+            // panel owns input focus at that point and the shelf scrolling
+            // behind it is the visible symptom of this leak.
+            if (!m_details || !m_details->isOpen())
+                m_browser->update(deltaMs);
             if (m_browser->hasPendingLaunch())
                 launchGame(m_browser->consumeLaunchPath());
 
@@ -727,9 +738,25 @@ void HaackApp::update(float deltaMs) {
                         m_haackSettings.ssDevPassword);
                 }
                 setState(AppState::SCRAPING);
+            } else if (m_settings->wantsRemap()) {
+                m_settings->clearRemap();
+                m_remapScreen->resetClose();
+                setState(AppState::REMAPPING);
             } else if (m_settings->wantsClose()) {
                 applySettings();
                 setState(AppState::GAME_BROWSER);
+            }
+            break;
+        case AppState::REMAPPING:
+            m_remapScreen->update(deltaMs);
+            if (m_remapScreen->wantsClose()) {
+                // Save the map if anything changed
+                if (m_remapScreen->isDirty()) {
+                    m_inputMap.save();
+                    m_remapScreen->clearDirty();
+                }
+                m_remapScreen->resetClose();
+                setState(AppState::SETTINGS);
             }
             break;
         case AppState::SCRAPING:
@@ -771,6 +798,7 @@ void HaackApp::render() {
             if (m_turboActive)          renderTurboIndicator();
             break;
         case AppState::SETTINGS:     m_settings->render(); break;
+        case AppState::REMAPPING:    m_remapScreen->render(); break;
         case AppState::SCRAPING:     m_scraper->render();  break;
         default: break;
     }

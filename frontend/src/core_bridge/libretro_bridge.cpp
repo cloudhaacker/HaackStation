@@ -339,15 +339,14 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         src = replaceBuf.data();
     }
 
-    // ── Queue depth check ──────────────────────────────────────────────────────────────
+    // ── Queue depth safety valve ──────────────────────────────────────────────
+    // If the queue somehow grows beyond 2 seconds (device stalled, etc.),
+    // clear it hard. Should almost never fire.
     Uint32 queued   = SDL_GetQueuedAudioSize(b.m_audioDevice);
     Uint32 byteRate = (Uint32)(b.m_audioOutputRate * 2 * sizeof(int16_t));
     Uint32 queuedMs = (byteRate > 0) ? (queued * 1000 / byteRate) : 0;
 
-    const Uint32 CLEAR_THRESHOLD_MS = 2000;
-
-    if (queuedMs >= CLEAR_THRESHOLD_MS) {
-        // Runaway queue — clear it. Should almost never happen.
+    if (queuedMs >= 2000) {
         SDL_PauseAudioDevice(b.m_audioDevice, 1);
         SDL_ClearQueuedAudio(b.m_audioDevice);
         SDL_PauseAudioDevice(b.m_audioDevice, 0);
@@ -356,29 +355,52 @@ size_t LibretroBridge::cb_audioSampleBatch(const int16_t* data, size_t frames) {
         return frames;
     }
 
-    // ── Turbo-aware skip threshold ────────────────────────────────────────────────────
-    // During normal play: 200ms threshold prevents slow queue buildup from
-    // tiny sample-rate mismatches. Skip batches silently; device keeps playing.
-    //
-    // During turbo: runFrame() fires N times per real tick, so this callback
-    // fires N times too, queuing N frames of audio while the device consumes 1.
-    // The queue hits 200ms in ~3 seconds then silences permanently.
-    //
-    // Fix: tighten threshold to ~21ms (one frame at 60fps) during turbo so
-    // only the first batch per real-tick gets through. Queue stays thin,
-    // device stays fed, audio plays at the sped-up pitch with no crackle.
-    // Same approach DuckStation uses for fast-forward audio.
-    Uint32 skipThresholdMs = (b.m_turboRatio > 1.01)
-                             ? 21u    // ~1 frame at 60fps
-                             : 200u;  // normal play
+    // ── Turbo path: time-stretch through SoundTouch ───────────────────────────
+    // SoundTouch changes the *tempo* (speed) without changing pitch — exactly
+    // like playing a tape faster on a pitch-correcting deck. We feed all the
+    // core's batches in at normal sample rate, set tempo = turbo ratio, and
+    // drain whatever SoundTouch has ready into the SDL queue each callback.
+    // The queue stays thin because SoundTouch compresses the audio in time;
+    // only ~(1/ratio) of the input samples come out per unit time.
+    if (b.m_soundTouchActive) {
+        // SoundTouch works with floats internally — convert S16 → float
+        const int sampleCount = (int)(frames * 2); // stereo
+        std::vector<float> floatIn(sampleCount);
+        for (int i = 0; i < sampleCount; i++)
+            floatIn[i] = src[i] / 32768.0f;
 
-    if (queuedMs >= skipThresholdMs) {
-        // Queue has enough buffered — skip this batch silently.
-        // Device keeps playing; no gap is created.
+        b.m_soundTouch.putSamples(floatIn.data(), (unsigned int)frames);
+
+        // Drain whatever is ready — but don't let the queue build past 150ms
+        if (queuedMs < 150) {
+            unsigned int ready = b.m_soundTouch.numSamples();
+            if (ready > 0) {
+                std::vector<float> floatOut(ready * 2);
+                unsigned int got = b.m_soundTouch.receiveSamples(
+                    floatOut.data(), ready);
+                if (got > 0) {
+                    // Convert float → S16 and queue
+                    std::vector<int16_t> outS16(got * 2);
+                    for (unsigned int i = 0; i < got * 2; i++) {
+                        float s = floatOut[i];
+                        if (s >  1.0f) s =  1.0f;
+                        if (s < -1.0f) s = -1.0f;
+                        outS16[i] = (int16_t)(s * 32767.0f);
+                    }
+                    SDL_QueueAudio(b.m_audioDevice, outS16.data(),
+                                   (Uint32)(got * 2 * sizeof(int16_t)));
+                }
+            }
+        }
         return frames;
     }
 
-    // Queue this batch
+    // ── Normal play path ──────────────────────────────────────────────────────
+    // Skip queuing when the buffer already has 200ms — prevents slow buildup
+    // from tiny sample-rate mismatches without introducing audible gaps.
+    if (queuedMs >= 200)
+        return frames;
+
     SDL_QueueAudio(b.m_audioDevice, src,
                    (Uint32)(frames * 2 * sizeof(int16_t)));
     return frames;
@@ -611,13 +633,52 @@ bool LibretroBridge::unserialize(const void* data, size_t size) {
     return m_retro_unserialize(data, size);
 }
 
-// ── Turbo speed notification ──────────────────────────────────────────────────────────────
-// Called by app.cpp when turbo is toggled on/off.
-// The audio batch callback reads m_turboRatio to choose the skip threshold.
-// This is an inline setter in the header; the definition is there too.
-// (No separate .cpp body needed — defined inline in libretro_bridge.h)
+// ── Turbo speed notification ──────────────────────────────────────────────────
+// Called by app.cpp when turbo is toggled on/off or speed changes.
+// Configures SoundTouch to compress audio in time at the given ratio without
+// changing pitch — so 2× turbo sounds like the game is running fast, not high.
+void LibretroBridge::setTurboRatio(double ratio) {
+    m_turboRatio = ratio;
+
+    if (ratio <= 1.01) {
+        // Normal speed — disable SoundTouch, flush any buffered samples
+        if (m_soundTouchActive) {
+            m_soundTouch.flush();
+            m_soundTouch.clear();
+            m_soundTouchActive = false;
+            std::cout << "[Bridge] Turbo audio off — SoundTouch disabled\n";
+        }
+        return;
+    }
+
+    // Configure SoundTouch if not already set up, or if rate changed
+    if (!m_soundTouchActive || m_soundTouch.getInputOutputSampleRatio() != ratio) {
+        m_soundTouch.setSampleRate((unsigned int)m_audioCoreRate);
+        m_soundTouch.setChannels(2);
+
+        // setTempo(ratio): play audio ratio× faster without pitch change.
+        // At 2.0 the output is half as many samples for the same duration —
+        // the device plays them at normal rate, so the audio is 2× speed.
+        m_soundTouch.setTempo(ratio);
+
+        // Use quick seek for lower CPU cost — quality is fine for fast-forward
+        m_soundTouch.setSetting(SETTING_USE_QUICKSEEK, 1);
+        m_soundTouch.setSetting(SETTING_USE_AA_FILTER, 1);
+
+        m_soundTouch.flush();
+        m_soundTouch.clear();
+        m_soundTouchActive = true;
+
+        std::cout << "[Bridge] Turbo audio: SoundTouch tempo " << ratio << "x\n";
+    }
+}
 
 void LibretroBridge::shutdownAudio() {
+    if (m_soundTouchActive) {
+        m_soundTouch.flush();
+        m_soundTouch.clear();
+        m_soundTouchActive = false;
+    }
     if (m_audioDevice) {
         SDL_PauseAudioDevice(m_audioDevice, 1);
         SDL_ClearQueuedAudio(m_audioDevice);

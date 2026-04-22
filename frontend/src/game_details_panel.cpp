@@ -261,6 +261,10 @@ void GameDetailsPanel::handleEvent(const SDL_Event& e) {
     if (!m_open) return;
     NavAction action = m_nav->processEvent(e);
     if (action != NavAction::NONE) navigateMenu(action);
+
+    // Only forward held-input to navigateMenu when NOT in desc interaction —
+    // desc scrolling uses its own 4px step via navigateMenu, and we don't
+    // want the normal grid repeat-rate fighting with it.
     action = m_nav->updateHeld(SDL_GetTicks());
     if (action != NavAction::NONE) navigateMenu(action);
 }
@@ -275,16 +279,18 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
     // Flow: normal nav → UP from top row → highlighted → A → scrolling → B → highlighted → B → normal
 
     if (m_descFocused) {
-        // Actively scrolling the description
+        // Actively scrolling the description — 4px step feels smooth with hold-repeat
         switch (action) {
             case NavAction::UP:
-                if (m_descScrollOffset > 0) m_descScrollOffset -= 24;
+                m_descScrollOffset -= 4;
+                if (m_descScrollOffset < 0) m_descScrollOffset = 0;
                 break;
             case NavAction::DOWN:
-                m_descScrollOffset += 24;
+                // Upper clamp applied in renderDescription where totalTextH is known
+                m_descScrollOffset += 4;
                 break;
             case NavAction::BACK:
-                // Exit scroll mode, return to highlighted (not yet back in button grid)
+                // Exit scroll mode, return to highlighted
                 m_descFocused = false;
                 break;
             default: break;
@@ -322,6 +328,7 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
             // If at top row of menu, highlight the description box
             if (m_selectedItem < cols) {
                 m_descHighlighted = true;
+                m_selectedItem    = -1;  // no grid item selected while desc is highlighted
             } else {
                 m_selectedItem -= cols;
             }
@@ -362,7 +369,7 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
 }
 
 void GameDetailsPanel::activateSelected() {
-    if (m_selectedItem < (int)m_items.size()) {
+    if (m_selectedItem >= 0 && m_selectedItem < (int)m_items.size()) {
         m_pendingAction = m_items[m_selectedItem].action;
         m_nav->rumbleConfirm();
     }
@@ -471,7 +478,10 @@ void GameDetailsPanel::renderPanel() {
     }
 
     renderTrophyRow(contentX, contentW, y);
-    y += (m_trophiesTotal > 0) ? (20 + 40 + 8) : 28;
+    // Fixed height: 20px count label + 48px badges + 4px gap = 72px.
+    // Constant regardless of whether achievements are loaded so that the
+    // description box height (and scroll state) never jumps.
+    y += 72;
 
     m_theme->drawLine(contentX, y, contentX + contentW, y, pal.gridLine);
     y += 8;
@@ -532,21 +542,32 @@ void GameDetailsPanel::renderTrophyRow(int contentX, int contentW, int y) {
                           "/" + std::to_string(m_trophiesTotal) + " achievements";
         m_theme->drawText(str, contentX, y, pal.textSecond, FontSize::SMALL);
         y += 20;
-        int badgeSize = 40, bx = contentX;
+        // RetroAchievements badge icons are 64×64 — display at 48×48.
+        int badgeSize = 48, bx = contentX;
         for (auto* tex : m_trophyTextures) {
             SDL_Rect br = { bx, y, badgeSize, badgeSize };
             SDL_RenderCopy(m_renderer, tex, nullptr, &br);
-            bx += badgeSize + 4;
+            bx += badgeSize + 6;
         }
+        // Dim placeholder slots for any badges not yet loaded (always show 5)
         SDL_Color dimBadge = { 50, 50, 70, 255 };
         for (int i = (int)m_trophyTextures.size(); i < 5; i++) {
             SDL_Rect br = { bx, y, badgeSize, badgeSize };
-            m_theme->drawRoundRect(br, dimBadge, 4);
-            bx += badgeSize + 4;
+            m_theme->drawRoundRect(br, dimBadge, 6);
+            bx += badgeSize + 6;
         }
     } else {
-        m_theme->drawText("No achievements loaded",
-            contentX, y, pal.textDisable, FontSize::SMALL);
+        // No data yet — draw 5 dim placeholder slots so the layout is stable
+        // and the description box height doesn't jump when achievements load.
+        int badgeSize = 48, bx = contentX;
+        SDL_Color dimBadge = { 40, 40, 58, 255 };
+        for (int i = 0; i < 5; i++) {
+            SDL_Rect br = { bx, y, badgeSize, badgeSize };
+            m_theme->drawRoundRect(br, dimBadge, 6);
+            bx += badgeSize + 6;
+        }
+        m_theme->drawText("Achievements not loaded",
+            contentX, y + badgeSize + 4, pal.textDisable, FontSize::TINY);
     }
 }
 
@@ -622,17 +643,18 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
     int rows         = ((int)m_items.size() + cols - 1) / cols;
     int gridH        = rows * itemH + (rows - 1) * 8;
 
-    // Reserve 20px at the bottom of the desc area for the hint line.
-    // The clip rect stops here so scrolled text never bleeds into it.
+    // Reserve space at the bottom for the hint line.
+    // clipBottom is where scrolled text must stop.
+    // boxRect border only covers up to clipBottom — NOT the hint row below it.
     int hintH        = 22;
     int boxBottom    = m_h - footerH - gridH - 24;  // 24px gap above grid
-    int clipBottom   = boxBottom - hintH;            // clip stops before hint
+    int clipBottom   = boxBottom - hintH;            // text clip stops before hint
     int boxH         = clipBottom - y;
     if (boxH < 40) return;
 
-    SDL_Rect boxRect = { contentX - 4, y - 4, contentW + 8, boxBottom - y };
+    // Issue A: border height = clipBottom - y so it never overlaps the hint text
+    SDL_Rect boxRect = { contentX - 4, y - 4, contentW + 8, clipBottom - y + 4 };
 
-    // Highlighted or scrolling: draw accent BORDER ONLY — no fill
     if (m_descHighlighted || m_descFocused) {
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(m_renderer,
@@ -644,7 +666,22 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
         ? "No description available."
         : cleanDescription(m_description);
 
-    // Clip to boxH (above the hint line) so scrolled text stays in its lane
+    // Issue B: clamp scroll so you can't scroll past the last line.
+    // Estimate total text height — ~18px per line, ~7 chars per pixel of width.
+    if (m_descFocused) {
+        int charsPerLine = std::max(1, contentW / 7);
+        int lineCount    = 1;
+        int lineLen      = 0;
+        for (char c : text) {
+            if (c == '\n') { lineCount++; lineLen = 0; }
+            else if (++lineLen > charsPerLine) { lineCount++; lineLen = 0; }
+        }
+        int totalTextH = lineCount * 18;
+        int maxScroll  = std::max(0, totalTextH - boxH);
+        if (m_descScrollOffset > maxScroll) m_descScrollOffset = maxScroll;
+    }
+
+    // Clip to boxH so scrolled text never bleeds into the hint line
     SDL_Rect clip = { contentX, y, contentW, boxH };
     SDL_RenderSetClipRect(m_renderer, &clip);
 
@@ -653,10 +690,10 @@ void GameDetailsPanel::renderDescription(int contentX, int contentW, int y) {
         m_description.empty() ? pal.textDisable : pal.textSecond,
         FontSize::SMALL);
 
-    SDL_RenderSetClipRect(m_renderer, nullptr);  // ← must clear BEFORE drawing hint
+    SDL_RenderSetClipRect(m_renderer, nullptr);  // clear BEFORE drawing hint
 
-    // Hint text — drawn outside the clip rect so it's always visible
-    int hintY = boxBottom - hintH + 2;
+    // Hint text — outside clip rect, always visible
+    int hintY = clipBottom + 2;
     if (m_descFocused) {
         m_theme->drawText("B = stop scrolling",
             contentX, hintY, pal.accent, FontSize::TINY);
@@ -687,7 +724,7 @@ void GameDetailsPanel::renderMenuGrid(int contentX, int contentW) {
         int col = i % cols, row = i / cols;
         int x   = contentX + col * (itemW + 8);
         int y   = gridY + row * (itemH + 8);
-        bool sel = (!m_descFocused && i == m_selectedItem);
+        bool sel = (m_selectedItem >= 0 && !m_descHighlighted && !m_descFocused && i == m_selectedItem);
 
         SDL_Rect itemRect = { x, y, itemW, itemH };
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);

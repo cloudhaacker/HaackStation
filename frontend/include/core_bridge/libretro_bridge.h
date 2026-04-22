@@ -20,6 +20,7 @@
 #include <vector>
 #include <cstdint>
 #include <SDL2/SDL.h>
+#include <SoundTouch.h>  // from deps/soundtouch/include/
 
 class AudioReplacer;
 class TextureReplacer;
@@ -60,8 +61,9 @@ public:
 
     // Turbo speed notification — called by app.cpp when turbo is toggled.
     // ratio=1.0 means normal speed; ratio=1.5/2.0/3.0 etc. matches TURBO_RATIOS[].
-    // The audio batch callback uses this to pick the right queue skip threshold.
-    void setTurboRatio(double ratio) { m_turboRatio = ratio; }
+    // Configures SoundTouch to stretch audio tempo without pitch shift, so turbo
+    // sounds fast but not chipmunked. Call once when turbo is enabled/disabled.
+    void setTurboRatio(double ratio);
 
     // System memory access for RetroAchievements
     const uint8_t* getSystemMemory() const;
@@ -130,6 +132,8 @@ private:
     int                      m_audioCoreRate  = 44100;
     int                      m_audioOutputRate= 44100;
     double                   m_turboRatio     = 1.0;  // 1.0=normal, >1.0=turbo active
+    soundtouch::SoundTouch   m_soundTouch;             // time-stretcher for turbo audio
+    bool                     m_soundTouchActive = false;
 
     int16_t m_inputState[2] = {0, 0};
 

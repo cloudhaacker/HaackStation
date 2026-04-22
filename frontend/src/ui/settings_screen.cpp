@@ -122,6 +122,27 @@ void SettingsScreen::buildTabs() {
         m_tabs.push_back(tab);
     }
 
+    // ── Controls ──────────────────────────────────────────────────────────────
+    // Button remapping lives on its own full-screen UI (RemapScreen).
+    // This tab is the entry point, plus read-only hotkey reference labels
+    // so the user knows the fixed combos without having to guess.
+    {
+        SettingTab tab;
+        tab.label = "Controls";
+        tab.items.push_back(makeAction("remap", "Open Input Remapper",
+            "Remap controller and keyboard buttons for PS1 inputs",
+            [this]() { m_wantsRemap = true; }));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("hotkey_header", "Fixed Hotkeys",
+            "These combos are always active and cannot be remapped"));
+        tab.items.push_back(makeLabel("hk_menu",    "Open Menu",       "Start + Y (Triangle)"));
+        tab.items.push_back(makeLabel("hk_ff",      "Fast Forward",    "Hold R2  (or hold F)"));
+        tab.items.push_back(makeLabel("hk_turbo",   "Turbo Toggle",    "Hold R1+R2  (or hold T)"));
+        tab.items.push_back(makeLabel("hk_rewind",  "Rewind",          "Hold L2  (or hold R)"));
+        tab.items.push_back(makeLabel("hk_ss",      "Quick Save State","L1+R1"));
+        m_tabs.push_back(tab);
+    }
+
     // ── Video ─────────────────────────────────────────────────────────────────
     {
         SettingTab tab;
@@ -186,6 +207,8 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeSep());
         tab.items.push_back(makeLabel("core_credit", "Core Credit",
             "libretro team and Mednafen contributors"));
+        tab.items.push_back(makeLabel("soundtouch_credit", "Audio Time-Stretch",
+            "SoundTouch by Olli Parviainen - surina.net/soundtouch (LGPL 2.1)"));
         tab.items.push_back(makeLabel("code_credit", "Frontend Code",
             "Claude (Anthropic AI) - directed by project author"));
         tab.items.push_back(makeLabel("logo_credit", "Project Logo",

@@ -103,7 +103,9 @@ public:
 
     bool wantsClose()  const { return m_wantsClose; }
     bool wantsScrape() const { return m_wantsScrape; }
+    bool wantsRemap()  const { return m_wantsRemap; }
     void clearScrape()       { m_wantsScrape = false; }
+    void clearRemap()        { m_wantsRemap  = false; }
     void onWindowResize(int w, int h);
     bool wantsQuit()  const { return m_wantsQuit; }
     void resetClose()       { m_wantsClose = false; m_wantsQuit = false; }
@@ -127,6 +129,7 @@ private:
     bool m_wantsClose   = false;
     bool m_wantsQuit    = false;
     bool m_wantsScrape  = false;
+    bool m_wantsRemap   = false;
     bool m_editingChoice = false;  // true while LEFT/RIGHT adjusts a CHOICE/SLIDER
 	int  m_windowW      = 1280;
     int  m_windowH      = 720;

@@ -7,6 +7,11 @@ file(GLOB_RECURSE RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/*.c")
 list(FILTER RCHEEVOS_SOURCES EXCLUDE REGEX "rc_libretro\.c$")
 message(STATUS "rcheevos sources: ${RCHEEVOS_SOURCES}")
 
+# ── SoundTouch sources ────────────────────────────────────────────────────────
+set(SOUNDTOUCH_DIR "${CMAKE_SOURCE_DIR}/deps/soundtouch")
+file(GLOB SOUNDTOUCH_SOURCES "${SOUNDTOUCH_DIR}/src/*.cpp")
+message(STATUS "SoundTouch sources: ${SOUNDTOUCH_SOURCES}")
+
 set(FRONTEND_SOURCES
     src/main.cpp
     src/app.cpp
@@ -40,7 +45,7 @@ add_executable(HaackStation ${FRONTEND_SOURCES})
 set(SDL2_TTF_LIB   "${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/lib/x64/SDL2_ttf.lib")
 set(SDL2_IMAGE_LIB "${CMAKE_SOURCE_DIR}/deps/SDL2_image/lib/x64/SDL2_image.lib")
 
-target_sources(HaackStation PRIVATE ${RCHEEVOS_SOURCES})
+target_sources(HaackStation PRIVATE ${RCHEEVOS_SOURCES} ${SOUNDTOUCH_SOURCES})
 
 # Enable CHD hashing support in rcheevos
 target_compile_definitions(HaackStation PRIVATE
@@ -56,6 +61,8 @@ target_include_directories(HaackStation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core_bridge
     ${CMAKE_BINARY_DIR}/include
     ${CMAKE_SOURCE_DIR}/deps/SDL2/include
+    ${CMAKE_SOURCE_DIR}/deps/soundtouch/include
+    ${CMAKE_SOURCE_DIR}/deps/soundtouch/src
     ${RCHEEVOS_DIR}/include
     ${RCHEEVOS_DIR}/src
     ${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/include
