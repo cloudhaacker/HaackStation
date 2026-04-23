@@ -57,7 +57,7 @@ void GameBrowser::rebuildActiveList() {
 
         case ShelfMode::RECENTLY_PLAYED:
             if (m_playHistory) {
-                for (const auto& entry : m_playHistory->entries()) {
+                for (const auto& entry : m_playHistory->getEntries()) {
                     // Find matching GameEntry in allGames
                     for (int i = 0; i < (int)m_allGames.size(); i++) {
                         if (m_allGames[i].path == entry.path) {

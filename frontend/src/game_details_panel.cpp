@@ -8,6 +8,17 @@
 
 namespace fs = std::filesystem;
 
+// ─── Local playtime formatter ─────────────────────────────────────────────────
+// Mirrors PlayHistory::formatPlaytime — kept here so game_details_panel.cpp
+// doesn't need to depend on play_history.h.
+static std::string formatPlaytimeLocal(uint64_t totalSeconds) {
+    if (totalSeconds < 60) return "< 1m";
+    uint64_t h = totalSeconds / 3600;
+    uint64_t m = (totalSeconds % 3600) / 60;
+    if (h == 0) return std::to_string(m) + "m";
+    return std::to_string(h) + "h " + std::to_string(m) + "m";
+}
+
 GameDetailsPanel::GameDetailsPanel(SDL_Renderer* renderer,
                                     ThemeEngine* theme,
                                     ControllerNav* nav)
@@ -123,6 +134,7 @@ void GameDetailsPanel::open(const GameEntry& game, SaveStateManager* saves) {
     m_descHighlighted  = false;
     m_descFocused      = false;
     m_descScrollOffset = 0;
+    m_trophyRowSelected = false;
     m_pendingAction  = DetailsPanelAction::NONE;
     m_coverTexture   = nullptr;
     m_description.clear();
@@ -272,11 +284,43 @@ void GameDetailsPanel::handleEvent(const SDL_Event& e) {
 void GameDetailsPanel::navigateMenu(NavAction action) {
     int cols = 2;
 
-    // Description interaction has two sub-states:
-    //   m_descHighlighted = true  → box has border, UP/DOWN move cursor; A enters scroll
-    //   m_descFocused     = true  → actively scrolling; UP/DOWN scroll text; B exits to highlighted
+    // Navigation focus hierarchy (top → bottom):
+    //   Description box (scrollable)  ← UP from trophy row
+    //   Trophy row (tappable)         ← UP from button grid top row
+    //   Button grid                   ← default focus
     //
-    // Flow: normal nav → UP from top row → highlighted → A → scrolling → B → highlighted → B → normal
+    // Flow: grid → UP (top row) → trophy row → UP → description → A → scroll
+
+    // ── Trophy row focused ────────────────────────────────────────────────────
+    if (m_trophyRowSelected) {
+        switch (action) {
+            case NavAction::CONFIRM:
+                // Open Trophy Room
+                m_pendingAction     = DetailsPanelAction::OPEN_TROPHY_ROOM;
+                m_trophyRowSelected = false;
+                break;
+            case NavAction::UP:
+                // Move up to description box
+                m_trophyRowSelected = false;
+                m_descHighlighted   = true;
+                break;
+            case NavAction::DOWN:
+                // Move back down to button grid
+                m_trophyRowSelected = false;
+                m_selectedItem      = 0;
+                break;
+            case NavAction::BACK:
+                // B from trophy row — close panel
+                m_pendingAction     = DetailsPanelAction::CLOSE;
+                m_trophyRowSelected = false;
+                m_open = false;
+                freeScreenshotTextures();
+                freeTrophyTextures();
+                break;
+            default: break;
+        }
+        return;
+    }
 
     if (m_descFocused) {
         // Actively scrolling the description — 4px step feels smooth with hold-repeat
@@ -307,9 +351,13 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
                 m_descScrollOffset = 0;
                 break;
             case NavAction::DOWN:
-                // Move down into the button grid (top row)
+                // Move down — go to trophy row if we have trophies, else grid
                 m_descHighlighted = false;
-                m_selectedItem    = 0;
+                if (m_trophiesTotal > 0) {
+                    m_trophyRowSelected = true;
+                } else {
+                    m_selectedItem = 0;
+                }
                 break;
             case NavAction::BACK:
                 // B from highlighted: exit panel
@@ -325,10 +373,15 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
 
     switch (action) {
         case NavAction::UP:
-            // If at top row of menu, highlight the description box
+            // If at top row of menu, go to trophy row first, then description
             if (m_selectedItem < cols) {
-                m_descHighlighted = true;
-                m_selectedItem    = -1;  // no grid item selected while desc is highlighted
+                if (m_trophiesTotal > 0) {
+                    m_trophyRowSelected = true;
+                    m_selectedItem      = -1;
+                } else {
+                    m_descHighlighted = true;
+                    m_selectedItem    = -1;
+                }
             } else {
                 m_selectedItem -= cols;
             }
@@ -441,6 +494,20 @@ void GameDetailsPanel::renderCoverHero() {
         shelfW / 2, img.y + img.h + 16,
         m_theme->palette().textPrimary, FontSize::BODY);
 
+    // Playtime + play count — shown under the title on the cover hero side
+    if (m_playtimeSeconds > 0 || m_playCount > 0) {
+        const auto& pal = m_theme->palette();
+        std::string timeStr = m_playtimeSeconds > 0
+            ? formatPlaytimeLocal(m_playtimeSeconds)
+            : "< 1m";
+        std::string countStr = std::to_string(m_playCount)
+            + (m_playCount == 1 ? " session" : " sessions");
+        std::string statStr = "\xF0\x9F\x95\x90 " + timeStr + "  \xE2\x80\xA2  " + countStr;
+        m_theme->drawTextCentered(statStr,
+            shelfW / 2, img.y + img.h + 40,
+            pal.textSecond, FontSize::TINY);
+    }
+
     if (m_game.isMultiDisc) {
         std::string discStr = std::to_string(m_game.discCount) + " discs";
         m_theme->drawTextCentered(discStr,
@@ -537,13 +604,38 @@ void GameDetailsPanel::renderScreenshotStrip(int contentX, int contentW, int top
 // ─── Trophy row ───────────────────────────────────────────────────────────────
 void GameDetailsPanel::renderTrophyRow(int contentX, int contentW, int y) {
     const auto& pal = m_theme->palette();
-    if (m_trophiesTotal > 0) {
+    bool hasTrophies = (m_trophiesTotal > 0);
+
+    if (hasTrophies) {
+        // Header line with "View All →" on the right if RA is active
         std::string str = std::to_string(m_trophiesUnlocked) +
                           "/" + std::to_string(m_trophiesTotal) + " achievements";
         m_theme->drawText(str, contentX, y, pal.textSecond, FontSize::SMALL);
+
+        // "View All" hint — right side of trophy row header
+        SDL_Color hintClr = m_trophyRowSelected
+            ? pal.accent : pal.textDisable;
+        m_theme->drawText("A: View All  \xe2\x86\x92",
+            contentX + contentW - 120, y, hintClr, FontSize::TINY);
+
         y += 20;
         // RetroAchievements badge icons are 64×64 — display at 48×48.
         int badgeSize = 48, bx = contentX;
+
+        // Subtle selection highlight on the whole row
+        if (m_trophyRowSelected) {
+            SDL_Rect rowRect = { contentX - 4, y - 2,
+                                 contentW + 8, badgeSize + 4 };
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(m_renderer,
+                pal.accent.r, pal.accent.g, pal.accent.b, 30);
+            SDL_RenderFillRect(m_renderer, &rowRect);
+            SDL_SetRenderDrawColor(m_renderer,
+                pal.accent.r, pal.accent.g, pal.accent.b, 100);
+            SDL_RenderDrawRect(m_renderer, &rowRect);
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+        }
+
         for (auto* tex : m_trophyTextures) {
             SDL_Rect br = { bx, y, badgeSize, badgeSize };
             SDL_RenderCopy(m_renderer, tex, nullptr, &br);

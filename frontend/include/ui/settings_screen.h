@@ -59,6 +59,11 @@ struct HaackSettings {
     // audio running at speed (no mute). Great for grinding or long cutscenes.
     int  turboSpeed         = 0;  // Default: 1.5×
 
+    // Mute audio while turbo is active. Off by default — the SoundTouch
+    // pitch-correction means turbo audio is tolerable at lower speeds.
+    // Users grinding at 4× or 6× for long sessions will appreciate this.
+    bool turboMuteAudio     = false;
+
     // Top row mode — what shows above the main game shelf:
     //   0 = Recently Played   1 = Favorites   2 = None
     int  topRowMode         = 0;  // Default: Recently Played

@@ -18,6 +18,8 @@
 #include "rewind_manager.h"   // ← NEW
 #include "input_map.h"
 #include "remap_screen.h"
+#include "trophy_room.h"
+#include <ctime>
 
 class GameBrowser;
 class ControllerNav;
@@ -33,6 +35,7 @@ enum class AppState {
     IN_GAME,
     SETTINGS,
     REMAPPING,
+    TROPHY_ROOM,
     SCRAPING,
     SHUTDOWN
 };
@@ -100,9 +103,14 @@ private:
     FavoriteManager                    m_favorites;   // persists favorited games
     std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
     std::unique_ptr<RemapScreen>      m_remapScreen;
+    std::unique_ptr<TrophyRoom>       m_trophyRoom;
     InputMap                           m_inputMap;    // global button map, loaded from saves/input_map.json
 
     Uint32 m_inputCooldownUntil = 0;
+
+    // Session playtime tracking — set when a game launches, used on stopGame()
+    // to compute elapsed seconds and pass to PlayHistory::recordStop().
+    time_t m_sessionStartTime = 0;
 
     // Fast forward: true while R2 (controller) or F (keyboard) is held.
     // m_ffHeldSince tracks when the button was first pressed so we can

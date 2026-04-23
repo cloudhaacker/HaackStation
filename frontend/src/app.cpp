@@ -153,6 +153,8 @@ void HaackApp::init() {
     m_inputMap.load();
     m_remapScreen = std::make_unique<RemapScreen>(
         m_renderer, m_theme.get(), m_nav.get(), &m_inputMap);
+    m_trophyRoom  = std::make_unique<TrophyRoom>(
+        m_renderer, m_theme.get(), m_nav.get(), m_ra.get());
 
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();
@@ -364,7 +366,10 @@ void HaackApp::handleEvents() {
                     m_settings->onWindowResize(w, h);
                     m_inGameMenu->onWindowResize(w, h);
                     m_theme->onWindowResize(w, h);
-                    if (m_perGameScreen) m_perGameScreen->onWindowResize(w, h);
+                    if (m_perGameScreen)  m_perGameScreen->onWindowResize(w, h);
+                    if (m_remapScreen)    m_remapScreen->onWindowResize(w, h);
+                    if (m_trophyRoom)     m_trophyRoom->onWindowResize(w, h);
+                    if (m_details)        m_details->onWindowResize(w, h);
                 }
                 break;
 
@@ -524,10 +529,11 @@ void HaackApp::handleEvents() {
             m_inGameMenu->handleEvent(e);
         } else {
             switch (m_state) {
-                case AppState::GAME_BROWSER: m_browser->handleEvent(e);  break;
-                case AppState::SETTINGS:     m_settings->handleEvent(e); break;
+                case AppState::GAME_BROWSER: m_browser->handleEvent(e);     break;
+                case AppState::SETTINGS:     m_settings->handleEvent(e);    break;
                 case AppState::REMAPPING:    m_remapScreen->handleEvent(e); break;
-                case AppState::SCRAPING:     m_scraper->handleEvent(e);  break;
+                case AppState::TROPHY_ROOM:  m_trophyRoom->handleEvent(e);  break;
+                case AppState::SCRAPING:     m_scraper->handleEvent(e);     break;
                 default: break;
             }
         }
@@ -677,6 +683,12 @@ void HaackApp::update(float deltaMs) {
                     m_details->open(*game, m_saveStates.get());
                     SDL_Texture* cover = m_browser->getCoverArtForGame(game->path);
                     m_details->setCoverTexture(cover);
+                    // Pass playtime stats from play history
+                    if (m_playHistory) {
+                        m_details->setPlaytimeStats(
+                            m_playHistory->getTotalSeconds(game->path),
+                            m_playHistory->getPlayCount(game->path));
+                    }
                 }
             } else if (m_browser->wantsDetails()) {
                 m_browser->clearWantsDetails();
@@ -697,11 +709,22 @@ void HaackApp::update(float deltaMs) {
                     auto act = m_details->pendingAction();
                     if (act == DetailsPanelAction::CLOSE) {
                         m_details->clearAction();
+                    } else if (act == DetailsPanelAction::OPEN_TROPHY_ROOM) {
+                        m_details->clearAction();
+                        if (m_ra && m_ra->isGameLoaded()) {
+                            m_trophyRoom->setGameTitle(m_ra->gameInfo().title);
+                            m_trophyRoom->refresh();
+                        } else {
+                            // No live RA session — still show what we have from
+                            // the last loaded game (badges may be cached on disk)
+                            m_trophyRoom->refresh();
+                        }
+                        m_trophyRoom->resetClose();
+                        setState(AppState::TROPHY_ROOM);
                     } else if (act == DetailsPanelAction::OPEN_PER_GAME_SETTINGS) {
                         m_details->clearAction();
                         auto* game = m_browser->selectedGameEntry();
                         if (game) {
-                            // Load existing overrides (if any) and open screen
                             m_perGameSettings.load(game->serial, game->path);
                             m_perGameScreen->open(
                                 game->title, game->path, game->serial,
@@ -750,13 +773,19 @@ void HaackApp::update(float deltaMs) {
         case AppState::REMAPPING:
             m_remapScreen->update(deltaMs);
             if (m_remapScreen->wantsClose()) {
-                // Save the map if anything changed
                 if (m_remapScreen->isDirty()) {
                     m_inputMap.save();
                     m_remapScreen->clearDirty();
                 }
                 m_remapScreen->resetClose();
                 setState(AppState::SETTINGS);
+            }
+            break;
+        case AppState::TROPHY_ROOM:
+            m_trophyRoom->update(deltaMs);
+            if (m_trophyRoom->wantsClose()) {
+                m_trophyRoom->resetClose();
+                setState(AppState::GAME_BROWSER);
             }
             break;
         case AppState::SCRAPING:
@@ -797,9 +826,10 @@ void HaackApp::render() {
             if (m_rewinding)            renderRewindIndicator();
             if (m_turboActive)          renderTurboIndicator();
             break;
-        case AppState::SETTINGS:     m_settings->render(); break;
-        case AppState::REMAPPING:    m_remapScreen->render(); break;
-        case AppState::SCRAPING:     m_scraper->render();  break;
+        case AppState::SETTINGS:     m_settings->render();      break;
+        case AppState::REMAPPING:    m_remapScreen->render();   break;
+        case AppState::TROPHY_ROOM:  m_trophyRoom->render();    break;
+        case AppState::SCRAPING:     m_scraper->render();       break;
         default: break;
     }
     // Screenshot notification renders on top of any state
@@ -982,8 +1012,10 @@ void HaackApp::launchGame(const std::string& path) {
         m_saveStates->setCurrentGame(title, path);
 
         // Record in play history (moves to front if already present)
-        if (m_playHistory)
+        if (m_playHistory) {
             m_playHistory->recordPlay(path, title);
+            m_sessionStartTime = std::time(nullptr); // start session timer
+        }
         if (m_ra && m_ra->isLoggedIn())
             m_ra->loadGame(path, m_core.get());
 
@@ -1171,7 +1203,21 @@ void HaackApp::stopGame() {
     m_rewinding       = false;
     m_turboActive     = false;   // ← reset turbo on game exit
     m_turboHeldSince  = 0;
-    if (m_core) m_core->setTurboRatio(1.0); // restore normal audio threshold
+    if (m_core) {
+        m_core->setTurboRatio(1.0); // restore normal audio threshold
+        // If turbo mute was active, ensure audio device is unpaused on exit
+        if (m_haackSettings.turboMuteAudio) {
+            SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+            if (audioDev) { SDL_PauseAudioDevice(audioDev, 0); SDL_ClearQueuedAudio(audioDev); }
+        }
+    }
+
+    // Record session playtime before clearing the path
+    if (m_playHistory && m_sessionStartTime > 0 && !m_currentGamePath.empty()) {
+        uint64_t elapsed = (uint64_t)(std::time(nullptr) - m_sessionStartTime);
+        m_playHistory->recordStop(m_currentGamePath, elapsed);
+        m_sessionStartTime = 0;
+    }
     m_ffHeldSince     = 0;
     m_rewindHeldSince = 0;
     m_rumbleNextAt    = 0;
@@ -1522,6 +1568,15 @@ void HaackApp::updateGameInput() {
                     int tIdx = std::max(0, std::min(m_haackSettings.turboSpeed, 4));
                     double ratio = m_turboActive ? TURBO_RATIOS[tIdx] : 1.0;
                     m_core->setTurboRatio(ratio);
+                }
+                // Mute / unmute audio according to the turbo mute setting
+                if (m_haackSettings.turboMuteAudio && m_core) {
+                    SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+                    if (audioDev) {
+                        SDL_PauseAudioDevice(audioDev, m_turboActive ? 1 : 0);
+                        if (!m_turboActive)
+                            SDL_ClearQueuedAudio(audioDev); // flush stale buffered audio
+                    }
                 }
             }
         } else {

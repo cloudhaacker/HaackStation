@@ -315,6 +315,9 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                         gameInfo.points = 0;
                         gameInfo.id = 0; // 0 = game loaded notification
                         self->queueNotification(gameInfo);
+
+                        // Kick off background badge downloads for the Trophy Room
+                        self->fetchAllBadges();
                     }
                 }
             } else {
@@ -513,6 +516,110 @@ std::vector<AchievementInfo> RAManager::getAchievements() const {
     }
     rc_client_destroy_achievement_list(list);
     return result;
+}
+
+// ─── getAchievementsWithBadgePaths ────────────────────────────────────────────
+// Like getAchievements() but fills in badge path fields so TrophyRoom can
+// load textures without making any additional RA API calls.
+std::vector<AchievementInfo> RAManager::getAchievementsWithBadgePaths() const {
+    std::vector<AchievementInfo> result;
+    if (!m_client || !m_gameLoaded) return result;
+
+    rc_client_achievement_list_t* list =
+        rc_client_create_achievement_list(m_client,
+            RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
+            RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+    if (!list) return result;
+
+    for (uint32_t b = 0; b < list->num_buckets; b++) {
+        for (uint32_t i = 0; i < list->buckets[b].num_achievements; i++) {
+            const rc_client_achievement_t* a = list->buckets[b].achievements[i];
+            AchievementInfo info;
+            info.id          = a->id;
+            info.title       = a->title       ? a->title       : "";
+            info.description = a->description ? a->description : "";
+            info.points      = a->points;
+            info.unlocked    = (a->state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED);
+
+            if (a->badge_name && strlen(a->badge_name) > 0) {
+                std::string name = a->badge_name;
+                info.badgeUrl          = "https://media.retroachievements.org/Badge/" + name + ".png";
+                info.badgeLocalPath    = m_badgeDir + name + ".png";
+                info.badgeLockUrl      = "https://media.retroachievements.org/Badge/" + name + "_lock.png";
+                info.badgeLockLocalPath= m_badgeDir + name + "_lock.png";
+            }
+            result.push_back(std::move(info));
+        }
+    }
+    rc_client_destroy_achievement_list(list);
+    return result;
+}
+
+// ─── fetchAllBadges ───────────────────────────────────────────────────────────
+// Downloads colour + lock badge images for every achievement in the current
+// game. Skips files that are already cached. Each badge spawns its own
+// detached thread to avoid blocking the main loop.
+void RAManager::fetchAllBadges() {
+    if (!m_client || !m_gameLoaded) return;
+
+    rc_client_achievement_list_t* list =
+        rc_client_create_achievement_list(m_client,
+            RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
+            RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+    if (!list) return;
+
+    std::cout << "[RA] Fetching badges for all achievements...\n";
+    int queued = 0;
+
+    for (uint32_t b = 0; b < list->num_buckets; b++) {
+        for (uint32_t i = 0; i < list->buckets[b].num_achievements; i++) {
+            const rc_client_achievement_t* a = list->buckets[b].achievements[i];
+            if (!a->badge_name || strlen(a->badge_name) == 0) continue;
+
+            std::string name      = a->badge_name;
+            std::string colourUrl = "https://media.retroachievements.org/Badge/" + name + ".png";
+            std::string lockUrl   = "https://media.retroachievements.org/Badge/" + name + "_lock.png";
+            std::string colourPath= m_badgeDir + name + ".png";
+            std::string lockPath  = m_badgeDir + name + "_lock.png";
+
+            // Colour badge
+            if (!fs::exists(colourPath)) {
+                std::string url  = colourUrl;
+                std::string path = colourPath;
+                std::string dir  = m_badgeDir;
+                std::thread([url, path, dir]() {
+                    std::string body;
+                    if (performHttpGet(url, body) && !body.empty()) {
+                        fs::create_directories(dir);
+                        std::ofstream f(path, std::ios::binary);
+                        f.write(body.data(), body.size());
+                        std::cout << "[RA] Badge cached: " << path << "\n";
+                    }
+                }).detach();
+                queued++;
+            }
+
+            // Lock badge
+            if (!fs::exists(lockPath)) {
+                std::string url  = lockUrl;
+                std::string path = lockPath;
+                std::string dir  = m_badgeDir;
+                std::thread([url, path, dir]() {
+                    std::string body;
+                    if (performHttpGet(url, body) && !body.empty()) {
+                        fs::create_directories(dir);
+                        std::ofstream f(path, std::ios::binary);
+                        f.write(body.data(), body.size());
+                        std::cout << "[RA] Badge (lock) cached: " << path << "\n";
+                    }
+                }).detach();
+                queued++;
+            }
+        }
+    }
+
+    rc_client_destroy_achievement_list(list);
+    std::cout << "[RA] Badge fetch: " << queued << " downloads queued\n";
 }
 
 int RAManager::unlockedCount() const {

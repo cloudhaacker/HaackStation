@@ -116,6 +116,9 @@ void SettingsScreen::buildTabs() {
             "Speed when turbo is active — audio stays on at game speed",
             { "1.5x", "2x", "3x", "4x", "6x" },
             &m_settings->turboSpeed));
+        tab.items.push_back(makeToggle("turbo_mute", "Turbo: Mute Audio",
+            "Silence audio while turbo is active — useful for long grinding sessions",
+            &m_settings->turboMuteAudio));
         tab.items.push_back(makeSep());
         tab.items.push_back(makeLabel("ff_note", "Fast Forward toggle",
             "Per-game toggle option coming in per-game settings"));
@@ -308,8 +311,9 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
                         m_activeItem = i; break;
                     }
                 }
+            } else {
+                m_nav->cancelHeld(); // held at top — stop repeat flood
             }
-            // isRepeat at top edge: do nothing (clamp)
             break;
         }
 
@@ -325,8 +329,9 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
                         m_activeItem = i; break;
                     }
                 }
+            } else {
+                m_nav->cancelHeld(); // held at bottom — stop repeat flood
             }
-            // isRepeat at bottom edge: do nothing (clamp)
             break;
         }
 

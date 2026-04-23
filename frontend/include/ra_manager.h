@@ -35,12 +35,14 @@ struct AchievementInfo {
     uint32_t    id          = 0;
     std::string title;
     std::string description;
-    std::string badgeUrl;       // URL to badge image
-    std::string badgeLocalPath; // Downloaded badge image path
+    std::string badgeUrl;           // URL to colour badge image
+    std::string badgeLocalPath;     // Local path: media/badges/{name}.png
+    std::string badgeLockUrl;       // URL to locked/greyscale badge
+    std::string badgeLockLocalPath; // Local path: media/badges/{name}_lock.png
     uint32_t    points      = 0;
     bool        unlocked    = false;
     bool        hardcore    = false;
-    SDL_Texture* badge      = nullptr; // Loaded badge texture
+    SDL_Texture* badge      = nullptr; // Loaded badge texture (not used by TrophyRoom)
 };
 
 struct RAGameInfo {
@@ -101,6 +103,15 @@ public:
     // Get current game info and achievement list
     const RAGameInfo& gameInfo() const { return m_gameInfo; }
     std::vector<AchievementInfo> getAchievements() const;
+
+    // Like getAchievements() but also populates badgeLocalPath / badgeLockLocalPath
+    // for every entry so TrophyRoom can load textures directly.
+    std::vector<AchievementInfo> getAchievementsWithBadgePaths() const;
+
+    // Download all badge images for the current game into media/badges/.
+    // Called automatically after loadGame() succeeds.
+    // Spawns background threads — safe to call from main thread.
+    void fetchAllBadges();
     int unlockedCount() const;
 
     // Rich presence string (what you're doing in-game)

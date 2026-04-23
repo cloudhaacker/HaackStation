@@ -13,6 +13,31 @@
 #include <sstream>
 #include <cstring>
 
+// ─── Display order ────────────────────────────────────────────────────────────
+// Maps display row index → PS1Button enum value.
+// Groups buttons logically: face → shoulders → sticks → d-pad → meta.
+// Used by renderRightPanel (drawing), navigate() (bounds), beginListen()
+// (single edit), and pollListen() Configure All (wizard sequencing).
+static const int DISPLAY_ORDER[] = {
+    (int)PS1Button::B,       // Cross    (×)
+    (int)PS1Button::A,       // Circle   (○)
+    (int)PS1Button::Y,       // Square   (□)
+    (int)PS1Button::X,       // Triangle (△)
+    (int)PS1Button::L,       // L1
+    (int)PS1Button::R,       // R1
+    (int)PS1Button::L2,      // L2
+    (int)PS1Button::R2,      // R2
+    (int)PS1Button::L3,      // L3
+    (int)PS1Button::R3,      // R3
+    (int)PS1Button::UP,      // D-Pad Up
+    (int)PS1Button::DOWN,    // D-Pad Down
+    (int)PS1Button::LEFT,    // D-Pad Left
+    (int)PS1Button::RIGHT,   // D-Pad Right
+    (int)PS1Button::SELECT,  // Select
+    (int)PS1Button::START,   // Start
+};
+static const int DISPLAY_COUNT = (int)(sizeof(DISPLAY_ORDER) / sizeof(DISPLAY_ORDER[0]));
+
 // ─── Construction / destruction ───────────────────────────────────────────────
 RemapScreen::RemapScreen(SDL_Renderer* renderer, ThemeEngine* theme,
                           ControllerNav* nav, InputMap* map)
@@ -206,19 +231,21 @@ void RemapScreen::update(float deltaMs) {
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 void RemapScreen::navigate(NavAction action) {
-    const int total = (int)PS1Button::COUNT;
     switch (action) {
         case NavAction::UP:
             if (m_selectedRow > 0) {
                 m_selectedRow--;
                 if (m_selectedRow < m_scrollOffset)
                     m_scrollOffset = m_selectedRow;
+            } else {
+                m_nav->cancelHeld(); // already at top — stop repeat flood
             }
             break;
         case NavAction::DOWN:
-            if (m_selectedRow < total - 1) {
+            if (m_selectedRow < DISPLAY_COUNT - 1) {
                 m_selectedRow++;
-                // scrollOffset updated in renderRightPanel where visibleRows is known
+            } else {
+                m_nav->cancelHeld(); // already at bottom
             }
             break;
         case NavAction::LEFT:
@@ -235,11 +262,14 @@ void RemapScreen::navigate(NavAction action) {
 
 // ─── Listen ───────────────────────────────────────────────────────────────────
 void RemapScreen::beginListen() {
+    // m_selectedRow is the display-order row index.
+    // DISPLAY_ORDER maps it to the actual PS1Button enum value for the binding.
     m_listening     = true;
-    m_listenIndex   = m_selectedRow;
+    m_listenIndex   = DISPLAY_ORDER[m_selectedRow];
     m_listenPulse   = 0.f;
     m_listenStartMs = SDL_GetTicks();
     m_listenReadyMs = SDL_GetTicks() + 250; // must wait 250ms before accepting input
+    m_bCancelHeldSince = 0;
 }
 
 void RemapScreen::beginConfigureAll() {
@@ -253,9 +283,18 @@ void RemapScreen::beginConfigureAll() {
 // Called every frame while m_listening == true.
 // Key fix: uses m_listenReadyMs (not m_listenStartMs) to gate input acceptance.
 // When Configure All advances to the next binding, we set m_listenReadyMs to
-// now + 400ms so the held button from the previous press can't bleed through.
+// now + 600ms so the held button from the previous press can't bleed through.
 // m_listenStartMs is only used for the cancel-button debounce.
+//
+// Cancel behaviour:
+//   Keyboard:    Escape or Backspace (tap) — always safe, no remapping conflict.
+//   Controller:  Hold B for CANCEL_HOLD_MS — requires deliberate hold, so a
+//                quick B press during Configure All records B as a binding first,
+//                and the hold gesture can't fire accidentally. Works on Steam Deck
+//                and Android where Escape is awkward or unavailable.
 void RemapScreen::pollListen() {
+    static constexpr Uint32 CANCEL_HOLD_MS = 500;
+
     // Pump SDL events so button state is fresh
     SDL_PumpEvents();
 
@@ -270,13 +309,31 @@ void RemapScreen::pollListen() {
     }
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
 
-    // Cancel: B button or Escape — debounced from listen start
-    bool cancelCtrl = ctrl && SDL_GameControllerGetButton(ctrl, SDL_CONTROLLER_BUTTON_B);
-    bool cancelKey  = ks[SDL_SCANCODE_ESCAPE] || ks[SDL_SCANCODE_BACKSPACE];
-    if ((cancelCtrl || cancelKey) && SDL_GetTicks() - m_listenStartMs > 300) {
+    // ── Cancel check ──────────────────────────────────────────────────────────
+    // Keyboard: tap Escape or Backspace — immediately cancel.
+    bool cancelKey = ks[SDL_SCANCODE_ESCAPE] || ks[SDL_SCANCODE_BACKSPACE];
+    if (cancelKey && SDL_GetTicks() - m_listenStartMs > 300) {
         m_listening      = false;
         m_configuringAll = false;
+        m_bCancelHeldSince = 0;
         return;
+    }
+
+    // Controller: hold B for CANCEL_HOLD_MS.
+    // Track how long B has been held — cancel only once the threshold passes.
+    // A quick tap of B during Configure All records B as a binding instead.
+    bool bHeld = ctrl && SDL_GameControllerGetButton(ctrl, SDL_CONTROLLER_BUTTON_B);
+    if (bHeld) {
+        if (m_bCancelHeldSince == 0)
+            m_bCancelHeldSince = SDL_GetTicks();
+        if (SDL_GetTicks() - m_bCancelHeldSince >= CANCEL_HOLD_MS) {
+            m_listening        = false;
+            m_configuringAll   = false;
+            m_bCancelHeldSince = 0;
+            return;
+        }
+    } else {
+        m_bCancelHeldSince = 0;
     }
 
     // Not ready yet — waiting out the inter-binding delay
@@ -284,18 +341,20 @@ void RemapScreen::pollListen() {
 
     if (!applyBinding(ctrl, ks)) return;
 
-    // A binding was recorded
+    // A binding was recorded — reset B-hold timer so a new hold can cancel the next
+    m_bCancelHeldSince = 0;
     m_dirty = true;
 
     if (m_configuringAll) {
         m_selectedRow++;
-        if (m_selectedRow < (int)PS1Button::COUNT) {
-            m_listenIndex   = m_selectedRow;
+        if (m_selectedRow < DISPLAY_COUNT) {
+            m_listenIndex   = DISPLAY_ORDER[m_selectedRow];
             m_listenPulse   = 0.f;
             m_listenStartMs = SDL_GetTicks();
             // Critical: delay READY time so the button held for the previous
             // binding doesn't immediately fire the next one.
-            m_listenReadyMs = SDL_GetTicks() + 450;
+            // 600ms gives enough margin even for slow button releases.
+            m_listenReadyMs = SDL_GetTicks() + 600;
             // Scroll the table to keep the active row visible
             // (visibleRows not known here, use a conservative estimate)
             if (m_selectedRow >= m_scrollOffset + 8)
@@ -493,18 +552,19 @@ void RemapScreen::renderRightPanel(int px, int py, int pw, int ph) {
     int tableBottom  = py + ph - HOTKEY_BLOCK_H - PANEL_PAD;
     int availableH   = tableBottom - y;
     int visibleRows  = std::max(1, availableH / ROW_H);
-    int total        = (int)PS1Button::COUNT;
+    // DISPLAY_ORDER / DISPLAY_COUNT defined at file scope — see top of file.
 
     // Clamp scroll so selected row stays visible
     if (m_selectedRow >= m_scrollOffset + visibleRows)
         m_scrollOffset = m_selectedRow - visibleRows + 1;
     if (m_scrollOffset < 0) m_scrollOffset = 0;
 
-    int lastVisible = std::min(m_scrollOffset + visibleRows, total);
+    int lastVisible = std::min(m_scrollOffset + visibleRows, DISPLAY_COUNT);
 
-    for (int i = m_scrollOffset; i < lastVisible; i++) {
-        bool sel  = (i == m_selectedRow);
-        int  rowY = y + (i - m_scrollOffset) * ROW_H;
+    for (int row = m_scrollOffset; row < lastVisible; row++) {
+        int  i    = DISPLAY_ORDER[row];
+        bool sel  = (row == m_selectedRow);
+        int  rowY = y + (row - m_scrollOffset) * ROW_H;
 
         // Clip rows that would overlap the hotkey block
         if (rowY + ROW_H > tableBottom) break;
@@ -540,7 +600,7 @@ void RemapScreen::renderRightPanel(int px, int py, int pw, int ph) {
     if (m_scrollOffset > 0)
         m_theme->drawTextCentered("▲", tableX + tableW - 10, y - 14,
                                    pal.textDisable, FontSize::TINY);
-    if (lastVisible < total)
+    if (lastVisible < DISPLAY_COUNT)
         m_theme->drawTextCentered("▼", tableX + tableW - 10, tableBottom - 4,
                                    pal.textDisable, FontSize::TINY);
 
@@ -642,6 +702,6 @@ void RemapScreen::renderListenOverlay() {
             m_w/2, cardY + 148, pal.textDisable, FontSize::TINY);
     }
 
-    m_theme->drawTextCentered("B / Backspace  =  cancel",
+    m_theme->drawTextCentered("Hold B (0.5s) / Esc / Backspace  =  cancel",
         m_w/2, cardY + 178, pal.textDisable, FontSize::TINY);
 }

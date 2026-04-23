@@ -137,6 +137,20 @@ NavAction ControllerNav::updateHeld(Uint32 nowMs) {
     return NavAction::NONE;
 }
 
+// ─── cancelHeld ───────────────────────────────────────────────────────────────
+// Call this from a screen's navigate() when movement was clamped (already at
+// boundary). Resets the repeat timer so the held direction doesn't fire again
+// until released and re-pressed. Without this, holding UP at the top of a list
+// floods the screen with phantom nav events at repeatIntervalMs rate.
+void ControllerNav::cancelHeld() {
+    // Don't clear m_heldAction — the key/button is still physically held.
+    // Just push m_lastRepeat forward so the next repeat won't fire until
+    // the user releases and holds again (initialDelayMs will re-arm it).
+    m_lastRepeat  = SDL_GetTicks();
+    m_repeatFired = false;
+    m_heldSince   = SDL_GetTicks(); // restart the hold timer
+}
+
 NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
     switch (btn) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:       return NavAction::UP;

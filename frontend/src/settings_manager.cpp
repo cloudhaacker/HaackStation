@@ -61,6 +61,7 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "fast_boot")          s.fastBoot           = parseBool(val);
         else if (key == "fast_forward_speed") s.fastForwardSpeed   = parseInt(val, 1);
         else if (key == "turbo_speed")        s.turboSpeed         = parseInt(val, 0);
+        else if (key == "turbo_mute_audio")   s.turboMuteAudio     = parseBool(val);
         else if (key == "top_row_mode")       s.topRowMode         = parseInt(val, 0);
 
         // ── Video ─────────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "fast_boot="          << (s.fastBoot ? "true" : "false") << "\n";
     f << "fast_forward_speed=" << s.fastForwardSpeed               << "\n";
     f << "turbo_speed="        << s.turboSpeed                     << "\n";
+    f << "turbo_mute_audio="   << (s.turboMuteAudio ? "true" : "false") << "\n";
     f << "top_row_mode="       << s.topRowMode                     << "\n";
     f << "\n";
 

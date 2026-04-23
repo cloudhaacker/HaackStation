@@ -41,6 +41,11 @@ public:
     // Call each frame even without an event (handles held-direction repeats)
     NavAction updateHeld(Uint32 nowMs);
 
+    // Call from a screen's navigate() when movement was already at boundary.
+    // Resets the repeat timer so the held direction won't flood the screen
+    // with phantom events — user must release and re-press to get another repeat.
+    void cancelHeld();
+
     // Controller lifecycle
     void onControllerAdded(int deviceIndex);
     void onControllerRemoved(int instanceId);

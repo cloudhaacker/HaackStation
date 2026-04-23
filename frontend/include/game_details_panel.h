@@ -38,6 +38,7 @@ enum class DetailsPanelAction {
     OPEN_AI_UPSCALE,
     OPEN_TRANSLATION,
     OPEN_PER_GAME_SETTINGS,
+    OPEN_TROPHY_ROOM,
 };
 
 struct DetailsMenuItem {
@@ -87,6 +88,12 @@ public:
                        const std::vector<std::string>& recentBadgePaths);
 
     static constexpr int MAX_SCREENSHOTS = 10;
+
+    // Playtime stats — set by app.cpp after opening from play history
+    void setPlaytimeStats(uint64_t totalSeconds, int playCount) {
+        m_playtimeSeconds = totalSeconds;
+        m_playCount       = playCount;
+    }
 
 private:
     void buildMenuItems();
@@ -139,11 +146,16 @@ private:
     DetailsPanelAction m_pendingAction = DetailsPanelAction::NONE;
 
     // Description scroll/focus state
-    // m_descHighlighted: UP from button grid highlights the desc box (border shown)
-    // m_descFocused:     A while highlighted enters active scroll mode
     bool m_descHighlighted  = false;
     bool m_descFocused      = false;
-    int  m_descScrollOffset = 0;     // pixels scrolled down in description
+    int  m_descScrollOffset = 0;
+
+    // Trophy row selection
+    bool m_trophyRowSelected = false;
+
+    // Playtime stats — populated by app.cpp from PlayHistory
+    uint64_t m_playtimeSeconds = 0;
+    int      m_playCount       = 0;
 
     int m_w = 1280;
     int m_h = 720;

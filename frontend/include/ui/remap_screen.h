@@ -81,6 +81,8 @@ private:
                                   // Kept separate from m_listenStartMs so that
                                   // Configure All can insert a delay between
                                   // bindings without breaking the cancel check.
+    Uint32 m_bCancelHeldSince = 0; // when B was first held during listen —
+                                   // cancel fires after CANCEL_HOLD_MS (500ms).
 
     void pollListen();
     bool applyBinding(SDL_GameController* ctrl, const Uint8* ks);
