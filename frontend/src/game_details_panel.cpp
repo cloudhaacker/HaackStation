@@ -284,30 +284,33 @@ void GameDetailsPanel::handleEvent(const SDL_Event& e) {
 void GameDetailsPanel::navigateMenu(NavAction action) {
     int cols = 2;
 
-    // Navigation focus hierarchy (top → bottom):
-    //   Description box (scrollable)  ← UP from trophy row
-    //   Trophy row (tappable)         ← UP from button grid top row
-    //   Button grid                   ← default focus
+    // Navigation focus hierarchy matching visual layout (top → bottom):
+    //   Screenshots   (not interactive — L1/R1 cycle them from anywhere)
+    //   Trophy row    (A = open Trophy Room)      ← UP from description
+    //   Description   (A = enter scroll mode)     ← UP from button grid top row
+    //   Button grid   (default focus)
     //
-    // Flow: grid → UP (top row) → trophy row → UP → description → A → scroll
+    // Flow:
+    //   grid UP (top row) → description → UP → trophy row → UP → clamp (top)
+    //   trophy row DOWN → description → DOWN → grid
 
     // ── Trophy row focused ────────────────────────────────────────────────────
     if (m_trophyRowSelected) {
         switch (action) {
             case NavAction::CONFIRM:
-                // Open Trophy Room
+                // A = open Trophy Room
                 m_pendingAction     = DetailsPanelAction::OPEN_TROPHY_ROOM;
                 m_trophyRowSelected = false;
                 break;
             case NavAction::UP:
-                // Move up to description box
-                m_trophyRowSelected = false;
-                m_descHighlighted   = true;
+                // Trophy row is the topmost interactive element — clamp here.
+                // cancelHeld() prevents held-UP from flooding events at boundary.
+                m_nav->cancelHeld();
                 break;
             case NavAction::DOWN:
-                // Move back down to button grid
+                // Move down to description (trophy row is ABOVE description visually)
                 m_trophyRowSelected = false;
-                m_selectedItem      = 0;
+                m_descHighlighted   = true;
                 break;
             case NavAction::BACK:
                 // B from trophy row — close panel
@@ -343,21 +346,29 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
     }
 
     if (m_descHighlighted) {
-        // Description box is selected/highlighted but not yet scrolling
+        // Description box is selected/highlighted but not yet scrolling.
+        // Visually: trophy row is ABOVE, button grid is BELOW.
         switch (action) {
             case NavAction::CONFIRM:
-                // A button: enter scroll mode, start from top
+                // A = enter scroll mode, start from top
                 m_descFocused     = true;
                 m_descScrollOffset = 0;
                 break;
-            case NavAction::DOWN:
-                // Move down — go to trophy row if we have trophies, else grid
+            case NavAction::UP:
+                // Move up to trophy row (which is above description visually)
                 m_descHighlighted = false;
                 if (m_trophiesTotal > 0) {
                     m_trophyRowSelected = true;
                 } else {
-                    m_selectedItem = 0;
+                    // No trophies — clamp at description
+                    m_descHighlighted = true;
+                    m_nav->cancelHeld();
                 }
+                break;
+            case NavAction::DOWN:
+                // Move down to button grid (below description)
+                m_descHighlighted = false;
+                m_selectedItem    = 0;
                 break;
             case NavAction::BACK:
                 // B from highlighted: exit panel
@@ -373,9 +384,8 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
 
     switch (action) {
         case NavAction::UP:
-            // If at top row of menu, go straight to description.
-            // Trophy row is reachable via DOWN from description (and via A
-            // on the trophy row label directly) — not via UP from buttons.
+            // At top row → go up to description (which is directly above buttons).
+            // Description → UP → trophy row → UP → clamp.
             if (m_selectedItem < cols) {
                 m_descHighlighted = true;
                 m_selectedItem    = -1;

@@ -159,21 +159,22 @@ void HaackApp::init() {
     m_trophyHub   = std::make_unique<TrophyHub>(
         m_renderer, m_theme.get(), m_nav.get());
     m_trophyHub->setOnViewGame([this](uint32_t gameId, const std::string& title) {
-        // If this game's data is in the RA cache, use it directly.
-        // The cache holds the most recently played game's full achievement list.
         m_trophyRoom->setGameTitle(title);
-        if (m_ra && m_ra->cachedGameInfo().id == gameId &&
-            !m_ra->getCachedAchievements().empty()) {
-            // Cache matches — populate with full achievement data
-            m_trophyRoom->refreshWithData(m_ra->getCachedAchievements());
-            std::cout << "[App] Trophy Room: using cached data for " << title << "\n";
+        // getCachedAchievementsForGame() works for any game that has been played
+        // with RA enabled, even after a cold restart — data is loaded from disk.
+        if (m_ra) {
+            const auto* achs = m_ra->getCachedAchievementsForGame(gameId);
+            if (achs && !achs->empty()) {
+                m_trophyRoom->refreshWithData(*achs);
+                std::cout << "[App] Trophy Room: loaded " << achs->size()
+                          << " achievements for " << title << "\n";
+            } else {
+                m_trophyRoom->refresh();
+                std::cout << "[App] Trophy Room: no cached data for " << title
+                          << " — play the game with RA enabled to populate\n";
+            }
         } else {
-            // Different game — refresh() will use whatever cache is available
-            // (may be empty if this game was never played this session).
-            // Full details require loading the game.
             m_trophyRoom->refresh();
-            std::cout << "[App] Trophy Room: no cache for " << title
-                      << " (play the game to populate)\n";
         }
         m_trophyRoom->resetClose();
         setState(AppState::TROPHY_ROOM);
@@ -731,20 +732,28 @@ void HaackApp::update(float deltaMs) {
                             m_playHistory->getPlayCount(game->path));
                     }
                     // Wire in RA trophy data so trophy row is navigable.
-                    // Use cached data — works even when no game is running.
-                    if (m_ra) {
-                        const auto& achievements = m_ra->getCachedAchievements();
-                        int unlocked = 0;
-                        for (const auto& a : achievements) if (a.unlocked) unlocked++;
-                        std::vector<std::string> badgePaths;
-                        for (const auto& a : achievements) {
-                            if (a.unlocked && !a.badgeLocalPath.empty()
-                                && fs::exists(a.badgeLocalPath)) {
-                                badgePaths.push_back(a.badgeLocalPath);
-                                if ((int)badgePaths.size() >= 5) break;
+                    // Use per-game cache — works on cold start for any previously
+                    // played game, not just the most recently loaded one.
+                    if (m_ra && game) {
+                        // Look up gameId from the ROM path (populated from disk cache)
+                        uint32_t raGameId = m_ra->getGameIdForPath(game->path);
+                        const std::vector<AchievementInfo>* achievements = nullptr;
+                        if (raGameId != 0)
+                            achievements = m_ra->getCachedAchievementsForGame(raGameId);
+
+                        if (achievements && !achievements->empty()) {
+                            int unlocked = 0;
+                            for (const auto& a : *achievements) if (a.unlocked) unlocked++;
+                            std::vector<std::string> badgePaths;
+                            for (const auto& a : *achievements) {
+                                if (a.unlocked && !a.badgeLocalPath.empty()
+                                    && fs::exists(a.badgeLocalPath)) {
+                                    badgePaths.push_back(a.badgeLocalPath);
+                                    if ((int)badgePaths.size() >= 5) break;
+                                }
                             }
+                            m_details->setTrophyInfo(unlocked, (int)achievements->size(), badgePaths);
                         }
-                        m_details->setTrophyInfo(unlocked, (int)achievements.size(), badgePaths);
                     }
                 }
             } else if (m_browser->wantsDetails()) {
@@ -769,17 +778,30 @@ void HaackApp::update(float deltaMs) {
                     } else if (act == DetailsPanelAction::OPEN_TROPHY_ROOM) {
                         m_details->clearAction();
                         auto* game = m_browser->selectedGameEntry();
-                        // Set the title from the selected game — this ensures
-                        // we show the right game even when no session is active.
                         if (game) {
-                            // Prefer the RA game title if the cache matches this game
-                            std::string title = game->title;
-                            if (m_ra && !m_ra->cachedGameInfo().title.empty())
-                                title = m_ra->cachedGameInfo().title;
+                            // Prefer RA title; fall back to browser title
+                            uint32_t raGameId = m_ra ? m_ra->getGameIdForPath(game->path) : 0;
+                            const RAGameInfo* raInfo = (raGameId && m_ra)
+                                ? m_ra->getCachedGameInfoForGame(raGameId) : nullptr;
+                            std::string title = (raInfo && !raInfo->title.empty())
+                                ? raInfo->title : game->title;
                             m_trophyRoom->setGameTitle(title);
+
+                            const std::vector<AchievementInfo>* achs = (raGameId && m_ra)
+                                ? m_ra->getCachedAchievementsForGame(raGameId) : nullptr;
+                            if (achs && !achs->empty()) {
+                                m_trophyRoom->refreshWithData(*achs);
+                                std::cout << "[App] Trophy Room (details): "
+                                          << achs->size() << " achievements for "
+                                          << title << "\n";
+                            } else {
+                                m_trophyRoom->refresh();
+                                std::cout << "[App] Trophy Room (details): no cache for "
+                                          << title << "\n";
+                            }
+                        } else {
+                            m_trophyRoom->refresh();
                         }
-                        // refresh() now uses cached achievements when no game is loaded
-                        m_trophyRoom->refresh();
                         m_trophyRoom->resetClose();
                         setState(AppState::TROPHY_ROOM);
                     } else if (act == DetailsPanelAction::OPEN_PER_GAME_SETTINGS) {

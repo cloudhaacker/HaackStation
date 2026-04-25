@@ -5,6 +5,7 @@
 #include <thread>
 #include <cstring>
 #include <algorithm>
+#include <map>
 #include <SDL2/SDL_image.h>
 
 // rcheevos headers
@@ -195,6 +196,7 @@ static void RC_CCONV raEventHandler(const rc_client_event_t* event,
 RAManager::RAManager() {
     s_instance = this;
     fs::create_directories(m_badgeDir);
+    loadAllCachedGamesFromDisk();
 }
 
 RAManager::~RAManager() {
@@ -310,11 +312,12 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
     m_core       = core;
     m_gameLoaded = false;
     m_gameInfo   = RAGameInfo{};
-    // Clear stale cache while the new game is loading — details panel will
-    // show 0/0 briefly until the new loadGame callback completes, which is
-    // correct (better than showing last game's counts for a different game).
-    m_cachedAchievements.clear();
-    m_cachedGameInfo = RAGameInfo{};
+    // Reset last-game pointer while the new game loads — details panel will
+    // show 0/0 briefly until the loadGame callback completes, which is correct
+    // (better than showing stale data for the wrong game).
+    // We do NOT clear the full m_cachedAchievementsMap — all previously played
+    // game data remains available for cold-start browsing.
+    m_lastGameId = 0;
 
     // Hash the ROM — rc_hash_generate_from_file handles BIN/CUE natively.
     // CHD support requires libchdr to be linked (HAVE_CHD=1 in CMakeLists).
@@ -349,6 +352,7 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
 
     // Reset memory diagnostic so we get a fresh report for this game
     s_memDiagDone = false;
+    m_loadingPath = gamePath;  // captured by callback via self->m_loadingPath
 
     rc_client_begin_load_game(m_client, hash,
         [](int result, const char* errorMessage,
@@ -363,22 +367,30 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                     std::cout << "[RA] Game: " << self->m_gameInfo.title
                               << " (ID:" << self->m_gameInfo.id << ")\n";
 
-                    // Populate the persistent cache immediately so it's available
-                    // for the details panel trophy row and stopGame() hub update.
-                    // We call getAchievementsWithBadgePaths() here while m_gameLoaded
-                    // is already true so the rc_client query works.
-                    self->m_cachedGameInfo   = self->m_gameInfo;
-                    self->m_cachedAchievements = self->getAchievementsWithBadgePaths();
+                    // Populate the per-game persistent cache immediately so it's
+                    // available for the details panel trophy row and stopGame() hub
+                    // update. We call getAchievementsWithBadgePaths() here while
+                    // m_gameLoaded is already true so the rc_client query works.
+                    uint32_t gid = self->m_gameInfo.id;
+                    self->m_lastGameId = gid;
+                    self->m_cachedGameInfoMap[gid]    = self->m_gameInfo;
+                    self->m_cachedAchievementsMap[gid] = self->getAchievementsWithBadgePaths();
+                    // Record path→gameId for cold-start details panel lookup
+                    if (!self->m_loadingPath.empty())
+                        self->m_pathToGameId[self->m_loadingPath] = gid;
                     std::cout << "[RA] Cache populated: "
-                              << self->m_cachedAchievements.size()
+                              << self->m_cachedAchievementsMap[gid].size()
                               << " achievements\n";
 
                     // Count achievements (use the cache we just built)
                     {
-                        int total = (int)self->m_cachedAchievements.size();
+                        int total = (int)self->m_cachedAchievementsMap[gid].size();
                         self->m_gameInfo.totalAchievements = total;
-                        self->m_cachedGameInfo.totalAchievements = total;
+                        self->m_cachedGameInfoMap[gid].totalAchievements = total;
                         std::cout << "[RA] " << total << " achievements\n";
+
+                        // Save to disk immediately so cold-start browsing works.
+                        self->saveGameAchievementsToDisk(gid);
 
                         // Download game icon for the notification.
                         // RA game icons live at:
@@ -493,11 +505,18 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
 
             // Keep the cache in sync so stopGame() writes the correct
             // unlocked count to the Trophy Hub even mid-session.
-            for (auto& cached : m_cachedAchievements) {
-                if (cached.id == info.id) {
-                    cached.unlocked = true;
-                    break;
+            // Also persist immediately so progress survives a crash.
+            if (m_lastGameId != 0) {
+                auto it = m_cachedAchievementsMap.find(m_lastGameId);
+                if (it != m_cachedAchievementsMap.end()) {
+                    for (auto& cached : it->second) {
+                        if (cached.id == info.id) {
+                            cached.unlocked = true;
+                            break;
+                        }
+                    }
                 }
+                saveGameAchievementsToDisk(m_lastGameId);
             }
             break;
         }
@@ -763,4 +782,248 @@ void RAManager::setHardcoreMode(bool hardcore) {
     m_hardcore = hardcore;
     if (m_client)
         rc_client_set_hardcore_enabled(m_client, hardcore ? 1 : 0);
+}
+
+// ─── Achievement persistence ──────────────────────────────────────────────────
+// Hand-rolled minimal JSON — same pattern used elsewhere in the project.
+// No external JSON library required. Format is simple enough that this is safe.
+
+// Escape a string for embedding in JSON — handles the only characters that
+// can appear in RA titles/descriptions/paths.
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+void RAManager::saveGameAchievementsToDisk(uint32_t gameId) {
+    auto git = m_cachedGameInfoMap.find(gameId);
+    auto ait = m_cachedAchievementsMap.find(gameId);
+    if (git == m_cachedGameInfoMap.end() || ait == m_cachedAchievementsMap.end()) {
+        std::cerr << "[RA] saveGameAchievementsToDisk: no data for gameId "
+                  << gameId << "\n";
+        return;
+    }
+    const RAGameInfo&                   info = git->second;
+    const std::vector<AchievementInfo>& achs = ait->second;
+
+    fs::create_directories("saves/");
+    std::string path = "saves/ra_achievements_" + std::to_string(gameId) + ".json";
+
+    std::ofstream f(path);
+    if (!f.is_open()) {
+        std::cerr << "[RA] Could not write: " << path << "\n";
+        return;
+    }
+
+    f << "{\n";
+    f << "  \"gameId\": "      << gameId << ",\n";
+    f << "  \"title\": \""     << jsonEscape(info.title) << "\",\n";
+    f << "  \"totalPoints\": " << info.totalPoints << ",\n";
+
+    // Write the path→gameId map as a flat list of paths so we can rebuild
+    // m_pathToGameId on cold start without needing a separate index file.
+    f << "  \"romPaths\": [";
+    bool firstPath = true;
+    for (const auto& kv : m_pathToGameId) {
+        if (kv.second == gameId) {
+            if (!firstPath) f << ", ";
+            f << "\"" << jsonEscape(kv.first) << "\"";
+            firstPath = false;
+        }
+    }
+    f << "],\n";
+
+    f << "  \"achievements\": [\n";
+    for (size_t i = 0; i < achs.size(); i++) {
+        const AchievementInfo& a = achs[i];
+        f << "    {\n";
+        f << "      \"id\": "             << a.id << ",\n";
+        f << "      \"title\": \""        << jsonEscape(a.title) << "\",\n";
+        f << "      \"description\": \""  << jsonEscape(a.description) << "\",\n";
+        f << "      \"points\": "         << a.points << ",\n";
+        f << "      \"unlocked\": "       << (a.unlocked ? "true" : "false") << ",\n";
+        f << "      \"hardcore\": "       << (a.hardcore ? "true" : "false") << ",\n";
+        f << "      \"badgeLocalPath\": \""     << jsonEscape(a.badgeLocalPath) << "\",\n";
+        f << "      \"badgeLockLocalPath\": \"" << jsonEscape(a.badgeLockLocalPath) << "\"\n";
+        f << "    }";
+        if (i + 1 < achs.size()) f << ",";
+        f << "\n";
+    }
+    f << "  ]\n";
+    f << "}\n";
+
+    std::cout << "[RA] Saved " << achs.size() << " achievements → " << path << "\n";
+}
+
+// ─── Minimal JSON field extractors for loading ────────────────────────────────
+
+static std::string jsonStr(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (pos >= json.size() || json[pos] != '"') return "";
+    pos++;
+    std::string val;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;
+            switch (json[pos]) {
+                case 'n': val += '\n'; break;
+                case 'r': val += '\r'; break;
+                case 't': val += '\t'; break;
+                default:  val += json[pos]; break;
+            }
+        } else {
+            val += json[pos];
+        }
+        pos++;
+    }
+    return val;
+}
+
+static uint32_t jsonU32(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return 0;
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return 0;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    uint32_t val = 0;
+    while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9')
+        val = val * 10 + (json[pos++] - '0');
+    return val;
+}
+
+static bool jsonBool(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return false;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    return (pos + 3 < json.size() && json.substr(pos, 4) == "true");
+}
+
+void RAManager::loadAllCachedGamesFromDisk() {
+    if (!fs::exists("saves/")) return;
+
+    int gamesLoaded = 0;
+    for (const auto& entry : fs::directory_iterator("saves/")) {
+        std::string fname = entry.path().filename().string();
+        // Match saves/ra_achievements_12345.json
+        if (fname.rfind("ra_achievements_", 0) != 0) continue;
+        if (entry.path().extension() != ".json") continue;
+
+        std::ifstream f(entry.path());
+        if (!f.is_open()) continue;
+
+        std::string json((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+
+        uint32_t gameId = jsonU32(json, "gameId");
+        if (gameId == 0) continue;
+
+        RAGameInfo info;
+        info.id          = gameId;
+        info.title       = jsonStr(json, "title");
+        info.totalPoints = jsonU32(json, "totalPoints");
+
+        // Parse romPaths array to rebuild m_pathToGameId
+        {
+            auto arrStart = json.find("\"romPaths\"");
+            if (arrStart != std::string::npos) {
+                arrStart = json.find('[', arrStart);
+                auto arrEnd = json.find(']', arrStart);
+                if (arrStart != std::string::npos && arrEnd != std::string::npos) {
+                    std::string arrStr = json.substr(arrStart + 1, arrEnd - arrStart - 1);
+                    // Extract each quoted string from the array
+                    size_t p = 0;
+                    while (p < arrStr.size()) {
+                        auto q1 = arrStr.find('"', p);
+                        if (q1 == std::string::npos) break;
+                        q1++;
+                        std::string romPath;
+                        while (q1 < arrStr.size() && arrStr[q1] != '"') {
+                            if (arrStr[q1] == '\\' && q1 + 1 < arrStr.size()) {
+                                q1++;
+                                switch (arrStr[q1]) {
+                                    case 'n': romPath += '\n'; break;
+                                    case 'r': romPath += '\r'; break;
+                                    case 't': romPath += '\t'; break;
+                                    default:  romPath += arrStr[q1]; break;
+                                }
+                            } else {
+                                romPath += arrStr[q1];
+                            }
+                            q1++;
+                        }
+                        if (!romPath.empty())
+                            m_pathToGameId[romPath] = gameId;
+                        p = q1 + 1;
+                    }
+                }
+            }
+        }
+
+        // Parse achievements array
+        std::vector<AchievementInfo> achs;
+        {
+            auto arrStart = json.find("\"achievements\"");
+            if (arrStart != std::string::npos) {
+                arrStart = json.find('[', arrStart);
+                if (arrStart != std::string::npos) {
+                    // Walk through each achievement object {...}
+                    size_t p = arrStart + 1;
+                    while (p < json.size()) {
+                        auto objStart = json.find('{', p);
+                        if (objStart == std::string::npos) break;
+                        auto objEnd = json.find('}', objStart);
+                        if (objEnd == std::string::npos) break;
+                        std::string obj = json.substr(objStart, objEnd - objStart + 1);
+
+                        AchievementInfo a;
+                        a.id                = jsonU32(obj, "id");
+                        a.title             = jsonStr(obj, "title");
+                        a.description       = jsonStr(obj, "description");
+                        a.points            = jsonU32(obj, "points");
+                        a.unlocked          = jsonBool(obj, "unlocked");
+                        a.hardcore          = jsonBool(obj, "hardcore");
+                        a.badgeLocalPath    = jsonStr(obj, "badgeLocalPath");
+                        a.badgeLockLocalPath= jsonStr(obj, "badgeLockLocalPath");
+
+                        if (a.id != 0)
+                            achs.push_back(std::move(a));
+
+                        p = objEnd + 1;
+                    }
+                }
+            }
+        }
+
+        info.totalAchievements = (int)achs.size();
+        m_cachedGameInfoMap[gameId]    = std::move(info);
+        m_cachedAchievementsMap[gameId] = std::move(achs);
+        gamesLoaded++;
+    }
+
+    if (gamesLoaded > 0)
+        std::cout << "[RA] Loaded achievement cache for " << gamesLoaded
+                  << " game(s) from disk\n";
 }
