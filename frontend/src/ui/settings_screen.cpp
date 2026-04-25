@@ -231,7 +231,11 @@ void SettingsScreen::buildTabs() {
 
 void SettingsScreen::handleEvent(const SDL_Event& e) {
     NavAction action = m_nav->processEvent(e);
-    if (action != NavAction::NONE) navigateAction(action, false);
+    if (action == NavAction::NONE) return;
+    // SDL fires repeated SDL_KEYDOWN events while a key is held (e.key.repeat > 0).
+    // Treat those as repeats so boundary cancelHeld() applies to them.
+    bool isRepeat = (e.type == SDL_KEYDOWN && e.key.repeat > 0);
+    navigateAction(action, isRepeat);
 }
 
 void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {

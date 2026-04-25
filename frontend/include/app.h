@@ -19,6 +19,7 @@
 #include "input_map.h"
 #include "remap_screen.h"
 #include "trophy_room.h"
+#include "trophy_hub.h"
 #include <ctime>
 
 class GameBrowser;
@@ -36,6 +37,7 @@ enum class AppState {
     SETTINGS,
     REMAPPING,
     TROPHY_ROOM,
+    TROPHY_HUB,
     SCRAPING,
     SHUTDOWN
 };
@@ -82,7 +84,8 @@ private:
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
     bool          m_running  = false;
-    AppState      m_state    = AppState::STARTUP;
+    AppState      m_state     = AppState::STARTUP;
+    AppState      m_prevState = AppState::GAME_BROWSER;
 
     std::unique_ptr<ThemeEngine>      m_theme;
     std::unique_ptr<ControllerNav>    m_nav;
@@ -104,6 +107,7 @@ private:
     std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
     std::unique_ptr<RemapScreen>      m_remapScreen;
     std::unique_ptr<TrophyRoom>       m_trophyRoom;
+    std::unique_ptr<TrophyHub>        m_trophyHub;
     InputMap                           m_inputMap;    // global button map, loaded from saves/input_map.json
 
     Uint32 m_inputCooldownUntil = 0;

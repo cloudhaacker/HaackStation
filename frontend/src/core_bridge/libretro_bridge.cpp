@@ -78,6 +78,9 @@ bool LibretroBridge::loadCore(const std::string& corePath) {
     LOAD_SYM(m_retro_serialize_size, retro_serialize_size);
     LOAD_SYM(m_retro_serialize,      retro_serialize);
     LOAD_SYM(m_retro_unserialize,    retro_unserialize);
+    // Memory access — required for RetroAchievements to read PS1 RAM each frame
+    LOAD_SYM(m_retro_get_memory_data, retro_get_memory_data);
+    LOAD_SYM(m_retro_get_memory_size, retro_get_memory_size);
 
     // Register our callbacks with the core
     m_retro_set_environment        ((void*)cb_environment);

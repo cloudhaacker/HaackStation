@@ -73,6 +73,7 @@ private:
     Uint32    m_lastRepeat    = 0;
 	Uint32    m_cooldownUntil = 0;
     bool      m_repeatFired   = false;
+    bool      m_holdCancelled = false;  // set by cancelHeld(); cleared on new press
 
     NavRepeat m_repeat;
 

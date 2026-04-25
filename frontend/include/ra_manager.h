@@ -108,6 +108,14 @@ public:
     // for every entry so TrophyRoom can load textures directly.
     std::vector<AchievementInfo> getAchievementsWithBadgePaths() const;
 
+    // Returns the last known achievement list — works even after unloadGame().
+    // Populated automatically after loadGame() succeeds.
+    // Use this for the details panel trophy row so it works from the shelf.
+    const std::vector<AchievementInfo>& getCachedAchievements() const {
+        return m_cachedAchievements;
+    }
+    const RAGameInfo& cachedGameInfo() const { return m_cachedGameInfo; }
+
     // Download all badge images for the current game into media/badges/.
     // Called automatically after loadGame() succeeds.
     // Spawns background threads — safe to call from main thread.
@@ -156,6 +164,11 @@ private:
     std::string       m_badgeDir    = "media/badges/";
 
     RAGameInfo        m_gameInfo;
+
+    // Cached achievement data — survives unloadGame() so the details panel
+    // trophy row works when browsing the shelf between sessions.
+    std::vector<AchievementInfo> m_cachedAchievements;
+    RAGameInfo                   m_cachedGameInfo;
 
     // Unlock notification queue
     std::mutex                    m_notifyMutex;

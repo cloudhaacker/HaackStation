@@ -27,9 +27,15 @@ void TrophyRoom::refresh() {
     m_selectedIdx = 0;
     m_scrollRow   = 0;
 
-    if (!m_ra || !m_ra->isGameLoaded()) return;
+    // Use cached achievements if game not currently loaded — this lets the
+    // trophy room work when opened from the shelf/hub between sessions.
+    std::vector<AchievementInfo> achievements;
+    if (m_ra && m_ra->isGameLoaded()) {
+        achievements = m_ra->getAchievementsWithBadgePaths();
+    } else if (m_ra && !m_ra->getCachedAchievements().empty()) {
+        achievements = m_ra->getCachedAchievements();
+    }
 
-    auto achievements = m_ra->getAchievementsWithBadgePaths();
     m_entries.reserve(achievements.size());
     for (auto& a : achievements) {
         TrophyEntry e;
@@ -37,7 +43,32 @@ void TrophyRoom::refresh() {
         m_entries.push_back(std::move(e));
     }
 
-    std::cout << "[TrophyRoom] Loaded " << m_entries.size() << " achievements\n";
+    std::cout << "[TrophyRoom] Loaded " << m_entries.size() << " achievements"
+              << (m_ra && !m_ra->isGameLoaded() ? " (from cache)" : "") << "\n";
+
+    loadTextures();
+    m_dirty = true;
+}
+
+// ─── refreshWithData ──────────────────────────────────────────────────────────
+// Populates from an explicit achievement list — use when no game is running.
+// Called by app.cpp when opening from hub (per-game, specific game's cache).
+void TrophyRoom::refreshWithData(const std::vector<AchievementInfo>& achievements) {
+    freeTextures();
+    m_entries.clear();
+    m_visible.clear();
+    m_selectedIdx = 0;
+    m_scrollRow   = 0;
+
+    m_entries.reserve(achievements.size());
+    for (const auto& a : achievements) {
+        TrophyEntry e;
+        e.info = a;
+        m_entries.push_back(std::move(e));
+    }
+
+    std::cout << "[TrophyRoom] Loaded " << m_entries.size()
+              << " achievements (injected)\n";
 
     loadTextures();
     m_dirty = true;
@@ -393,10 +424,16 @@ void TrophyRoom::renderGrid() {
     int gridX      = (m_w - totalGridW) / 2;
 
     if (m_visible.empty()) {
-        m_theme->drawTextCentered(
-            m_filter == TrophyFilter::UNLOCKED ? "No achievements unlocked yet" :
-            m_filter == TrophyFilter::LOCKED   ? "All achievements unlocked!" :
-                                                  "No achievements available",
+        std::string msg;
+        if (m_filter == TrophyFilter::UNLOCKED)
+            msg = "No achievements unlocked yet";
+        else if (m_filter == TrophyFilter::LOCKED)
+            msg = "All achievements unlocked!";
+        else if (m_entries.empty())
+            msg = "No achievement data — play this game to load trophies";
+        else
+            msg = "No achievements available";
+        m_theme->drawTextCentered(msg,
             m_w / 2, gridY + 60, pal.textDisable, FontSize::BODY);
         return;
     }

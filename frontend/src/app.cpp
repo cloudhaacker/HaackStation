@@ -20,6 +20,7 @@
 #include "theme_engine.h"
 #include "rewind_manager.h"
 #include "input_map.h"
+#include "trophy_hub.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdexcept>
@@ -155,11 +156,34 @@ void HaackApp::init() {
         m_renderer, m_theme.get(), m_nav.get(), &m_inputMap);
     m_trophyRoom  = std::make_unique<TrophyRoom>(
         m_renderer, m_theme.get(), m_nav.get(), m_ra.get());
+    m_trophyHub   = std::make_unique<TrophyHub>(
+        m_renderer, m_theme.get(), m_nav.get());
+    m_trophyHub->setOnViewGame([this](uint32_t gameId, const std::string& title) {
+        // If this game's data is in the RA cache, use it directly.
+        // The cache holds the most recently played game's full achievement list.
+        m_trophyRoom->setGameTitle(title);
+        if (m_ra && m_ra->cachedGameInfo().id == gameId &&
+            !m_ra->getCachedAchievements().empty()) {
+            // Cache matches — populate with full achievement data
+            m_trophyRoom->refreshWithData(m_ra->getCachedAchievements());
+            std::cout << "[App] Trophy Room: using cached data for " << title << "\n";
+        } else {
+            // Different game — refresh() will use whatever cache is available
+            // (may be empty if this game was never played this session).
+            // Full details require loading the game.
+            m_trophyRoom->refresh();
+            std::cout << "[App] Trophy Room: no cache for " << title
+                      << " (play the game to populate)\n";
+        }
+        m_trophyRoom->resetClose();
+        setState(AppState::TROPHY_ROOM);
+    });
 
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();
     m_playHistory->load();
     m_discMemory.load();
+    m_trophyHub->refresh(); // pre-load saved trophy data from disk
     m_favorites.load();
     m_ra->setRenderer(m_renderer);
     m_ra->setTheme(m_theme.get());
@@ -426,6 +450,13 @@ void HaackApp::handleEvents() {
                         setState(AppState::SETTINGS);
                         continue;
                     }
+                    // F3 or Z — open Trophy Hub (global achievements overview)
+                    // Z = keyboard B equivalent; B has no function on the shelf
+                    if (key == SDLK_F3 || key == SDLK_z) {
+                        m_trophyHub->resetClose();
+                        setState(AppState::TROPHY_HUB);
+                        continue;
+                    }
                     // F2 / X button details handled in game_browser.cpp
                     break;
                 }
@@ -484,6 +515,15 @@ void HaackApp::handleEvents() {
                     setState(AppState::SETTINGS);
                     continue;
                 }
+                // B on the browser shelf (no details panel open) → Trophy Hub
+                // B has no other function here so it's a natural fit.
+                if (m_state == AppState::GAME_BROWSER &&
+                    e.cbutton.button == SDL_CONTROLLER_BUTTON_B &&
+                    !(m_details && m_details->isOpen())) {
+                    m_trophyHub->resetClose();
+                    setState(AppState::TROPHY_HUB);
+                    continue;
+                }
                 if (m_state == AppState::IN_GAME &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) {
                     SDL_GameController* ctrl = SDL_GameControllerFromInstanceID(
@@ -533,6 +573,7 @@ void HaackApp::handleEvents() {
                 case AppState::SETTINGS:     m_settings->handleEvent(e);    break;
                 case AppState::REMAPPING:    m_remapScreen->handleEvent(e); break;
                 case AppState::TROPHY_ROOM:  m_trophyRoom->handleEvent(e);  break;
+                case AppState::TROPHY_HUB:   m_trophyHub->handleEvent(e);   break;
                 case AppState::SCRAPING:     m_scraper->handleEvent(e);     break;
                 default: break;
             }
@@ -689,6 +730,22 @@ void HaackApp::update(float deltaMs) {
                             m_playHistory->getTotalSeconds(game->path),
                             m_playHistory->getPlayCount(game->path));
                     }
+                    // Wire in RA trophy data so trophy row is navigable.
+                    // Use cached data — works even when no game is running.
+                    if (m_ra) {
+                        const auto& achievements = m_ra->getCachedAchievements();
+                        int unlocked = 0;
+                        for (const auto& a : achievements) if (a.unlocked) unlocked++;
+                        std::vector<std::string> badgePaths;
+                        for (const auto& a : achievements) {
+                            if (a.unlocked && !a.badgeLocalPath.empty()
+                                && fs::exists(a.badgeLocalPath)) {
+                                badgePaths.push_back(a.badgeLocalPath);
+                                if ((int)badgePaths.size() >= 5) break;
+                            }
+                        }
+                        m_details->setTrophyInfo(unlocked, (int)achievements.size(), badgePaths);
+                    }
                 }
             } else if (m_browser->wantsDetails()) {
                 m_browser->clearWantsDetails();
@@ -711,14 +768,18 @@ void HaackApp::update(float deltaMs) {
                         m_details->clearAction();
                     } else if (act == DetailsPanelAction::OPEN_TROPHY_ROOM) {
                         m_details->clearAction();
-                        if (m_ra && m_ra->isGameLoaded()) {
-                            m_trophyRoom->setGameTitle(m_ra->gameInfo().title);
-                            m_trophyRoom->refresh();
-                        } else {
-                            // No live RA session — still show what we have from
-                            // the last loaded game (badges may be cached on disk)
-                            m_trophyRoom->refresh();
+                        auto* game = m_browser->selectedGameEntry();
+                        // Set the title from the selected game — this ensures
+                        // we show the right game even when no session is active.
+                        if (game) {
+                            // Prefer the RA game title if the cache matches this game
+                            std::string title = game->title;
+                            if (m_ra && !m_ra->cachedGameInfo().title.empty())
+                                title = m_ra->cachedGameInfo().title;
+                            m_trophyRoom->setGameTitle(title);
                         }
+                        // refresh() now uses cached achievements when no game is loaded
+                        m_trophyRoom->refresh();
                         m_trophyRoom->resetClose();
                         setState(AppState::TROPHY_ROOM);
                     } else if (act == DetailsPanelAction::OPEN_PER_GAME_SETTINGS) {
@@ -785,6 +846,15 @@ void HaackApp::update(float deltaMs) {
             m_trophyRoom->update(deltaMs);
             if (m_trophyRoom->wantsClose()) {
                 m_trophyRoom->resetClose();
+                // Return to hub if we came from there, otherwise browser
+                setState(m_prevState == AppState::TROPHY_HUB
+                    ? AppState::TROPHY_HUB : AppState::GAME_BROWSER);
+            }
+            break;
+        case AppState::TROPHY_HUB:
+            m_trophyHub->update(deltaMs);
+            if (m_trophyHub->wantsClose()) {
+                m_trophyHub->resetClose();
                 setState(AppState::GAME_BROWSER);
             }
             break;
@@ -829,6 +899,7 @@ void HaackApp::render() {
         case AppState::SETTINGS:     m_settings->render();      break;
         case AppState::REMAPPING:    m_remapScreen->render();   break;
         case AppState::TROPHY_ROOM:  m_trophyRoom->render();    break;
+        case AppState::TROPHY_HUB:   m_trophyHub->render();     break;
         case AppState::SCRAPING:     m_scraper->render();       break;
         default: break;
     }
@@ -979,7 +1050,10 @@ void HaackApp::renderScreenshotNotification() {
         toastX + 10, toastY + 8, textCol, FontSize::SMALL);
 }
 
-void HaackApp::setState(AppState next) { m_state = next; }
+void HaackApp::setState(AppState next) {
+    m_prevState = m_state;
+    m_state = next;
+}
 
 void HaackApp::launchGame(const std::string& path) {
     std::cout << "[HaackStation] Launching: " << path << "\n";
@@ -1236,6 +1310,45 @@ void HaackApp::stopGame() {
         SDL_Surface* screenshot = m_saveStates->captureCleanScreenshot();
         m_saveStates->autoSave(screenshot);
         if (screenshot) SDL_FreeSurface(screenshot);
+    }
+    // Update global Trophy Hub with this game's final achievement state.
+    // Use cached data — the cache was updated after load and stays valid here.
+    if (m_ra && m_trophyHub) {
+        const auto& achievements = m_ra->getCachedAchievements();
+        if (!achievements.empty()) {
+            GameTrophySummary summary;
+            summary.gameId    = m_ra->cachedGameInfo().id;
+            summary.gameTitle = m_ra->cachedGameInfo().title;
+            summary.total     = (int)achievements.size();
+            for (const auto& a : achievements) {
+                if (a.unlocked) {
+                    ++summary.unlocked;
+                    summary.totalPoints += a.points;
+                }
+                summary.possiblePoints += a.points;
+            }
+            // Cover art — build path using the same safeName logic as game_browser
+            {
+                std::string safeName = summary.gameTitle;
+                for (auto& c : safeName)
+                    if (c=='/'||c=='\\'||c==':'||c=='*'||c=='?'||
+                        c=='"'||c=='<'||c=='>'||c=='|') c='_';
+                std::string base = m_haackSettings.romsPath.empty()
+                    ? "media/covers/" : m_haackSettings.romsPath + "/media/covers/";
+                for (const char* ext : {".png", ".jpg"}) {
+                    std::string p = base + safeName + ext;
+                    if (fs::exists(p)) { summary.coverPath = p; break; }
+                }
+            }
+            // Up to 5 most recent unlocked badge paths for the hub strip
+            for (const auto& a : achievements) {
+                if (a.unlocked && !a.badgeLocalPath.empty()) {
+                    summary.recentBadgePaths.push_back(a.badgeLocalPath);
+                    if ((int)summary.recentBadgePaths.size() >= 5) break;
+                }
+            }
+            m_trophyHub->updateGame(summary);
+        }
     }
     if (m_ra) m_ra->unloadGame();
     m_core->unloadGame();

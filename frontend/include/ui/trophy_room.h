@@ -65,6 +65,11 @@ public:
     // off background badge downloads via RAManager::fetchAllBadges().
     void refresh();
 
+    // Populate from an explicit achievement list — use this when no game is
+    // currently running (e.g. opening from hub or details panel shelf).
+    // Allows showing cached data without requiring a live RA session.
+    void refreshWithData(const std::vector<AchievementInfo>& achievements);
+
     // Set the game title shown in the header (usually RAManager::gameInfo().title)
     void setGameTitle(const std::string& title) { m_gameTitle = title; }
 

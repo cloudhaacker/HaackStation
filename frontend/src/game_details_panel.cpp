@@ -373,15 +373,12 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
 
     switch (action) {
         case NavAction::UP:
-            // If at top row of menu, go to trophy row first, then description
+            // If at top row of menu, go straight to description.
+            // Trophy row is reachable via DOWN from description (and via A
+            // on the trophy row label directly) — not via UP from buttons.
             if (m_selectedItem < cols) {
-                if (m_trophiesTotal > 0) {
-                    m_trophyRowSelected = true;
-                    m_selectedItem      = -1;
-                } else {
-                    m_descHighlighted = true;
-                    m_selectedItem    = -1;
-                }
+                m_descHighlighted = true;
+                m_selectedItem    = -1;
             } else {
                 m_selectedItem -= cols;
             }

@@ -39,8 +39,8 @@ static bool performHttpGet(const std::string& url, std::string& outBody) {
     if (!hUrl) { InternetCloseHandle(hInternet); return false; }
 
     char buf[4096]; DWORD read = 0;
-    while (InternetReadFile(hUrl, buf, sizeof(buf)-1, &read) && read > 0) {
-        buf[read] = 0; outBody += buf;
+    while (InternetReadFile(hUrl, buf, sizeof(buf), &read) && read > 0) {
+        outBody.append(buf, read);  // binary-safe: don't treat PNG data as C-string
     }
     InternetCloseHandle(hUrl);
     InternetCloseHandle(hInternet);
@@ -83,8 +83,8 @@ static bool performHttpPost(const std::string& url,
         HttpSendRequestA(hReq, hdrs.c_str(), (DWORD)hdrs.size(),
             (void*)postData.c_str(), (DWORD)postData.size());
         char buf[4096]; DWORD read = 0;
-        while (InternetReadFile(hReq, buf, sizeof(buf)-1, &read) && read > 0) {
-            buf[read] = 0; outBody += buf;
+        while (InternetReadFile(hReq, buf, sizeof(buf), &read) && read > 0) {
+            outBody.append(buf, read);
         }
         InternetCloseHandle(hReq);
     }
@@ -105,6 +105,18 @@ static bool performHttpPost(const std::string& url,
 // ─── rc_client callbacks ──────────────────────────────────────────────────────
 
 // Memory read callback — rc_client calls this to peek at emulator RAM
+// ─── Memory read callback ─────────────────────────────────────────────────────
+// rcheevos calls this every frame to watch PS1 RAM for achievement conditions.
+// PS1 memory layout (what rcheevos expects at the address it passes us):
+//   0x000000 – 0x1FFFFF  =  2 MB main system RAM
+// RETRO_MEMORY_SYSTEM_RAM (id 0) in mednafen_psx_hw is this 2MB block.
+//
+// If mem is null or memSize is 0, achievements will NEVER fire — rc_client
+// will think every memory read returned 0 and no conditions will trigger.
+// The diagnostic log below prints once on the first call to help catch this.
+
+static bool s_memDiagDone = false;
+
 static uint32_t RC_CCONV raReadMemory(uint32_t address, uint8_t* buffer,
                                        uint32_t numBytes, rc_client_t* client) {
     if (!RAManager::s_instance || !RAManager::s_instance->getCore())
@@ -114,10 +126,37 @@ static uint32_t RC_CCONV raReadMemory(uint32_t address, uint8_t* buffer,
     const uint8_t* mem   = core->getSystemMemory();
     size_t memSize        = core->getSystemMemorySize();
 
-    if (!mem || address >= memSize) return 0;
+    // ── One-time diagnostic on first frame ───────────────────────────────────
+    if (!s_memDiagDone) {
+        s_memDiagDone = true;
+        if (!mem) {
+            std::cerr << "[RA] MEMORY ERROR: getSystemMemory() returned nullptr!\n"
+                      << "[RA]   Achievements will NOT fire. Check that\n"
+                      << "[RA]   LibretroBridge::getSystemMemory() calls\n"
+                      << "[RA]   retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)\n"
+                      << "[RA]   and that the core has been loaded first.\n";
+        } else if (memSize == 0) {
+            std::cerr << "[RA] MEMORY ERROR: getSystemMemorySize() returned 0!\n"
+                      << "[RA]   Achievements will NOT fire. Check that\n"
+                      << "[RA]   LibretroBridge::getSystemMemorySize() calls\n"
+                      << "[RA]   retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM).\n";
+        } else {
+            std::cout << "[RA] Memory OK: ptr=" << (void*)mem
+                      << "  size=0x" << std::hex << memSize << std::dec
+                      << " (" << (memSize / 1024) << " KB)\n";
+            if (memSize != 0x200000) {
+                std::cout << "[RA] WARNING: PS1 system RAM should be 2MB (0x200000).\n"
+                          << "[RA]   Got " << memSize << " bytes — some achievement\n"
+                          << "[RA]   addresses may be out of range.\n";
+            }
+        }
+    }
 
-    uint32_t canRead = (uint32_t)std::min((size_t)numBytes, memSize - address);
-    memcpy(buffer, mem + address, canRead);
+    if (!mem || address >= (uint32_t)memSize) return 0;
+
+    uint32_t canRead = (uint32_t)std::min((size_t)numBytes,
+                                           memSize - (size_t)address);
+    std::memcpy(buffer, mem + address, canRead);
     return canRead;
 }
 
@@ -271,15 +310,45 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
     m_core       = core;
     m_gameLoaded = false;
     m_gameInfo   = RAGameInfo{};
+    // Clear stale cache while the new game is loading — details panel will
+    // show 0/0 briefly until the new loadGame callback completes, which is
+    // correct (better than showing last game's counts for a different game).
+    m_cachedAchievements.clear();
+    m_cachedGameInfo = RAGameInfo{};
 
-    // Hash the ROM — rc_hash_generate_from_file handles CHD, BIN/CUE, ISO
+    // Hash the ROM — rc_hash_generate_from_file handles BIN/CUE natively.
+    // CHD support requires libchdr to be linked (HAVE_CHD=1 in CMakeLists).
     char hash[33] = {};
+
+    // Print the file extension so we can see what format is being hashed
+    std::string ext;
+    {
+        size_t dot = gamePath.rfind('.');
+        if (dot != std::string::npos) ext = gamePath.substr(dot);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    }
+    std::cout << "[RA] Hashing " << ext << " file: " << gamePath << "\n";
+
     if (!rc_hash_generate_from_file(hash, RC_CONSOLE_PLAYSTATION,
                                      gamePath.c_str())) {
         std::cerr << "[RA] Could not hash ROM: " << gamePath << "\n";
+        if (ext == ".chd") {
+            std::cerr << "[RA]   CHD hashing failed. Possible causes:\n"
+                      << "[RA]   1. libchdr not linked — check CMake output for\n"
+                      << "[RA]      'libchdr found — CHD hashing enabled'\n"
+                      << "[RA]   2. CHD uses ZSTD compression — older libchdr builds\n"
+                      << "[RA]      don't support ZSTD. Re-compress the CHD with:\n"
+                      << "[RA]      chdman createcd --input game.cue --output game.chd\n"
+                      << "[RA]      (uses default zlib, which libchdr always supports)\n"
+                      << "[RA]   3. HAVE_CHD not defined when rcheevos compiled —\n"
+                      << "[RA]      rebuild after CMakeLists.txt fix (set_source_files)\n";
+        }
         return;
     }
-    std::cout << "[RA] ROM hash: " << hash << "\n";
+    std::cout << "[RA] Hash: " << hash << "  (format: " << ext << ")\n";
+
+    // Reset memory diagnostic so we get a fresh report for this game
+    s_memDiagDone = false;
 
     rc_client_begin_load_game(m_client, hash,
         [](int result, const char* errorMessage,
@@ -294,26 +363,61 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                     std::cout << "[RA] Game: " << self->m_gameInfo.title
                               << " (ID:" << self->m_gameInfo.id << ")\n";
 
-                    // Count achievements
-                    rc_client_achievement_list_t* list =
-                        rc_client_create_achievement_list(client,
-                            RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
-                            RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
-                    if (list) {
-                        int total = 0;
-                        for (uint32_t b = 0; b < list->num_buckets; b++)
-                            total += list->buckets[b].num_achievements;
-                        self->m_gameInfo.totalAchievements = total;
-                        std::cout << "[RA] " << total << " achievements\n";
-                        rc_client_destroy_achievement_list(list);
+                    // Populate the persistent cache immediately so it's available
+                    // for the details panel trophy row and stopGame() hub update.
+                    // We call getAchievementsWithBadgePaths() here while m_gameLoaded
+                    // is already true so the rc_client query works.
+                    self->m_cachedGameInfo   = self->m_gameInfo;
+                    self->m_cachedAchievements = self->getAchievementsWithBadgePaths();
+                    std::cout << "[RA] Cache populated: "
+                              << self->m_cachedAchievements.size()
+                              << " achievements\n";
 
-                        // Show "game loaded" notification
+                    // Count achievements (use the cache we just built)
+                    {
+                        int total = (int)self->m_cachedAchievements.size();
+                        self->m_gameInfo.totalAchievements = total;
+                        self->m_cachedGameInfo.totalAchievements = total;
+                        std::cout << "[RA] " << total << " achievements\n";
+
+                        // Download game icon for the notification.
+                        // RA game icons live at:
+                        //   https://media.retroachievements.org/Images/{imageIcon}
+                        // The rc_client API doesn't expose the imageIcon field, but
+                        // the game badge (used as icon in many RA apps) is available
+                        // via the undocumented but stable URL using the game ID.
+                        // We cache it as media/badges/game_{id}_icon.png.
+                        std::string gameIconPath = "media/badges/game_" +
+                            std::to_string(self->m_gameInfo.id) + "_icon.png";
+                        if (!fs::exists(gameIconPath)) {
+                            // Fetch from RA CDN — same CDN as badge images.
+                            // Format: /Images/{gameId}.png (the game's box/icon image)
+                            std::string iconUrl = "https://media.retroachievements.org/"
+                                                  "Images/" +
+                                                  std::to_string(self->m_gameInfo.id) +
+                                                  ".png";
+                            std::string iPath = gameIconPath;
+                            std::string iDir  = "media/badges/";
+                            std::thread([iconUrl, iPath, iDir]() {
+                                std::string body;
+                                if (performHttpGet(iconUrl, body) && body.size() >= 500) {
+                                    fs::create_directories(iDir);
+                                    std::ofstream f(iPath, std::ios::binary);
+                                    f.write(body.data(), (std::streamsize)body.size());
+                                    std::cout << "[RA] Game icon cached: " << iPath << "\n";
+                                }
+                            }).detach();
+                        }
+
+                        // Show "game loaded" notification — include icon path so
+                        // render() can display it in the left slot
                         AchievementInfo gameInfo;
-                        gameInfo.title = self->m_gameInfo.title;
+                        gameInfo.id          = 0; // 0 = game-loaded notification
+                        gameInfo.title       = self->m_gameInfo.title;
                         gameInfo.description = std::to_string(total) +
                             " achievements available";
-                        gameInfo.points = 0;
-                        gameInfo.id = 0; // 0 = game loaded notification
+                        gameInfo.points      = 0;
+                        gameInfo.badgeLocalPath = gameIconPath; // show game icon
                         self->queueNotification(gameInfo);
 
                         // Kick off background badge downloads for the Trophy Room
@@ -386,6 +490,15 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             std::cout << "[RA] Unlocked: " << info.title
                       << " (" << info.points << "pts)\n";
             queueNotification(info);
+
+            // Keep the cache in sync so stopGame() writes the correct
+            // unlocked count to the Trophy Hub even mid-session.
+            for (auto& cached : m_cachedAchievements) {
+                if (cached.id == info.id) {
+                    cached.unlocked = true;
+                    break;
+                }
+            }
             break;
         }
         case RC_CLIENT_EVENT_GAME_COMPLETED:
@@ -457,10 +570,26 @@ void RAManager::render(int screenW, int screenH) {
         SDL_Color gold = { 255, 215, 0, 255 };
         SDL_Color raBlue = { 32, 144, 255, 255 };
 
+        // ── Icon / badge — shown in both game-load and achievement notifs ───
+        // For achievements: colour badge image.
+        // For game-loaded (id==0): game icon downloaded at load time.
+        // If the image file exists, render it in the 64×64 left slot.
+        int textX = x + 12;
+        if (!n.achievement.badgeLocalPath.empty() &&
+            fs::exists(n.achievement.badgeLocalPath)) {
+            SDL_Texture* icon = IMG_LoadTexture(m_renderer,
+                n.achievement.badgeLocalPath.c_str());
+            if (icon) {
+                SDL_Rect br = { x + 8, y + 8, 64, 64 };
+                SDL_RenderCopy(m_renderer, icon, nullptr, &br);
+                SDL_DestroyTexture(icon);
+                textX = x + 80;
+            }
+        }
+
         // Game-loaded notification (id == 0) vs achievement unlock
         if (n.achievement.id == 0) {
             // Game connected to RA
-            int textX = x + 12;
             m_theme->drawText("RetroAchievements",
                 textX, y + 8, raBlue, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -469,18 +598,6 @@ void RAManager::render(int screenW, int screenH) {
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         } else {
             // Achievement unlock
-            int textX = x + 12;
-            if (!n.achievement.badgeLocalPath.empty() &&
-                fs::exists(n.achievement.badgeLocalPath)) {
-                SDL_Texture* badge = IMG_LoadTexture(m_renderer,
-                    n.achievement.badgeLocalPath.c_str());
-                if (badge) {
-                    SDL_Rect br = { x + 8, y + 8, 64, 64 };
-                    SDL_RenderCopy(m_renderer, badge, nullptr, &br);
-                    SDL_DestroyTexture(badge);
-                    textX = x + 80;
-                }
-            }
             m_theme->drawText("Achievement Unlocked!",
                 textX, y + 8, gold, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -589,11 +706,17 @@ void RAManager::fetchAllBadges() {
                 std::string dir  = m_badgeDir;
                 std::thread([url, path, dir]() {
                     std::string body;
-                    if (performHttpGet(url, body) && !body.empty()) {
-                        fs::create_directories(dir);
-                        std::ofstream f(path, std::ios::binary);
-                        f.write(body.data(), body.size());
-                        std::cout << "[RA] Badge cached: " << path << "\n";
+                    if (performHttpGet(url, body)) {
+                        std::cout << "[RA] Badge body: " << body.size() << " bytes\n";
+                        if (body.size() >= 500) {  // reject HTML error pages
+                            fs::create_directories(dir);
+                            std::ofstream f(path, std::ios::binary);
+                            f.write(body.data(), (std::streamsize)body.size());
+                            std::cout << "[RA] Badge cached: " << path << "\n";
+                        } else {
+                            std::cout << "[RA] Badge skipped (too small, error page?): "
+                                      << body.substr(0, 80) << "\n";
+                        }
                     }
                 }).detach();
                 queued++;
@@ -606,10 +729,10 @@ void RAManager::fetchAllBadges() {
                 std::string dir  = m_badgeDir;
                 std::thread([url, path, dir]() {
                     std::string body;
-                    if (performHttpGet(url, body) && !body.empty()) {
+                    if (performHttpGet(url, body) && body.size() >= 500) {
                         fs::create_directories(dir);
                         std::ofstream f(path, std::ios::binary);
-                        f.write(body.data(), body.size());
+                        f.write(body.data(), (std::streamsize)body.size());
                         std::cout << "[RA] Badge (lock) cached: " << path << "\n";
                     }
                 }).detach();

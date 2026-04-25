@@ -53,6 +53,7 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
                 static_cast<SDL_GameControllerButton>(e.cbutton.button));
             if (action == NavAction::UP   || action == NavAction::DOWN ||
                 action == NavAction::LEFT || action == NavAction::RIGHT) {
+                m_holdCancelled = false;  // new press clears boundary cancel
                 m_heldAction  = action;
                 m_heldSince   = SDL_GetTicks();
                 m_lastRepeat  = 0;
@@ -77,6 +78,7 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
                 if (action != NavAction::NONE && action != m_heldAction) {
                     // New direction — start hold timer, fire ONCE immediately
                     // (same as button press), then throttle via updateHeld()
+                    m_holdCancelled = false;  // new direction clears boundary cancel
                     m_heldAction  = action;
                     m_heldSince   = SDL_GetTicks();
                     m_lastRepeat  = 0;
@@ -99,10 +101,16 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
             if (action == NavAction::UP   || action == NavAction::DOWN ||
                 action == NavAction::LEFT || action == NavAction::RIGHT ||
                 action == NavAction::SHOULDER_L || action == NavAction::SHOULDER_R) {
-                m_heldAction  = action;
-                m_heldSince   = SDL_GetTicks();
-                m_lastRepeat  = 0;
-                m_repeatFired = false;
+                if (e.key.repeat == 0) {
+                    // Genuine new key press — clear cancel flag and arm hold timer
+                    m_holdCancelled = false;
+                    m_heldAction  = action;
+                    m_heldSince   = SDL_GetTicks();
+                    m_lastRepeat  = 0;
+                    m_repeatFired = false;
+                }
+                // If m_holdCancelled is set, return NONE so the repeat is suppressed
+                if (m_holdCancelled) action = NavAction::NONE;
             }
             break;
 
@@ -122,6 +130,7 @@ NavAction ControllerNav::processEvent(const SDL_Event& e) {
 
 NavAction ControllerNav::updateHeld(Uint32 nowMs) {
     if (m_heldAction == NavAction::NONE) return NavAction::NONE;
+    if (m_holdCancelled) return NavAction::NONE;  // cancelled at boundary — wait for new press
 
     Uint32 held = nowMs - m_heldSince;
     if (!m_repeatFired && held >= static_cast<Uint32>(m_repeat.initialDelayMs)) {
@@ -143,12 +152,12 @@ NavAction ControllerNav::updateHeld(Uint32 nowMs) {
 // until released and re-pressed. Without this, holding UP at the top of a list
 // floods the screen with phantom nav events at repeatIntervalMs rate.
 void ControllerNav::cancelHeld() {
-    // Don't clear m_heldAction — the key/button is still physically held.
-    // Just push m_lastRepeat forward so the next repeat won't fire until
-    // the user releases and holds again (initialDelayMs will re-arm it).
-    m_lastRepeat  = SDL_GetTicks();
-    m_repeatFired = false;
-    m_heldSince   = SDL_GetTicks(); // restart the hold timer
+    // Set a flag rather than resetting timers — updateHeld() checks this flag
+    // every frame and returns NONE while it's set. The flag is cleared when the
+    // user releases the key/button and presses again (processEvent clears it on
+    // any new directional press). This prevents settings_screen::update() from
+    // immediately re-arming the repeat after cancelHeld() returns.
+    m_holdCancelled = true;
 }
 
 NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {

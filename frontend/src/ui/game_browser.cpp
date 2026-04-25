@@ -334,7 +334,7 @@ void GameBrowser::render() {
     }
 
     // Footer — hint changes based on shelf availability
-    m_theme->drawFooterHints(m_windowW, m_windowH, "Launch", "Back", "Details", "Favorite");
+    m_theme->drawFooterHints(m_windowW, m_windowH, "Launch", "Trophy Hub", "Details", "Favorite");
 
     if (totalRows() > visibleRows()) {
         m_theme->drawScrollBar(
