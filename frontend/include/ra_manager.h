@@ -4,11 +4,12 @@
 //
 // Handles:
 //   - Login with RA username + API key
-//   - Game identification by ROM hash
+//   - Game identification by ROM hash (CHD via libchdr cdreader)
 //   - Achievement tracking (called every frame)
 //   - Unlock notifications (popup with icon + title)
 //   - Leaderboard submissions
 //   - Hardcore vs softcore mode
+//   - Per-game achievement persistence (saves/ra_achievements_<id>.json)
 //
 // The rc_client library does all the heavy lifting.
 // We provide the HTTP transport and memory read callbacks.
@@ -16,9 +17,9 @@
 // Usage:
 //   RAManager ra;
 //   ra.initialize("username", "api_key");
-//   ra.loadGame("path/to/game.chd");       // hashes ROM, fetches achievements
-//   ra.doFrame(core);                       // call every emulated frame
-//   ra.render();                            // draw unlock notifications
+//   ra.loadGame("path/to/game.chd", core);  // hashes ROM, fetches achievements
+//   ra.doFrame(core);                         // call every emulated frame
+//   ra.render();                              // draw unlock notifications
 
 #include "theme_engine.h"
 #include "libretro_bridge.h"
@@ -29,8 +30,14 @@
 #include <functional>
 #include <mutex>
 
-// Forward declare rc_client types to avoid including C headers in our header
-struct rc_client_t;
+// rcheevos rc_client API — included directly so all rc_client_* function
+// prototypes are visible to every translation unit that includes this header.
+// The extern "C" wrapper is required because rc_client.h is a C header.
+extern "C" {
+#include "rc_client.h"
+#include "rc_hash.h"
+#include "rc_api_runtime.h"
+}
 
 struct AchievementInfo {
     uint32_t    id          = 0;
@@ -109,38 +116,48 @@ public:
     // for every entry so TrophyRoom can load textures directly.
     std::vector<AchievementInfo> getAchievementsWithBadgePaths() const;
 
-    // Returns the last known achievement list — works even after unloadGame().
-    // Populated automatically after loadGame() succeeds.
-    // Use this for stopGame() → hub summary building (last played game).
-    const std::vector<AchievementInfo>& getCachedAchievements() const {
-        static const std::vector<AchievementInfo> empty;
-        if (m_lastGameId == 0) return empty;
-        auto it = m_cachedAchievementsMap.find(m_lastGameId);
-        return it != m_cachedAchievementsMap.end() ? it->second : empty;
-    }
-    const RAGameInfo& cachedGameInfo() const {
-        static const RAGameInfo empty;
-        if (m_lastGameId == 0) return empty;
-        auto it = m_cachedGameInfoMap.find(m_lastGameId);
-        return it != m_cachedGameInfoMap.end() ? it->second : empty;
-    }
+    // ── Per-game persistent cache ─────────────────────────────────────────────
+    // Keyed by RA gameId. Survives unloadGame() and cold restarts (loaded from
+    // saves/ra_achievements_<id>.json on startup).
 
-    // Per-game cache lookup — works for ANY previously played game, cold start.
-    // Returns nullptr if no data is available for the given gameId.
+    // Returns achievements for a specific game, or nullptr if not cached.
     const std::vector<AchievementInfo>* getCachedAchievementsForGame(uint32_t gameId) const {
         auto it = m_cachedAchievementsMap.find(gameId);
-        return it != m_cachedAchievementsMap.end() ? &it->second : nullptr;
-    }
-    const RAGameInfo* getCachedGameInfoForGame(uint32_t gameId) const {
-        auto it = m_cachedGameInfoMap.find(gameId);
-        return it != m_cachedGameInfoMap.end() ? &it->second : nullptr;
+        return (it != m_cachedAchievementsMap.end()) ? &it->second : nullptr;
     }
 
-    // Reverse lookup: get RA gameId from a ROM path (populated from disk cache
-    // on startup, updated on each loadGame() success).
+    // Returns game info for a specific game, or nullptr if not cached.
+    const RAGameInfo* getCachedGameInfoForGame(uint32_t gameId) const {
+        auto it = m_cachedGameInfoMap.find(gameId);
+        return (it != m_cachedGameInfoMap.end()) ? &it->second : nullptr;
+    }
+
+    // Reverse lookup: ROM path → RA gameId (0 if not known).
     uint32_t getGameIdForPath(const std::string& path) const {
         auto it = m_pathToGameId.find(path);
-        return it != m_pathToGameId.end() ? it->second : 0;
+        return (it != m_pathToGameId.end()) ? it->second : 0;
+    }
+
+    // Load all per-game JSON files from saves/ on startup.
+    void loadAllCachedGamesFromDisk();
+
+    // Write saves/ra_achievements_<gameId>.json immediately.
+    // Called automatically after loadGame() and on each achievement unlock.
+    void saveGameAchievementsToDisk(uint32_t gameId);
+
+    // ── Backward-compat wrappers (used by stopGame() and legacy callers) ──────
+    // Returns the last-loaded game's cached data via the old single-game API.
+    const std::vector<AchievementInfo>& getCachedAchievements() const {
+        static const std::vector<AchievementInfo> s_empty;
+        if (m_lastGameId == 0) return s_empty;
+        auto it = m_cachedAchievementsMap.find(m_lastGameId);
+        return (it != m_cachedAchievementsMap.end()) ? it->second : s_empty;
+    }
+    const RAGameInfo& cachedGameInfo() const {
+        static const RAGameInfo s_empty;
+        if (m_lastGameId == 0) return s_empty;
+        auto it = m_cachedGameInfoMap.find(m_lastGameId);
+        return (it != m_cachedGameInfoMap.end()) ? it->second : s_empty;
     }
 
     // Download all badge images for the current game into media/badges/.
@@ -148,12 +165,6 @@ public:
     // Spawns background threads — safe to call from main thread.
     void fetchAllBadges();
     int unlockedCount() const;
-
-    // Disk persistence — called automatically; public so tests can call directly.
-    // loadAllCachedGamesFromDisk() is called from the constructor.
-    // saveGameAchievementsToDisk() is called after loadGame() and after each unlock.
-    void loadAllCachedGamesFromDisk();
-    void saveGameAchievementsToDisk(uint32_t gameId);
 
     // Rich presence string (what you're doing in-game)
     std::string getRichPresence() const;
@@ -193,21 +204,28 @@ private:
     std::string       m_apiKey;
     std::string       m_password;
     std::string       m_sessionToken;
-    std::string       m_loadingPath;  // gamePath being loaded — used in loadGame callback
     std::function<void(const std::string&)> m_tokenSaveCallback;
     std::string       m_badgeDir    = "media/badges/";
 
     RAGameInfo        m_gameInfo;
 
-    // Per-game achievement cache — keyed by RA gameId.
-    // Populated on loadGame() success and loaded from disk on startup.
-    // Survives unloadGame() so details panel + hub work without a live session.
+    // ── Per-game cache maps (keyed by RA gameId) ──────────────────────────────
     std::map<uint32_t, std::vector<AchievementInfo>> m_cachedAchievementsMap;
     std::map<uint32_t, RAGameInfo>                   m_cachedGameInfoMap;
-    uint32_t m_lastGameId = 0;  // gameId of the most recently loaded game
 
-    // Reverse-lookup: ROM path → RA gameId (populated from disk cache + live loads)
+    // The RA gameId of the most recently loaded game.
+    // Used by the backward-compat getCachedAchievements() / cachedGameInfo()
+    // wrappers and by the unlock event handler.
+    uint32_t m_lastGameId = 0;
+
+    // ROM path → RA gameId reverse lookup. Built from JSON on startup and
+    // updated each time a new game is successfully identified.
     std::map<std::string, uint32_t> m_pathToGameId;
+
+    // Absolute path of the game currently being loaded (set before the async
+    // rc_client_begin_identify_and_load_game call so the callback can record
+    // which path produced this gameId).
+    std::string m_loadingPath;
 
     // Unlock notification queue
     std::mutex                    m_notifyMutex;

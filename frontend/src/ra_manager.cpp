@@ -8,11 +8,270 @@
 #include <map>
 #include <SDL2/SDL_image.h>
 
-// rcheevos headers
-extern "C" {
-#include "rc_client.h"
-#include "rc_hash.h"
-#include "rc_api_runtime.h"
+#ifdef HAVE_LIBCHDR
+#  include <libchdr/chd.h>
+#  include <libchdr/cdrom.h>  // CD_FRAME_SIZE = 2352
+#endif
+
+// ─── CHD cdreader for rcheevos ────────────────────────────────────────────────
+// rcheevos does NOT automatically use libchdr — the frontend must register a
+// custom rc_hash_cdreader that opens and reads CHD tracks. Without this,
+// rcheevos falls through to its default BIN/CUE reader and prints
+// "Could not open track" for every console it tries.
+//
+// We register this once in RAManager::initialize() via rc_hash_init_custom_cdreader().
+// The struct has four function pointers; we only need to override open_track_iterator
+// (and first_track_sector for absolute sector support). read_sector and close_track
+// can fall through to the CHD handle we return.
+//
+// Track handle layout: we heap-allocate a ChdTrackHandle that holds the
+// chd_file* plus track metadata. rcheevos passes it back to read_sector /
+// close_track as a void*.
+
+// Saved default cdreader — populated in registerChdCdReader() before we patch it.
+// Must be declared before the HAVE_LIBCHDR block so chd_read_sector / chd_close_track
+// / chd_first_track_sector can reference it for non-CHD handle delegation.
+static rc_hash_cdreader s_defaultCdReader = {};
+
+#ifdef HAVE_LIBCHDR
+
+static constexpr uint32_t CHD_HANDLE_MAGIC = 0xC4DC4FE0u;
+
+struct ChdTrackHandle {
+    uint32_t     magic      = CHD_HANDLE_MAGIC; // MUST be first — used to detect our handles
+    chd_file*    chd        = nullptr;
+    uint32_t     trackStart = 0;    // first LBA of this track (absolute)
+    uint32_t     sectorSize = 2352; // raw sector size
+    uint32_t     sectorSkip = 0;    // header bytes per sector to skip
+    uint32_t     hunkBytes  = 0;
+    uint32_t     hunkSize   = 0;    // sectors per hunk
+    std::vector<uint8_t> hunkBuf;
+    int32_t      cachedHunk = -1;
+};
+
+// Open a CHD and return a track handle for the requested track.
+// track values from rcheevos:
+//   0xFFFFFFFE = RC_HASH_CDTRACK_FIRST_DATA  — first non-audio data track
+//   0xFFFFFFFF = RC_HASH_CDTRACK_LAST        — last track
+//   1, 2, 3 …  = 1-based track number        — exact track
+static void* chd_open_track(const char* path, uint32_t track) {
+    chd_file* chd = nullptr;
+    chd_error err = chd_open(path, CHD_OPEN_READ, nullptr, &chd);
+    if (err != CHDERR_NONE) {
+        std::cerr << "[RA CHD] chd_open failed (" << err << "): " << path << "\n";
+        return nullptr;
+    }
+
+    const chd_header* hdr = chd_get_header(chd);
+    if (!hdr) { chd_close(chd); return nullptr; }
+
+    char meta[256];
+    uint32_t metaLen   = 0;
+    uint32_t metaTag   = 0;
+    uint8_t  metaFlags = 0;
+    uint32_t trackLba  = 0;
+
+    uint32_t targetTrackLba   = 0;
+    uint32_t targetSectorSize = 2352;
+    uint32_t targetSectorSkip = 0;
+    bool     found = false;
+
+    for (uint32_t idx = 0; ; idx++) {
+        err = chd_get_metadata(chd, CDROM_TRACK_METADATA_TAG, idx,
+                               meta, sizeof(meta) - 1, &metaLen, &metaTag, &metaFlags);
+        if (err == CHDERR_METADATA_NOT_FOUND) {
+            err = chd_get_metadata(chd, CDROM_TRACK_METADATA2_TAG, idx,
+                                   meta, sizeof(meta) - 1, &metaLen, &metaTag, &metaFlags);
+        }
+        if (err != CHDERR_NONE) break;
+        meta[metaLen] = '\0';
+
+        int  tnum   = 0;
+        char ttype[32] = {}, tsub[32] = {};
+        int  frames = 0, pregap = 0;
+        sscanf(meta, "TRACK:%d TYPE:%31s SUBTYPE:%31s FRAMES:%d PREGAP:%d",
+               &tnum, ttype, tsub, &frames, &pregap);
+        if (tnum == 0)
+            sscanf(meta, "TRACK:%d TYPE:%31s SUBTYPE:%31s FRAMES:%d",
+                   &tnum, ttype, tsub, &frames);
+
+        uint32_t sectorSize = 2352;
+        uint32_t sectorSkip = 0;
+		if (strstr(ttype, "MODE2_RAW")) {
+            // Full 2352-byte raw sector: 24-byte header, 2048-byte payload, 280-byte ECC
+            // rcheevos expects the 2048-byte payload only (same as CUE MODE2/2352 handling)
+            sectorSize = 2048, sectorSkip = 24;
+        } else if (strstr(ttype, "MODE1_RAW")) {
+            // Full 2352-byte raw sector: 16-byte header, 2048-byte payload, 288-byte ECC
+            sectorSize = 2048, sectorSkip = 16;
+        } else if (strstr(ttype, "MODE1")) {
+            sectorSize = 2048, sectorSkip = 0;
+        } else if (strstr(ttype, "MODE2_FORM1")) {
+            sectorSize = 2048, sectorSkip = 24;
+        } else if (strstr(ttype, "MODE2")) {
+            sectorSize = 2336, sectorSkip = 16;
+        } else if (strstr(ttype, "AUDIO")) {
+            sectorSize = 2352, sectorSkip = 0;
+        }
+
+        bool isData  = !strstr(ttype, "AUDIO");
+        bool wantThis = false;
+
+        if (track == 0xFFFFFFFE) {
+            // FIRST_DATA: first track that is not pure audio
+            wantThis = isData && !found;
+        } else if (track == 0xFFFFFFFF) {
+            // LAST: keep overwriting until end
+            wantThis = true;
+        } else {
+            // Exact 1-based track number — rcheevos passes 1 for track 1
+            wantThis = ((uint32_t)tnum == track);
+        }
+
+        if (wantThis) {
+            targetTrackLba   = trackLba;
+            targetSectorSize = sectorSize;
+            targetSectorSkip = sectorSkip;
+            found = true;
+            // For LAST we keep going so don't break; for others we can stop early
+            if (track != 0xFFFFFFFF) break;
+        }
+
+        trackLba += (uint32_t)frames;
+    }
+
+    if (!found) {
+        std::cerr << "[RA CHD] Could not find track " << track << " in " << path << "\n";
+        chd_close(chd);
+        return nullptr;
+    }
+
+    auto* h = new ChdTrackHandle();
+    h->chd        = chd;
+    h->trackStart = targetTrackLba;
+    h->sectorSize = targetSectorSize;
+    h->sectorSkip = targetSectorSkip;
+	// unitbytes is the true raw bytes-per-sector in this CHD (may include
+    // 96-byte subchannel data, making it 2448 instead of 2352).
+    uint32_t unitBytes = (hdr->unitbytes > 0) ? hdr->unitbytes : CD_FRAME_SIZE;
+    h->hunkBytes  = hdr->hunkbytes;
+    h->hunkSize   = hdr->hunkbytes / unitBytes;  // sectors per hunk
+    h->hunkBuf.resize(hdr->hunkbytes);
+    // sectorSkip is already set above from targetSectorSkip — do NOT reset to 0 here.
+    // For MODE2_RAW: skip=24 (past 12 sync + 4 addr + 8 subheader bytes).
+    // Subchannel data (96 bytes) is appended after the sector payload in CHD,
+    // accounted for by rawFrameSize = unitBytes = 2448 in chd_read_sector.
+    h->cachedHunk = -1;
+
+    std::cout << "[RA CHD] Opened track " << track
+              << " @ LBA " << targetTrackLba
+              << " sectorSize=" << targetSectorSize
+              << " sectorSkip=" << targetSectorSkip << "\n";
+    return h;
+}
+
+static size_t chd_read_sector(void* handle, uint32_t sector,
+                               void* buffer, size_t requestedBytes) {
+    // If this isn't our handle, delegate to the default reader.
+    auto* h = static_cast<ChdTrackHandle*>(handle);
+    if (!h || h->magic != CHD_HANDLE_MAGIC) {
+        if (s_defaultCdReader.read_sector)
+            return s_defaultCdReader.read_sector(handle, sector, buffer, requestedBytes);
+        return 0;
+    }
+    if (!h->chd) return 0;
+
+    uint32_t absLba  = h->trackStart + sector;
+    uint32_t hunkNum = absLba / h->hunkSize;
+    uint32_t hunkOff = absLba % h->hunkSize;
+
+    if (h->cachedHunk != (int32_t)hunkNum) {
+        chd_error err = chd_read(h->chd, hunkNum, h->hunkBuf.data());
+        if (err != CHDERR_NONE) {
+            std::cerr << "[RA CHD] chd_read hunk " << hunkNum << " failed: " << err << "\n";
+            return 0;
+        }
+        h->cachedHunk = (int32_t)hunkNum;
+    }
+
+    uint32_t rawFrameSize = h->hunkBytes / h->hunkSize;
+    size_t rawOffset = (size_t)hunkOff * rawFrameSize + h->sectorSkip;
+    size_t available = h->sectorSize;
+    size_t toCopy    = (requestedBytes < available) ? requestedBytes : available;
+
+    memcpy(buffer, h->hunkBuf.data() + rawOffset, toCopy);
+    return toCopy;
+}
+
+static void chd_close_track(void* handle) {
+    auto* h = static_cast<ChdTrackHandle*>(handle);
+    if (!h) return;
+    if (h->magic != CHD_HANDLE_MAGIC) {
+        // Not our handle — let the default reader clean it up.
+        if (s_defaultCdReader.close_track)
+            s_defaultCdReader.close_track(handle);
+        return;
+    }
+    if (h->chd) chd_close(h->chd);
+    delete h;
+}
+
+static uint32_t chd_first_track_sector(void* handle) {
+    auto* h = static_cast<ChdTrackHandle*>(handle);
+    if (!h || h->magic != CHD_HANDLE_MAGIC) {
+        if (s_defaultCdReader.first_track_sector)
+            return s_defaultCdReader.first_track_sector(handle);
+        return 0;
+    }
+    return h->trackStart;
+}
+
+#endif // HAVE_LIBCHDR
+
+// open_track_iterator: called by rcheevos for all disc files.
+// For CHD we open via libchdr and return a magic-tagged ChdTrackHandle.
+// For everything else (CUE/BIN/GDI) we call the default reader's open_track_iterator
+// which returns its own internal handle — our read/close/first_track functions
+// detect the magic tag and delegate non-CHD handles back to the default reader.
+#ifdef HAVE_LIBCHDR
+static void* chd_open_track_iterator(const char* path, uint32_t track,
+                                      const rc_hash_iterator* iterator) {
+    if (!path) return nullptr;
+    std::string p(path);
+    if (p.size() >= 4) {
+        std::string ext = p.substr(p.size() - 4);
+        for (auto& c : ext) c = (char)::tolower((unsigned char)c);
+        if (ext == ".chd")
+            return chd_open_track(path, track);
+    }
+    // Not a CHD — use the saved default open_track_iterator (handles CUE/BIN/GDI).
+    // The handle it returns will be recognised as non-CHD by the magic check in
+    // chd_read_sector / chd_close_track / chd_first_track_sector.
+    if (s_defaultCdReader.open_track_iterator)
+        return s_defaultCdReader.open_track_iterator(path, track, iterator);
+    return nullptr;
+}
+#endif // HAVE_LIBCHDR
+
+// Register the CHD cdreader with rcheevos. Call once after rc_client_create().
+static void registerChdCdReader() {
+#ifdef HAVE_LIBCHDR
+    // Save the default reader FIRST so our read/close/first_track wrappers can
+    // delegate non-CHD handles back to it.
+    rc_hash_get_default_cdreader(&s_defaultCdReader);
+
+    rc_hash_cdreader cdreader       = s_defaultCdReader; // copy all slots as baseline
+    cdreader.open_track_iterator    = chd_open_track_iterator;
+    cdreader.read_sector            = chd_read_sector;
+    cdreader.close_track            = chd_close_track;
+    cdreader.first_track_sector     = chd_first_track_sector;
+    // open_track left as nullptr (same as default) — open_track_iterator is the entry point.
+
+    rc_hash_init_custom_cdreader(&cdreader);
+    std::cout << "[RA] CHD cdreader registered (libchdr)\n";
+#else
+    std::cout << "[RA] CHD cdreader NOT registered — rebuild with HAVE_LIBCHDR=1\n";
+#endif
 }
 
 #ifdef _WIN32
@@ -222,9 +481,12 @@ bool RAManager::initialize(const std::string& username,
         return false;
     }
 
-    rc_client_set_event_handler(m_client, raEventHandler);
+    // Register CHD track reader BEFORE any game is loaded.
+    // Without this, rcheevos uses its default BIN/CUE reader and prints
+    // "Could not open track" for every console it tries on a .chd file.
+    registerChdCdReader();
 
-    // Enable unofficial achievements (allows unlocks while pending RA approval)
+    rc_client_set_event_handler(m_client, raEventHandler);
     rc_client_set_unofficial_enabled(m_client, 1);
 
     // Disable hardcore mode by default (softcore allows save states)
@@ -312,133 +574,106 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
     m_core       = core;
     m_gameLoaded = false;
     m_gameInfo   = RAGameInfo{};
-    // Reset last-game pointer while the new game loads — details panel will
-    // show 0/0 briefly until the loadGame callback completes, which is correct
-    // (better than showing stale data for the wrong game).
-    // We do NOT clear the full m_cachedAchievementsMap — all previously played
-    // game data remains available for cold-start browsing.
+    // Reset last-game pointer while the new game loads.
+    // We do NOT clear m_cachedAchievementsMap — all previously played
+    // game data stays available for cold-start browsing.
     m_lastGameId = 0;
 
-    // Hash the ROM — rc_hash_generate_from_file handles BIN/CUE natively.
-    // CHD support requires libchdr to be linked (HAVE_CHD=1 in CMakeLists).
-    char hash[33] = {};
-
-    // Print the file extension so we can see what format is being hashed
-    std::string ext;
-    {
-        size_t dot = gamePath.rfind('.');
-        if (dot != std::string::npos) ext = gamePath.substr(dot);
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    }
-    std::cout << "[RA] Hashing " << ext << " file: " << gamePath << "\n";
-
-    if (!rc_hash_generate_from_file(hash, RC_CONSOLE_PLAYSTATION,
-                                     gamePath.c_str())) {
-        std::cerr << "[RA] Could not hash ROM: " << gamePath << "\n";
-        if (ext == ".chd") {
-            std::cerr << "[RA]   CHD hashing failed. Possible causes:\n"
-                      << "[RA]   1. libchdr not linked — check CMake output for\n"
-                      << "[RA]      'libchdr found — CHD hashing enabled'\n"
-                      << "[RA]   2. CHD uses ZSTD compression — older libchdr builds\n"
-                      << "[RA]      don't support ZSTD. Re-compress the CHD with:\n"
-                      << "[RA]      chdman createcd --input game.cue --output game.chd\n"
-                      << "[RA]      (uses default zlib, which libchdr always supports)\n"
-                      << "[RA]   3. HAVE_CHD not defined when rcheevos compiled —\n"
-                      << "[RA]      rebuild after CMakeLists.txt fix (set_source_files)\n";
-        }
-        return;
-    }
-    std::cout << "[RA] Hash: " << hash << "  (format: " << ext << ")\n";
+    // Use rc_client_begin_identify_and_load_game — this is the correct single-step
+    // API that uses our registered cdreader internally for CHD hashing.
+    // The previous two-step approach (rc_hash_generate_from_file + begin_load_game)
+    // bypassed our custom cdreader entirely because rc_hash_generate_from_file
+    // uses its own internal reader, not the one we registered.
+    std::cout << "[RA] Identifying and loading: " << gamePath << "\n";
+    std::cout << "[RA] HAVE_LIBCHDR=";
+#ifdef HAVE_LIBCHDR
+    std::cout << "1 (CHD cdreader active)\n";
+#else
+    std::cout << "0 (CHD cdreader NOT compiled in)\n";
+#endif
 
     // Reset memory diagnostic so we get a fresh report for this game
     s_memDiagDone = false;
-    m_loadingPath = gamePath;  // captured by callback via self->m_loadingPath
+    m_loadingPath = gamePath;
 
-    rc_client_begin_load_game(m_client, hash,
+    rc_client_begin_identify_and_load_game(m_client,
+        RC_CONSOLE_UNKNOWN,  // let rcheevos detect console from file extension
+        gamePath.c_str(),
+        nullptr, 0,          // no pre-loaded buffer — read from disk
         [](int result, const char* errorMessage,
            rc_client_t* client, void* userData) {
             RAManager* self = (RAManager*)userData;
-            if (result == RC_OK) {
-                const rc_client_game_t* game = rc_client_get_game_info(client);
-                if (game) {
-                    self->m_gameInfo.id    = game->id;
-                    self->m_gameInfo.title = game->title ? game->title : "";
-                    self->m_gameLoaded     = true;
-                    std::cout << "[RA] Game: " << self->m_gameInfo.title
-                              << " (ID:" << self->m_gameInfo.id << ")\n";
+            if (result != RC_OK) {
+                std::cerr << "[RA] identify_and_load_game failed: "
+                          << (errorMessage ? errorMessage : "unknown error")
+                          << " (code " << result << ")\n";
+                // Specific guidance for common failures
+                if (result == RC_NO_GAME_LOADED)
+                    std::cerr << "[RA]   Game not recognised by RetroAchievements "
+                              << "(hash not in database)\n";
+                else if (result == RC_INVALID_STATE)
+                    std::cerr << "[RA]   Hash generation failed — check CHD cdreader "
+                              << "registration and libchdr linkage\n";
+                return;
+            }
+            // result == RC_OK — game identified and loaded successfully
+            const rc_client_game_t* game = rc_client_get_game_info(client);
+            if (game) {
+                self->m_gameInfo.id    = game->id;
+                self->m_gameInfo.title = game->title ? game->title : "";
+                self->m_gameLoaded     = true;
+                std::cout << "[RA] Game identified: " << self->m_gameInfo.title
+                          << " (ID:" << self->m_gameInfo.id << ")\n";
 
-                    // Populate the per-game persistent cache immediately so it's
-                    // available for the details panel trophy row and stopGame() hub
-                    // update. We call getAchievementsWithBadgePaths() here while
-                    // m_gameLoaded is already true so the rc_client query works.
-                    uint32_t gid = self->m_gameInfo.id;
-                    self->m_lastGameId = gid;
-                    self->m_cachedGameInfoMap[gid]    = self->m_gameInfo;
-                    self->m_cachedAchievementsMap[gid] = self->getAchievementsWithBadgePaths();
-                    // Record path→gameId for cold-start details panel lookup
-                    if (!self->m_loadingPath.empty())
-                        self->m_pathToGameId[self->m_loadingPath] = gid;
-                    std::cout << "[RA] Cache populated: "
-                              << self->m_cachedAchievementsMap[gid].size()
-                              << " achievements\n";
+                // Populate the per-game persistent cache immediately.
+                uint32_t gid = self->m_gameInfo.id;
+                self->m_lastGameId = gid;
+                self->m_cachedGameInfoMap[gid]     = self->m_gameInfo;
+                self->m_cachedAchievementsMap[gid] = self->getAchievementsWithBadgePaths();
+                if (!self->m_loadingPath.empty())
+                    self->m_pathToGameId[self->m_loadingPath] = gid;
+                std::cout << "[RA] Cache populated: "
+                          << self->m_cachedAchievementsMap[gid].size()
+                          << " achievements\n";
 
-                    // Count achievements (use the cache we just built)
-                    {
-                        int total = (int)self->m_cachedAchievementsMap[gid].size();
-                        self->m_gameInfo.totalAchievements = total;
-                        self->m_cachedGameInfoMap[gid].totalAchievements = total;
-                        std::cout << "[RA] " << total << " achievements\n";
+                // Count achievements
+                {
+                    int total = (int)self->m_cachedAchievementsMap[gid].size();
+                    self->m_gameInfo.totalAchievements = total;
+                    self->m_cachedGameInfoMap[gid].totalAchievements = total;
+                    std::cout << "[RA] " << total << " achievements\n";
+                    self->saveGameAchievementsToDisk(gid);
 
-                        // Save to disk immediately so cold-start browsing works.
-                        self->saveGameAchievementsToDisk(gid);
-
-                        // Download game icon for the notification.
-                        // RA game icons live at:
-                        //   https://media.retroachievements.org/Images/{imageIcon}
-                        // The rc_client API doesn't expose the imageIcon field, but
-                        // the game badge (used as icon in many RA apps) is available
-                        // via the undocumented but stable URL using the game ID.
-                        // We cache it as media/badges/game_{id}_icon.png.
-                        std::string gameIconPath = "media/badges/game_" +
-                            std::to_string(self->m_gameInfo.id) + "_icon.png";
-                        if (!fs::exists(gameIconPath)) {
-                            // Fetch from RA CDN — same CDN as badge images.
-                            // Format: /Images/{gameId}.png (the game's box/icon image)
-                            std::string iconUrl = "https://media.retroachievements.org/"
-                                                  "Images/" +
-                                                  std::to_string(self->m_gameInfo.id) +
-                                                  ".png";
-                            std::string iPath = gameIconPath;
-                            std::string iDir  = "media/badges/";
-                            std::thread([iconUrl, iPath, iDir]() {
-                                std::string body;
-                                if (performHttpGet(iconUrl, body) && body.size() >= 500) {
-                                    fs::create_directories(iDir);
-                                    std::ofstream f(iPath, std::ios::binary);
-                                    f.write(body.data(), (std::streamsize)body.size());
-                                    std::cout << "[RA] Game icon cached: " << iPath << "\n";
-                                }
-                            }).detach();
-                        }
-
-                        // Show "game loaded" notification — include icon path so
-                        // render() can display it in the left slot
-                        AchievementInfo gameInfo;
-                        gameInfo.id          = 0; // 0 = game-loaded notification
-                        gameInfo.title       = self->m_gameInfo.title;
-                        gameInfo.description = std::to_string(total) +
-                            " achievements available";
-                        gameInfo.points      = 0;
-                        gameInfo.badgeLocalPath = gameIconPath; // show game icon
-                        self->queueNotification(gameInfo);
-
-                        // Kick off background badge downloads for the Trophy Room
-                        self->fetchAllBadges();
+                    // Download game icon for the load notification
+                    std::string gameIconPath = "media/badges/game_" +
+                        std::to_string(self->m_gameInfo.id) + "_icon.png";
+                    if (!fs::exists(gameIconPath)) {
+                        std::string iconUrl = "https://media.retroachievements.org/Images/" +
+                                              std::to_string(self->m_gameInfo.id) + ".png";
+                        std::string iPath = gameIconPath;
+                        std::string iDir  = "media/badges/";
+                        std::thread([iconUrl, iPath, iDir]() {
+                            std::string body;
+                            if (performHttpGet(iconUrl, body) && body.size() >= 500) {
+                                fs::create_directories(iDir);
+                                std::ofstream f(iPath, std::ios::binary);
+                                f.write(body.data(), (std::streamsize)body.size());
+                                std::cout << "[RA] Game icon cached: " << iPath << "\n";
+                            }
+                        }).detach();
                     }
+
+                    // Show "game loaded" notification
+                    AchievementInfo gameInfo;
+                    gameInfo.id          = 0;
+                    gameInfo.title       = self->m_gameInfo.title;
+                    gameInfo.description = std::to_string(total) + " achievements available";
+                    gameInfo.points      = 0;
+                    gameInfo.badgeLocalPath = gameIconPath;
+                    self->queueNotification(gameInfo);
+
+                    self->fetchAllBadges();
                 }
-            } else {
-                std::cout << "[RA] Not in RA database: "
-                          << (errorMessage ? errorMessage : "") << "\n";
             }
         }, this);
 }
@@ -503,9 +738,8 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
                       << " (" << info.points << "pts)\n";
             queueNotification(info);
 
-            // Keep the cache in sync so stopGame() writes the correct
-            // unlocked count to the Trophy Hub even mid-session.
-            // Also persist immediately so progress survives a crash.
+            // Keep the per-game cache in sync and persist immediately
+            // so progress survives a crash.
             if (m_lastGameId != 0) {
                 auto it = m_cachedAchievementsMap.find(m_lastGameId);
                 if (it != m_cachedAchievementsMap.end()) {
@@ -785,11 +1019,7 @@ void RAManager::setHardcoreMode(bool hardcore) {
 }
 
 // ─── Achievement persistence ──────────────────────────────────────────────────
-// Hand-rolled minimal JSON — same pattern used elsewhere in the project.
-// No external JSON library required. Format is simple enough that this is safe.
 
-// Escape a string for embedding in JSON — handles the only characters that
-// can appear in RA titles/descriptions/paths.
 static std::string jsonEscape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -809,30 +1039,20 @@ static std::string jsonEscape(const std::string& s) {
 void RAManager::saveGameAchievementsToDisk(uint32_t gameId) {
     auto git = m_cachedGameInfoMap.find(gameId);
     auto ait = m_cachedAchievementsMap.find(gameId);
-    if (git == m_cachedGameInfoMap.end() || ait == m_cachedAchievementsMap.end()) {
-        std::cerr << "[RA] saveGameAchievementsToDisk: no data for gameId "
-                  << gameId << "\n";
-        return;
-    }
+    if (git == m_cachedGameInfoMap.end() || ait == m_cachedAchievementsMap.end()) return;
+
     const RAGameInfo&                   info = git->second;
     const std::vector<AchievementInfo>& achs = ait->second;
 
     fs::create_directories("saves/");
     std::string path = "saves/ra_achievements_" + std::to_string(gameId) + ".json";
-
     std::ofstream f(path);
-    if (!f.is_open()) {
-        std::cerr << "[RA] Could not write: " << path << "\n";
-        return;
-    }
+    if (!f.is_open()) { std::cerr << "[RA] Could not write: " << path << "\n"; return; }
 
     f << "{\n";
     f << "  \"gameId\": "      << gameId << ",\n";
     f << "  \"title\": \""     << jsonEscape(info.title) << "\",\n";
     f << "  \"totalPoints\": " << info.totalPoints << ",\n";
-
-    // Write the path→gameId map as a flat list of paths so we can rebuild
-    // m_pathToGameId on cold start without needing a separate index file.
     f << "  \"romPaths\": [";
     bool firstPath = true;
     for (const auto& kv : m_pathToGameId) {
@@ -843,30 +1063,25 @@ void RAManager::saveGameAchievementsToDisk(uint32_t gameId) {
         }
     }
     f << "],\n";
-
     f << "  \"achievements\": [\n";
     for (size_t i = 0; i < achs.size(); i++) {
         const AchievementInfo& a = achs[i];
         f << "    {\n";
-        f << "      \"id\": "             << a.id << ",\n";
-        f << "      \"title\": \""        << jsonEscape(a.title) << "\",\n";
-        f << "      \"description\": \""  << jsonEscape(a.description) << "\",\n";
-        f << "      \"points\": "         << a.points << ",\n";
-        f << "      \"unlocked\": "       << (a.unlocked ? "true" : "false") << ",\n";
-        f << "      \"hardcore\": "       << (a.hardcore ? "true" : "false") << ",\n";
+        f << "      \"id\": "                   << a.id << ",\n";
+        f << "      \"title\": \""              << jsonEscape(a.title) << "\",\n";
+        f << "      \"description\": \""        << jsonEscape(a.description) << "\",\n";
+        f << "      \"points\": "               << a.points << ",\n";
+        f << "      \"unlocked\": "             << (a.unlocked ? "true" : "false") << ",\n";
+        f << "      \"hardcore\": "             << (a.hardcore ? "true" : "false") << ",\n";
         f << "      \"badgeLocalPath\": \""     << jsonEscape(a.badgeLocalPath) << "\",\n";
         f << "      \"badgeLockLocalPath\": \"" << jsonEscape(a.badgeLockLocalPath) << "\"\n";
         f << "    }";
         if (i + 1 < achs.size()) f << ",";
         f << "\n";
     }
-    f << "  ]\n";
-    f << "}\n";
-
+    f << "  ]\n}\n";
     std::cout << "[RA] Saved " << achs.size() << " achievements → " << path << "\n";
 }
-
-// ─── Minimal JSON field extractors for loading ────────────────────────────────
 
 static std::string jsonStr(const std::string& json, const std::string& key) {
     std::string search = "\"" + key + "\"";
@@ -875,22 +1090,18 @@ static std::string jsonStr(const std::string& json, const std::string& key) {
     pos = json.find(':', pos + search.size());
     if (pos == std::string::npos) return "";
     pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\t')) pos++;
     if (pos >= json.size() || json[pos] != '"') return "";
     pos++;
     std::string val;
     while (pos < json.size() && json[pos] != '"') {
-        if (json[pos] == '\\' && pos + 1 < json.size()) {
+        if (json[pos]=='\\' && pos+1 < json.size()) {
             pos++;
-            switch (json[pos]) {
-                case 'n': val += '\n'; break;
-                case 'r': val += '\r'; break;
-                case 't': val += '\t'; break;
-                default:  val += json[pos]; break;
+            switch(json[pos]) {
+                case 'n': val+='\n'; break; case 'r': val+='\r'; break;
+                case 't': val+='\t'; break; default: val+=json[pos]; break;
             }
-        } else {
-            val += json[pos];
-        }
+        } else { val += json[pos]; }
         pos++;
     }
     return val;
@@ -903,10 +1114,10 @@ static uint32_t jsonU32(const std::string& json, const std::string& key) {
     pos = json.find(':', pos + search.size());
     if (pos == std::string::npos) return 0;
     pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\t')) pos++;
     uint32_t val = 0;
-    while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9')
-        val = val * 10 + (json[pos++] - '0');
+    while (pos < json.size() && json[pos]>='0' && json[pos]<='9')
+        val = val*10 + (json[pos++]-'0');
     return val;
 }
 
@@ -917,26 +1128,21 @@ static bool jsonBool(const std::string& json, const std::string& key) {
     pos = json.find(':', pos + search.size());
     if (pos == std::string::npos) return false;
     pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-    return (pos + 3 < json.size() && json.substr(pos, 4) == "true");
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\t')) pos++;
+    return (pos+3 < json.size() && json.substr(pos,4)=="true");
 }
 
 void RAManager::loadAllCachedGamesFromDisk() {
     if (!fs::exists("saves/")) return;
-
-    int gamesLoaded = 0;
+    int loaded = 0;
     for (const auto& entry : fs::directory_iterator("saves/")) {
         std::string fname = entry.path().filename().string();
-        // Match saves/ra_achievements_12345.json
-        if (fname.rfind("ra_achievements_", 0) != 0) continue;
+        if (fname.rfind("ra_achievements_",0) != 0) continue;
         if (entry.path().extension() != ".json") continue;
-
         std::ifstream f(entry.path());
         if (!f.is_open()) continue;
-
         std::string json((std::istreambuf_iterator<char>(f)),
                           std::istreambuf_iterator<char>());
-
         uint32_t gameId = jsonU32(json, "gameId");
         if (gameId == 0) continue;
 
@@ -945,85 +1151,63 @@ void RAManager::loadAllCachedGamesFromDisk() {
         info.title       = jsonStr(json, "title");
         info.totalPoints = jsonU32(json, "totalPoints");
 
-        // Parse romPaths array to rebuild m_pathToGameId
-        {
-            auto arrStart = json.find("\"romPaths\"");
-            if (arrStart != std::string::npos) {
-                arrStart = json.find('[', arrStart);
-                auto arrEnd = json.find(']', arrStart);
-                if (arrStart != std::string::npos && arrEnd != std::string::npos) {
-                    std::string arrStr = json.substr(arrStart + 1, arrEnd - arrStart - 1);
-                    // Extract each quoted string from the array
-                    size_t p = 0;
-                    while (p < arrStr.size()) {
-                        auto q1 = arrStr.find('"', p);
-                        if (q1 == std::string::npos) break;
-                        q1++;
-                        std::string romPath;
-                        while (q1 < arrStr.size() && arrStr[q1] != '"') {
-                            if (arrStr[q1] == '\\' && q1 + 1 < arrStr.size()) {
-                                q1++;
-                                switch (arrStr[q1]) {
-                                    case 'n': romPath += '\n'; break;
-                                    case 'r': romPath += '\r'; break;
-                                    case 't': romPath += '\t'; break;
-                                    default:  romPath += arrStr[q1]; break;
-                                }
-                            } else {
-                                romPath += arrStr[q1];
+        // Rebuild path→gameId map
+        auto arrStart = json.find("\"romPaths\"");
+        if (arrStart != std::string::npos) {
+            arrStart = json.find('[', arrStart);
+            auto arrEnd = json.find(']', arrStart);
+            if (arrStart != std::string::npos && arrEnd != std::string::npos) {
+                std::string arr = json.substr(arrStart+1, arrEnd-arrStart-1);
+                size_t p = 0;
+                while (p < arr.size()) {
+                    auto q1 = arr.find('"', p); if (q1==std::string::npos) break; q1++;
+                    std::string romPath;
+                    while (q1 < arr.size() && arr[q1]!='"') {
+                        if (arr[q1]=='\\'&&q1+1<arr.size()) {
+                            q1++; switch(arr[q1]){
+                                case 'n':romPath+='\n';break; case 'r':romPath+='\r';break;
+                                case 't':romPath+='\t';break; default:romPath+=arr[q1];break;
                             }
-                            q1++;
-                        }
-                        if (!romPath.empty())
-                            m_pathToGameId[romPath] = gameId;
-                        p = q1 + 1;
+                        } else { romPath+=arr[q1]; }
+                        q1++;
                     }
+                    if (!romPath.empty()) m_pathToGameId[romPath] = gameId;
+                    p = q1+1;
                 }
             }
         }
 
         // Parse achievements array
         std::vector<AchievementInfo> achs;
-        {
-            auto arrStart = json.find("\"achievements\"");
-            if (arrStart != std::string::npos) {
-                arrStart = json.find('[', arrStart);
-                if (arrStart != std::string::npos) {
-                    // Walk through each achievement object {...}
-                    size_t p = arrStart + 1;
-                    while (p < json.size()) {
-                        auto objStart = json.find('{', p);
-                        if (objStart == std::string::npos) break;
-                        auto objEnd = json.find('}', objStart);
-                        if (objEnd == std::string::npos) break;
-                        std::string obj = json.substr(objStart, objEnd - objStart + 1);
-
-                        AchievementInfo a;
-                        a.id                = jsonU32(obj, "id");
-                        a.title             = jsonStr(obj, "title");
-                        a.description       = jsonStr(obj, "description");
-                        a.points            = jsonU32(obj, "points");
-                        a.unlocked          = jsonBool(obj, "unlocked");
-                        a.hardcore          = jsonBool(obj, "hardcore");
-                        a.badgeLocalPath    = jsonStr(obj, "badgeLocalPath");
-                        a.badgeLockLocalPath= jsonStr(obj, "badgeLockLocalPath");
-
-                        if (a.id != 0)
-                            achs.push_back(std::move(a));
-
-                        p = objEnd + 1;
-                    }
+        auto aStart = json.find("\"achievements\"");
+        if (aStart != std::string::npos) {
+            aStart = json.find('[', aStart);
+            if (aStart != std::string::npos) {
+                size_t p = aStart+1;
+                while (p < json.size()) {
+                    auto ob = json.find('{', p); if (ob==std::string::npos) break;
+                    auto oe = json.find('}', ob); if (oe==std::string::npos) break;
+                    std::string obj = json.substr(ob, oe-ob+1);
+                    AchievementInfo a;
+                    a.id                 = jsonU32(obj,"id");
+                    a.title              = jsonStr(obj,"title");
+                    a.description        = jsonStr(obj,"description");
+                    a.points             = jsonU32(obj,"points");
+                    a.unlocked           = jsonBool(obj,"unlocked");
+                    a.hardcore           = jsonBool(obj,"hardcore");
+                    a.badgeLocalPath     = jsonStr(obj,"badgeLocalPath");
+                    a.badgeLockLocalPath = jsonStr(obj,"badgeLockLocalPath");
+                    if (a.id != 0) achs.push_back(std::move(a));
+                    p = oe+1;
                 }
             }
         }
 
-        info.totalAchievements = (int)achs.size();
-        m_cachedGameInfoMap[gameId]    = std::move(info);
+        info.totalAchievements          = (int)achs.size();
+        m_cachedGameInfoMap[gameId]     = std::move(info);
         m_cachedAchievementsMap[gameId] = std::move(achs);
-        gamesLoaded++;
+        loaded++;
     }
-
-    if (gamesLoaded > 0)
-        std::cout << "[RA] Loaded achievement cache for " << gamesLoaded
-                  << " game(s) from disk\n";
+    if (loaded > 0)
+        std::cout << "[RA] Loaded achievement cache for " << loaded << " game(s)\n";
 }

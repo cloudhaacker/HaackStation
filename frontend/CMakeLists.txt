@@ -55,7 +55,7 @@ target_sources(HaackStation PRIVATE ${RCHEEVOS_SOURCES} ${SOUNDTOUCH_SOURCES})
 # but doing it per-file ensures the define is present even if CMake's generator
 # expression ordering is unexpected on some MSVC versions.
 set_source_files_properties(${RCHEEVOS_SOURCES} PROPERTIES
-    COMPILE_DEFINITIONS "HAVE_CHD=1;RC_HASH_STANDALONE=1"
+    COMPILE_DEFINITIONS "HAVE_CHD=1;RC_HASH_STANDALONE=1;RC_CLIENT_SUPPORTS_HASH=1"
 )
 
 # ── libchdr (needed for rcheevos to hash .chd files) ─────────────────────────
@@ -91,6 +91,7 @@ endif()
 target_compile_definitions(HaackStation PRIVATE
     HAVE_CHD=1
     RC_HASH_STANDALONE=1
+    RC_CLIENT_SUPPORTS_HASH=1
 )
 
 target_include_directories(HaackStation PRIVATE
