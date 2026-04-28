@@ -762,7 +762,7 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             // animation settle so the notification is fully visible in the shot.
             // Game-load notifications (id==0) are excluded — no achievement there.
             if (m_autoScreenshot && info.id != 0) {
-                m_trophyShotCountdown = 4;
+			m_trophyShotCountdown = SDL_GetTicks() + 400; // wait for slide-in (300ms) + margin
                 m_pendingShotAchId    = info.id;
                 m_pendingShotTitle    = info.title;
             }

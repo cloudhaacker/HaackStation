@@ -113,10 +113,9 @@ public:
     // Called by app.cpp AFTER all overlays are drawn, BEFORE SDL_RenderPresent.
     // Uses a 4-frame countdown so the slide-in animation has time to settle
     // before we capture — avoids getting a half-slid notification in the shot.
-    bool takePendingTrophyScreenshot() {
-        if (m_trophyShotCountdown <= 0) return false;
-        m_trophyShotCountdown--;
-        if (m_trophyShotCountdown > 0) return false;  // still counting down
+	bool takePendingTrophyScreenshot() {
+        if (m_trophyShotCountdown == 0) return false;
+        if (SDL_GetTicks() < m_trophyShotCountdown) return false;  // still waiting
         captureTrophyScreenshot(m_pendingShotAchId, m_pendingShotTitle);
         return true;
     }
@@ -214,7 +213,7 @@ private:
     bool              m_gameLoaded  = false;
     bool              m_hardcore          = false;
     bool              m_autoScreenshot      = false;
-    int               m_trophyShotCountdown = 0;    // counts down to 0 then captures
+    Uint32            m_trophyShotCountdown = 0;    // SDL_GetTicks() target time; 0 = inactive
     std::string       m_pendingShotTitle;
     uint32_t          m_pendingShotAchId    = 0;
 
