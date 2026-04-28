@@ -57,6 +57,7 @@ struct RAGameInfo {
     uint32_t    id          = 0;
     std::string title;
     std::string imageUrl;
+    std::string badgeName;  // rc_client_game_t::badge_name — icon identifier
     int         totalAchievements = 0;
     int         totalPoints       = 0;
     std::string richPresence;   // What you're doing in-game
@@ -107,6 +108,18 @@ public:
     // Settings
     void setHardcoreMode(bool hardcore);
     bool isHardcore() const { return m_hardcore; }
+    void setAutoScreenshot(bool enabled) { m_autoScreenshot = enabled; }
+
+    // Called by app.cpp AFTER all overlays are drawn, BEFORE SDL_RenderPresent.
+    // Uses a 4-frame countdown so the slide-in animation has time to settle
+    // before we capture — avoids getting a half-slid notification in the shot.
+    bool takePendingTrophyScreenshot() {
+        if (m_trophyShotCountdown <= 0) return false;
+        m_trophyShotCountdown--;
+        if (m_trophyShotCountdown > 0) return false;  // still counting down
+        captureTrophyScreenshot(m_pendingShotAchId, m_pendingShotTitle);
+        return true;
+    }
 
     // Get current game info and achievement list
     const RAGameInfo& gameInfo() const { return m_gameInfo; }
@@ -185,6 +198,7 @@ public:
 
 private:
     void queueNotification(const AchievementInfo& achievement);
+    void captureTrophyScreenshot(uint32_t achId, const std::string& achTitle);
     void processHttpRequest(const std::string& url,
                              const std::string& postData,
                              void* callbackData);
@@ -198,7 +212,11 @@ private:
 
     bool              m_loggedIn    = false;
     bool              m_gameLoaded  = false;
-    bool              m_hardcore    = false;
+    bool              m_hardcore          = false;
+    bool              m_autoScreenshot      = false;
+    int               m_trophyShotCountdown = 0;    // counts down to 0 then captures
+    std::string       m_pendingShotTitle;
+    uint32_t          m_pendingShotAchId    = 0;
 
     std::string       m_username;
     std::string       m_apiKey;

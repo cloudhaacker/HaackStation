@@ -619,9 +619,10 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
             // result == RC_OK — game identified and loaded successfully
             const rc_client_game_t* game = rc_client_get_game_info(client);
             if (game) {
-                self->m_gameInfo.id    = game->id;
-                self->m_gameInfo.title = game->title ? game->title : "";
-                self->m_gameLoaded     = true;
+                self->m_gameInfo.id        = game->id;
+                self->m_gameInfo.title     = game->title       ? game->title       : "";
+                self->m_gameInfo.badgeName = game->badge_name  ? game->badge_name  : "";
+                self->m_gameLoaded         = true;
                 std::cout << "[RA] Game identified: " << self->m_gameInfo.title
                           << " (ID:" << self->m_gameInfo.id << ")\n";
 
@@ -644,12 +645,17 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                     std::cout << "[RA] " << total << " achievements\n";
                     self->saveGameAchievementsToDisk(gid);
 
-                    // Download game icon for the load notification
-                    std::string gameIconPath = "media/badges/game_" +
-                        std::to_string(self->m_gameInfo.id) + "_icon.png";
+                    // Download game icon for the load notification.
+                    // badge_name is the RA image identifier (e.g. "012345").
+                    // URL: /Images/<badge_name>.png  — this is the small game icon.
+                    // Fallback to numeric ID if badge_name is empty.
+                    std::string iconId = self->m_gameInfo.badgeName.empty()
+                        ? std::to_string(self->m_gameInfo.id)
+                        : self->m_gameInfo.badgeName;
+                    std::string gameIconPath = "media/badges/game_" + iconId + "_icon.png";
                     if (!fs::exists(gameIconPath)) {
-                        std::string iconUrl = "https://media.retroachievements.org/Images/" +
-                                              std::to_string(self->m_gameInfo.id) + ".png";
+                        std::string iconUrl = "https://media.retroachievements.org/Images/"
+                                            + iconId + ".png";
                         std::string iPath = gameIconPath;
                         std::string iDir  = "media/badges/";
                         std::thread([iconUrl, iPath, iDir]() {
@@ -659,6 +665,9 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                                 std::ofstream f(iPath, std::ios::binary);
                                 f.write(body.data(), (std::streamsize)body.size());
                                 std::cout << "[RA] Game icon cached: " << iPath << "\n";
+                            } else {
+                                std::cerr << "[RA] Game icon download failed for: "
+                                          << iconUrl << "\n";
                             }
                         }).detach();
                     }
@@ -669,7 +678,7 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
                     gameInfo.title       = self->m_gameInfo.title;
                     gameInfo.description = std::to_string(total) + " achievements available";
                     gameInfo.points      = 0;
-                    gameInfo.badgeLocalPath = gameIconPath;
+                    gameInfo.badgeLocalPath = gameIconPath; // same path used above
                     self->queueNotification(gameInfo);
 
                     self->fetchAllBadges();
@@ -708,9 +717,20 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             info.points      = ach->points;
             info.unlocked    = true;
 
-            // Skip system warning achievements (0 points, warning in title)
-            if (info.points == 0 && info.title.find("Warning") != std::string::npos) {
-                std::cout << "[RA] Suppressed warning: " << info.title << "\n";
+            // Suppress unofficial / void / test achievements — they are not
+            // real unlocks and should never show as notifications or be cached.
+            // Patterns: [VOID] prefix, (VOID) prefix, 0-point "Warning" titles,
+            // and titles that are empty after trimming.
+            auto titleLower = info.title;
+            std::transform(titleLower.begin(), titleLower.end(),
+                           titleLower.begin(), ::tolower);
+            bool isVoid = (info.title.find("[VOID]")  != std::string::npos)
+                       || (info.title.find("(VOID)")  != std::string::npos)
+                       || (info.title.find("[void]")  != std::string::npos)
+                       || (info.points == 0 && titleLower.find("warning") != std::string::npos)
+                       || info.title.empty();
+            if (isVoid) {
+                std::cout << "[RA] Suppressed void/unofficial: " << info.title << "\n";
                 break;
             }
             if (ach->badge_name && strlen(ach->badge_name) > 0) {
@@ -737,6 +757,15 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             std::cout << "[RA] Unlocked: " << info.title
                       << " (" << info.points << "pts)\n";
             queueNotification(info);
+
+            // Schedule trophy screenshot — 4-frame countdown lets the slide-in
+            // animation settle so the notification is fully visible in the shot.
+            // Game-load notifications (id==0) are excluded — no achievement there.
+            if (m_autoScreenshot && info.id != 0) {
+                m_trophyShotCountdown = 4;
+                m_pendingShotAchId    = info.id;
+                m_pendingShotTitle    = info.title;
+            }
 
             // Keep the per-game cache in sync and persist immediately
             // so progress survives a crash.
@@ -795,6 +824,7 @@ void RAManager::update(float deltaMs) {
 // ─── Render notifications ─────────────────────────────────────────────────────
 void RAManager::render(int screenW, int screenH) {
     if (!m_renderer || !m_theme) return;
+
     std::lock_guard<std::mutex> lock(m_notifyMutex);
     if (m_notifications.empty()) return;
 
@@ -803,30 +833,33 @@ void RAManager::render(int screenW, int screenH) {
 
     for (auto& n : m_notifications) {
         if (n.slideAnim <= 0.f) continue;
-        int slideX = (int)((1.f - n.slideAnim) * (NOTIFY_W + 40));
-        int x = screenW - NOTIFY_W - 20 + slideX;
+        // Slide from right: at slideAnim=1 the panel is flush to the right edge.
+        int slideX = (int)((1.f - n.slideAnim) * (NOTIFY_W + 8));
+        int x = screenW - NOTIFY_W + slideX;
         int y = notifY;
+        int panelW = screenW - x;  // extends flush to right screen edge
 
         // Background
-        SDL_Rect panel = { x, y, NOTIFY_W, NOTIFY_H };
+        SDL_Rect panel = { x, y, panelW, NOTIFY_H };
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(m_renderer,
             pal.bgPanel.r, pal.bgPanel.g, pal.bgPanel.b, 230);
         SDL_RenderFillRect(m_renderer, &panel);
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-        // RA gold accent border
+        // RA gold accent border on left edge of panel
         SDL_SetRenderDrawColor(m_renderer, 255, 215, 0, 255);
         SDL_Rect border = { x, y, 4, NOTIFY_H };
         SDL_RenderFillRect(m_renderer, &border);
 
-        SDL_Color gold = { 255, 215, 0, 255 };
-        SDL_Color raBlue = { 32, 144, 255, 255 };
+        SDL_Color gold   = { 255, 215, 0,   255 };
+        SDL_Color raBlue = { 32,  144, 255, 255 };
 
-        // ── Icon / badge — shown in both game-load and achievement notifs ───
-        // For achievements: colour badge image.
-        // For game-loaded (id==0): game icon downloaded at load time.
-        // If the image file exists, render it in the 64×64 left slot.
+        // Clip text to panel bounds so long titles don't overflow
+        SDL_Rect clip = { x + 4, y, panelW - 8, NOTIFY_H };
+        SDL_RenderSetClipRect(m_renderer, &clip);
+
+        // ── Icon / badge ─────────────────────────────────────────────────────
         int textX = x + 12;
         if (!n.achievement.badgeLocalPath.empty() &&
             fs::exists(n.achievement.badgeLocalPath)) {
@@ -834,6 +867,7 @@ void RAManager::render(int screenW, int screenH) {
                 n.achievement.badgeLocalPath.c_str());
             if (icon) {
                 SDL_Rect br = { x + 8, y + 8, 64, 64 };
+                SDL_SetTextureBlendMode(icon, SDL_BLENDMODE_BLEND);
                 SDL_RenderCopy(m_renderer, icon, nullptr, &br);
                 SDL_DestroyTexture(icon);
                 textX = x + 80;
@@ -842,7 +876,6 @@ void RAManager::render(int screenW, int screenH) {
 
         // Game-loaded notification (id == 0) vs achievement unlock
         if (n.achievement.id == 0) {
-            // Game connected to RA
             m_theme->drawText("RetroAchievements",
                 textX, y + 8, raBlue, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -850,7 +883,6 @@ void RAManager::render(int screenW, int screenH) {
             m_theme->drawText(n.achievement.description,
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         } else {
-            // Achievement unlock
             m_theme->drawText("Achievement Unlocked!",
                 textX, y + 8, gold, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -859,8 +891,76 @@ void RAManager::render(int screenW, int screenH) {
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         }
 
+        SDL_RenderSetClipRect(m_renderer, nullptr);  // restore clip
+
         notifY -= NOTIFY_H + 8;
     }
+}
+
+// ─── captureTrophyScreenshot ─────────────────────────────────────────────────
+// Called the frame after an achievement unlock so the notification popup is
+// visible. Saves to: media/trophy_screenshots/<gameTitle>/<id>_<title>_<ts>.png
+// Mirrors PS4/PS5 behaviour — the popup IS the screenshot, it's the receipt.
+void RAManager::captureTrophyScreenshot(uint32_t achId,
+                                         const std::string& achTitle) {
+    if (!m_renderer) return;
+
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(
+        0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!surf) {
+        std::cerr << "[RA] Trophy screenshot: SDL_CreateRGBSurface failed\n";
+        return;
+    }
+
+    if (SDL_RenderReadPixels(m_renderer, nullptr,
+                              SDL_PIXELFORMAT_ARGB8888,
+                              surf->pixels, surf->pitch) != 0) {
+        std::cerr << "[RA] Trophy screenshot: RenderReadPixels failed: "
+                  << SDL_GetError() << "\n";
+        SDL_FreeSurface(surf);
+        return;
+    }
+
+    // Build output path: media/trophy_screenshots/<gameTitle>/
+    std::string gameTitle = "Unknown";
+    if (m_lastGameId != 0) {
+        auto it = m_cachedGameInfoMap.find(m_lastGameId);
+        if (it != m_cachedGameInfoMap.end())
+            gameTitle = it->second.title;
+    }
+
+    // Sanitize both strings for filesystem use
+    auto sanitize = [](std::string s) -> std::string {
+        const std::string invalid = "\\/:*?\"<>|";
+        for (auto& c : s)
+            if (invalid.find(c) != std::string::npos) c = '_';
+        return s;
+    };
+    std::string safeGame  = sanitize(gameTitle);
+    std::string safeTitle = sanitize(achTitle);
+    // Trim title to 40 chars so filenames stay reasonable
+    if (safeTitle.size() > 40) safeTitle.resize(40);
+
+    std::string dir = "media/trophy_screenshots/" + safeGame + "/";
+    fs::create_directories(dir);
+
+    time_t now = time(nullptr);
+    tm* t = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", t);
+
+    std::string path = dir + std::to_string(achId) + "_"
+                           + safeTitle + "_" + timestamp + ".png";
+
+    if (IMG_SavePNG(surf, path.c_str()) == 0)
+        std::cout << "[RA] Trophy screenshot saved: " << path << "\n";
+    else
+        std::cerr << "[RA] Trophy screenshot failed: " << SDL_GetError() << "\n";
+
+    SDL_FreeSurface(surf);
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────

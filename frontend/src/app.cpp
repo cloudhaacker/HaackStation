@@ -188,6 +188,7 @@ void HaackApp::init() {
     m_favorites.load();
     m_ra->setRenderer(m_renderer);
     m_ra->setTheme(m_theme.get());
+    m_ra->setAutoScreenshot(m_haackSettings.raAutoScreenshot);
     if (!m_haackSettings.raUser.empty()) {
         m_ra->setTokenSaveCallback([this](const std::string& token) {
             saveRaToken(token);
@@ -928,6 +929,9 @@ void HaackApp::render() {
     // Screenshot notification renders on top of any state
     if (m_screenshotNotifyUntil > SDL_GetTicks())
         renderScreenshotNotification();
+    // Trophy auto-screenshot: capture NOW — backbuffer has game + all overlays,
+    // RenderPresent hasn't flipped yet so pixels are exactly what the user sees.
+    if (m_ra) m_ra->takePendingTrophyScreenshot();
     SDL_RenderPresent(m_renderer);
 }
 
@@ -1287,6 +1291,10 @@ void HaackApp::applySettings() {
 
     // Apply top row mode to browser immediately
     m_browser->setTopRowMode(m_haackSettings.topRowMode);
+
+    // Apply RA settings live — no restart needed
+    if (m_ra)
+        m_ra->setAutoScreenshot(m_haackSettings.raAutoScreenshot);
 
     SettingsManager mgr;
     mgr.save(m_haackSettings);

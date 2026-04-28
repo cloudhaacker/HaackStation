@@ -27,10 +27,9 @@ void TrophyHub::refresh() {
     m_selectedIdx  = 0;
     m_scrollOffset = 0;
     loadFromDisk();
-    // Sort: most trophies unlocked first, then alphabetical
+    // Sort: alphabetical by game title (matches game shelf order)
     std::sort(m_games.begin(), m_games.end(),
         [](const GameTrophySummary& a, const GameTrophySummary& b) {
-            if (a.unlocked != b.unlocked) return a.unlocked > b.unlocked;
             return a.gameTitle < b.gameTitle;
         });
     loadTextures();

@@ -295,6 +295,21 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
     //   trophy row DOWN → description → DOWN → grid
 
     // ── Trophy row focused ────────────────────────────────────────────────────
+    // ── L1/R1 cycle screenshots from ANY navigation state ────────────────────
+    // Must be checked before early-return branches so shoulders always work.
+    if (action == NavAction::SHOULDER_L) {
+        if ((int)m_screenshotTextures.size() > 1)
+            m_screenshotIndex = (m_screenshotIndex - 1 +
+                (int)m_screenshotTextures.size()) % (int)m_screenshotTextures.size();
+        return;
+    }
+    if (action == NavAction::SHOULDER_R) {
+        if ((int)m_screenshotTextures.size() > 1)
+            m_screenshotIndex = (m_screenshotIndex + 1) %
+                (int)m_screenshotTextures.size();
+        return;
+    }
+
     if (m_trophyRowSelected) {
         switch (action) {
             case NavAction::CONFIRM:
@@ -403,17 +418,6 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
             if (m_selectedItem % cols != cols - 1 &&
                 m_selectedItem + 1 < (int)m_items.size())
                 m_selectedItem++;
-            break;
-        case NavAction::SHOULDER_L:
-            if ((int)m_screenshotTextures.size() > 1)
-                m_screenshotIndex = (m_screenshotIndex - 1 +
-                    (int)m_screenshotTextures.size()) %
-                    (int)m_screenshotTextures.size();
-            break;
-        case NavAction::SHOULDER_R:
-            if ((int)m_screenshotTextures.size() > 1)
-                m_screenshotIndex = (m_screenshotIndex + 1) %
-                    (int)m_screenshotTextures.size();
             break;
         case NavAction::CONFIRM:
             activateSelected(); break;

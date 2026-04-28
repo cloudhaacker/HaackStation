@@ -122,6 +122,12 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeSep());
         tab.items.push_back(makeLabel("ff_note", "Fast Forward toggle",
             "Per-game toggle option coming in per-game settings"));
+        tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("ra_section", "RetroAchievements",
+            "Achievement capture options"));
+        tab.items.push_back(makeToggle("ra_auto_screenshot", "Trophy Auto-Screenshot",
+            "Auto-capture a screenshot when an achievement unlocks",
+            &m_settings->raAutoScreenshot));
         m_tabs.push_back(tab);
     }
 

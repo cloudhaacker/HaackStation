@@ -93,7 +93,12 @@ struct HaackSettings {
     std::string raUser;
     std::string raApiKey;      // Session token (stored after login)
     std::string raPassword;    // Used for initial login only
-    bool        raHardcore = false;
+    bool        raHardcore         = false;
+
+    // Auto-capture a screenshot when an achievement unlocks.
+    // Saved to media/trophy_screenshots/<game>/<id>_<title>_<timestamp>.png
+    // The screenshot includes the unlock notification popup (the "receipt").
+    bool        raAutoScreenshot   = false;
 };
 
 class SettingsScreen {
