@@ -141,7 +141,7 @@ void HaackApp::init() {
     m_saveStates->setBaseDir("saves/states/");
 
     m_inGameMenu = std::make_unique<InGameMenu>(
-        m_renderer, m_theme.get(), m_nav.get(), m_saveStates.get());
+        m_renderer, m_theme.get(), m_nav.get());
 
     m_ra      = std::make_unique<RAManager>();
     m_details = std::make_unique<GameDetailsPanel>(m_renderer, m_theme.get(), m_nav.get());
@@ -240,7 +240,7 @@ void HaackApp::init() {
               << "  INGAME:  Arrows=D-pad  X=Cross  Z=Circle  A=Square  S=Triangle\n"
               << "           Q=L1  W=R1  E=L2  R=R2  Enter=Start  Space=Select\n"
               << "           F=Fast Forward (hold)  BackQuote=Rewind (hold)\n"
-              << "           F1=In-game menu  F5=OmniSave (Save)  F7=OmniSave (Load)  Esc=Quit to shelf\n"
+              << "           F1=In-game menu  F5=OmniSave Vault  Esc=Quit to shelf\n"
               << "  GLOBAL:  F11=Fullscreen\n"
               << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n"
               << "[HaackStation] Rewind: hold L2 (controller) or ` (backtick)\n";
@@ -419,17 +419,12 @@ void HaackApp::handleEvents() {
                 if (m_state == AppState::IN_GAME) {
                     if (key == SDLK_ESCAPE) { stopGame(); continue; }
 
-                    // ── F5: open OmniSave in SAVING mode ─────────────────────
+                    // ── F5: open OmniSave Vault ───────────────────────────────
                     if (key == SDLK_F5) {
+                        // Capture game frame before switching screens
+                        SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                                         OmniSaveMode::SAVING);
-                        setState(AppState::OMNISAVE_VAULT);
-                        continue;
-                    }
-                    // ── F7: open OmniSave in LOADING mode ────────────────────
-                    if (key == SDLK_F7) {
-                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                                         OmniSaveMode::LOADING);
+                                         OmniSaveMode::BROWSE, shot);
                         setState(AppState::OMNISAVE_VAULT);
                         continue;
                     }
@@ -621,18 +616,11 @@ void HaackApp::processInGameMenuActions() {
         // immediately registering as a PS1 button press in-game.
         m_inputCooldownUntil = SDL_GetTicks() + 250;
 
-    } else if (action == InGameMenuAction::SAVE_STATE) {
-        // ── Route to OmniSave instead of saving silently ──────────────────────
+    } else if (action == InGameMenuAction::OPEN_OMNISAVE) {
         m_inGameMenu->close();
+        SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                         OmniSaveMode::SAVING);
-        setState(AppState::OMNISAVE_VAULT);
-
-    } else if (action == InGameMenuAction::LOAD_STATE) {
-        // ── Route to OmniSave instead of loading silently ────────────────────
-        m_inGameMenu->close();
-        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                         OmniSaveMode::LOADING);
+                         OmniSaveMode::BROWSE, shot);
         setState(AppState::OMNISAVE_VAULT);
 
     } else if (action == InGameMenuAction::CHANGE_DISC) {

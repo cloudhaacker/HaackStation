@@ -46,6 +46,10 @@ OmniSaveVault::OmniSaveVault(SDL_Renderer* renderer, ThemeEngine* theme,
 OmniSaveVault::~OmniSaveVault() {
     freeMemCardTextures();
     freeSaveSlotTextures();
+    if (m_gameScreenshot) {
+        SDL_FreeSurface(m_gameScreenshot);
+        m_gameScreenshot = nullptr;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,8 +57,15 @@ OmniSaveVault::~OmniSaveVault() {
 // ─────────────────────────────────────────────────────────────────────────────
 void OmniSaveVault::open(const std::string& gameTitle,
                          const std::string& gameSerial,
-                         OmniSaveMode mode)
+                         OmniSaveMode mode,
+                         SDL_Surface* gameScreenshot)
 {
+    // Release any previous screenshot before storing the new one
+    if (m_gameScreenshot) {
+        SDL_FreeSurface(m_gameScreenshot);
+        m_gameScreenshot = nullptr;
+    }
+    m_gameScreenshot = gameScreenshot;  // take ownership
     m_gameTitle  = gameTitle;
     m_gameSerial = gameSerial;
     m_mode       = mode;
@@ -437,7 +448,7 @@ void OmniSaveVault::doSaveAction() {
         targetSlot = sel.slotNumber;
     }
 
-    if (m_saves->saveState(targetSlot)) {
+    if (m_saves->saveState(targetSlot, m_gameScreenshot)) {
         std::cout << "[OmniSave] Saved to slot " << targetSlot << "\n";
         m_saveWritten = true;
         loadSaveSlots();  // refresh list

@@ -13,7 +13,6 @@
 
 #include "theme_engine.h"
 #include "controller_nav.h"
-#include "save_state_manager.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <vector>
@@ -23,16 +22,13 @@
 enum class InGameMenuAction {
     NONE,
     RESUME,
-    SAVE_STATE,
-    LOAD_STATE,
+    OPEN_OMNISAVE,   // replaces separate SAVE_STATE / LOAD_STATE — Vault handles both
     CHANGE_DISC,
     QUIT_TO_SHELF,
 };
 
 enum class InGameMenuSection {
     MAIN,
-    SAVE_STATES,
-    LOAD_STATES,
     DISC_SELECT,
 };
 
@@ -48,8 +44,7 @@ enum class DiscAnimPhase {
 
 class InGameMenu {
 public:
-    InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme,
-               ControllerNav* nav, SaveStateManager* saveStates);
+    InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme, ControllerNav* nav);
     ~InGameMenu();
 
     void open();
@@ -74,7 +69,6 @@ public:
 
     InGameMenuAction pendingAction()    const { return m_pendingAction; }
     void             clearAction()            { m_pendingAction = InGameMenuAction::NONE; }
-    int              selectedSlot()     const { return m_selectedSlot; }
     int              pendingDiscIndex() const { return m_pendingDiscIndex; }
 
     void onWindowResize(int w, int h) { m_w = w; m_h = h; }
@@ -82,7 +76,6 @@ public:
 private:
     // ── Rendering ─────────────────────────────────────────────────────────────
     void renderMain();
-    void renderSaveStates(bool isSaving);
     void renderDiscSelect();
 
     // Draw one disc at (cx,cy) with given radius and opacity.
@@ -99,18 +92,10 @@ private:
     void renderTextureAsDisc(SDL_Texture* srcTex, int cx, int cy,
                              int radius, Uint8 alpha, float spinAngle = 0.f);
 
-    void renderSlotCard(const SaveSlot& slot, int x, int y,
-                        int w, int h, bool selected);
-
     // ── Navigation ────────────────────────────────────────────────────────────
     void rebuildMenuItems();
     void navigateMain(NavAction action);
-    void navigateSaveStates(NavAction action);
     void navigateDiscSelect(NavAction action);
-
-    // ── Thumbnails ────────────────────────────────────────────────────────────
-    void freeThumbnails();
-    void loadThumbnails();
 
     // ── Disc art textures ─────────────────────────────────────────────────────
     void loadDiscTextures();
@@ -120,7 +105,6 @@ private:
     SDL_Renderer*     m_renderer   = nullptr;
     ThemeEngine*      m_theme      = nullptr;
     ControllerNav*    m_nav        = nullptr;
-    SaveStateManager* m_saveStates = nullptr;
 
     bool              m_open          = false;
     InGameMenuSection m_section       = InGameMenuSection::MAIN;
@@ -133,10 +117,6 @@ private:
     };
     std::vector<MenuItem> m_items;
     int m_selectedItem = 0;
-
-    std::vector<SaveSlot>     m_slots;
-    std::vector<SDL_Texture*> m_thumbTextures;
-    int m_selectedSlot = 0;
 
     // ── Disc select ───────────────────────────────────────────────────────────
     std::vector<std::string>  m_discPaths;       // game file paths

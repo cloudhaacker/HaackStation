@@ -79,10 +79,14 @@ public:
                   MemCardManager* memCards);
     ~OmniSaveVault();
 
-    // Call before opening — sets game context and reloads data
+    // Call before opening — sets game context and reloads data.
+    // Pass a pre-captured game screenshot so the save thumbnail shows the
+    // game frame rather than the OmniSave UI.  Ownership transfers here;
+    // OmniSaveVault will free it when overwritten or on destruction.
     void open(const std::string& gameTitle,
               const std::string& gameSerial,
-              OmniSaveMode mode = OmniSaveMode::BROWSE);
+              OmniSaveMode mode = OmniSaveMode::BROWSE,
+              SDL_Surface* gameScreenshot = nullptr);
 
     void handleEvent(const SDL_Event& e);
     void update(float deltaMs);
@@ -152,6 +156,10 @@ private:
     float  m_iconAnimMs    = 0.f;   // accumulator
     int    m_iconFrame     = 0;     // current frame index (0–2)
     static constexpr float ICON_FRAME_MS = 250.f;  // ~4fps, matches PS1 BIOS
+
+    // Screenshot captured at open() time — used as thumbnail when saving.
+    // Freed on next open() or destruction.
+    SDL_Surface* m_gameScreenshot = nullptr;
 
     bool m_wantsClose  = false;
     bool m_saveWritten = false;

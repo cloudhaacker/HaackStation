@@ -7,10 +7,8 @@
 namespace fs = std::filesystem;
 
 // ─── Construction / Destruction ───────────────────────────────────────────────
-InGameMenu::InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme,
-                        ControllerNav* nav, SaveStateManager* saveStates)
-    : m_renderer(renderer), m_theme(theme)
-    , m_nav(nav), m_saveStates(saveStates)
+InGameMenu::InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme, ControllerNav* nav)
+    : m_renderer(renderer), m_theme(theme), m_nav(nav)
 {
     SDL_GetRendererOutputSize(renderer, &m_w, &m_h);
     rebuildMenuItems();
@@ -18,18 +16,16 @@ InGameMenu::InGameMenu(SDL_Renderer* renderer, ThemeEngine* theme,
 
 InGameMenu::~InGameMenu() {
     freeDiscTextures();
-    freeThumbnails();
 }
 
 // ─── Menu items ───────────────────────────────────────────────────────────────
 void InGameMenu::rebuildMenuItems() {
     m_items.clear();
-    m_items.push_back({ "Resume",        "Return to game",         InGameMenuAction::RESUME        });
-    m_items.push_back({ "Save State",    "Save current progress",  InGameMenuAction::SAVE_STATE    });
-    m_items.push_back({ "Load State",    "Load a saved state",     InGameMenuAction::LOAD_STATE    });
+    m_items.push_back({ "Resume",        "Return to game",              InGameMenuAction::RESUME        });
+    m_items.push_back({ "OmniSave",      "Save & load states",          InGameMenuAction::OPEN_OMNISAVE });
     if (!m_discPaths.empty())
-        m_items.push_back({ "Change Disc", "Switch to another disc", InGameMenuAction::CHANGE_DISC });
-    m_items.push_back({ "Quit to Shelf", "Return to game library", InGameMenuAction::QUIT_TO_SHELF });
+        m_items.push_back({ "Change Disc", "Switch to another disc",    InGameMenuAction::CHANGE_DISC });
+    m_items.push_back({ "Quit to Shelf", "Return to game library",      InGameMenuAction::QUIT_TO_SHELF });
 }
 
 // ─── Disc info ────────────────────────────────────────────────────────────────
@@ -103,35 +99,9 @@ void InGameMenu::open() {
 void InGameMenu::close() {
     m_open = false;
     m_pendingAction = InGameMenuAction::NONE;
-    freeThumbnails();
 }
 
 // ─── Thumbnails ───────────────────────────────────────────────────────────────
-void InGameMenu::freeThumbnails() {
-    for (auto* t : m_thumbTextures)
-        if (t) SDL_DestroyTexture(t);
-    m_thumbTextures.clear();
-}
-
-void InGameMenu::loadThumbnails() {
-    freeThumbnails();
-    if (!m_saveStates) return;
-
-    m_slots = m_saveStates->listSlots();
-    int existingCount = (int)m_slots.size();
-    for (int i = existingCount; i < SLOTS_PER_PAGE; i++) {
-        SaveSlot empty;
-        empty.slotNumber = i - 1;
-        empty.exists     = false;
-        empty.timestamp  = (i == 0) ? "Auto Save" : "Slot " + std::to_string(i);
-        m_slots.push_back(empty);
-    }
-    m_thumbTextures.resize(m_slots.size(), nullptr);
-    for (size_t i = 0; i < m_slots.size(); i++)
-        if (m_slots[i].exists)
-            m_thumbTextures[i] = m_saveStates->loadThumbnail(m_slots[i]);
-}
-
 // ─── Events ───────────────────────────────────────────────────────────────────
 void InGameMenu::handleEvent(const SDL_Event& e) {
     if (!m_open) return;
@@ -140,8 +110,6 @@ void InGameMenu::handleEvent(const SDL_Event& e) {
 
     switch (m_section) {
         case InGameMenuSection::MAIN:        navigateMain(action);       break;
-        case InGameMenuSection::SAVE_STATES:
-        case InGameMenuSection::LOAD_STATES: navigateSaveStates(action); break;
         case InGameMenuSection::DISC_SELECT: navigateDiscSelect(action); break;
     }
 }
@@ -155,13 +123,7 @@ void InGameMenu::navigateMain(NavAction action) {
         case NavAction::CONFIRM: {
             auto chosen = m_items[m_selectedItem].action;
             m_nav->rumbleConfirm();
-            if (chosen == InGameMenuAction::SAVE_STATE) {
-                m_section = InGameMenuSection::SAVE_STATES;
-                m_selectedSlot = 0; loadThumbnails();
-            } else if (chosen == InGameMenuAction::LOAD_STATE) {
-                m_section = InGameMenuSection::LOAD_STATES;
-                m_selectedSlot = 0; loadThumbnails();
-            } else if (chosen == InGameMenuAction::CHANGE_DISC) {
+            if (chosen == InGameMenuAction::CHANGE_DISC) {
                 m_section         = InGameMenuSection::DISC_SELECT;
                 m_highlightedDisc = m_currentDisc;
                 m_fanCentre       = (float)m_currentDisc;
@@ -173,7 +135,6 @@ void InGameMenu::navigateMain(NavAction action) {
                 m_fanProgress   = 0.f;
                 m_loadTimer     = 0.f;
                 m_loadSpinAngle = 0.f;
-                // Textures are already loaded via setDiscArtPaths() — no lazy load needed
             } else {
                 m_pendingAction = chosen;
             }
@@ -218,33 +179,6 @@ void InGameMenu::navigateDiscSelect(NavAction action) {
     }
 }
 
-void InGameMenu::navigateSaveStates(NavAction action) {
-    int total = (int)m_slots.size();
-    if (total == 0) {
-        if (action == NavAction::BACK) { m_section = InGameMenuSection::MAIN; freeThumbnails(); }
-        return;
-    }
-    switch (action) {
-        case NavAction::LEFT:  m_selectedSlot = std::max(0, m_selectedSlot-1); break;
-        case NavAction::RIGHT: m_selectedSlot = std::min(total-1, m_selectedSlot+1); break;
-        case NavAction::UP:    m_selectedSlot = std::max(0, m_selectedSlot-SLOT_COLS); break;
-        case NavAction::DOWN:  m_selectedSlot = std::min(total-1, m_selectedSlot+SLOT_COLS); break;
-        case NavAction::CONFIRM:
-            if (m_section == InGameMenuSection::SAVE_STATES) {
-                m_pendingAction = InGameMenuAction::SAVE_STATE;
-                m_nav->rumbleConfirm();
-            } else if (m_selectedSlot < (int)m_slots.size() &&
-                       m_slots[m_selectedSlot].exists) {
-                m_pendingAction = InGameMenuAction::LOAD_STATE;
-                m_nav->rumbleConfirm();
-            }
-            break;
-        case NavAction::BACK:
-            m_section = InGameMenuSection::MAIN; freeThumbnails(); break;
-        default: break;
-    }
-}
-
 // ─── Update ───────────────────────────────────────────────────────────────────
 void InGameMenu::update(float deltaMs) {
     if (!m_open) return;
@@ -255,8 +189,6 @@ void InGameMenu::update(float deltaMs) {
     if (held != NavAction::NONE) {
         switch (m_section) {
             case InGameMenuSection::MAIN:        navigateMain(held);        break;
-            case InGameMenuSection::SAVE_STATES:
-            case InGameMenuSection::LOAD_STATES: navigateSaveStates(held);  break;
             case InGameMenuSection::DISC_SELECT: navigateDiscSelect(held);  break;
         }
     }
@@ -338,8 +270,6 @@ void InGameMenu::render(SDL_Texture*) {
 
     switch (m_section) {
         case InGameMenuSection::MAIN:        renderMain();            break;
-        case InGameMenuSection::SAVE_STATES: renderSaveStates(true);  break;
-        case InGameMenuSection::LOAD_STATES: renderSaveStates(false); break;
         case InGameMenuSection::DISC_SELECT: renderDiscSelect();      break;
     }
 }
@@ -385,74 +315,6 @@ void InGameMenu::renderMain() {
         itemY += itemH;
     }
     m_theme->drawFooterHints(m_w, m_h, "Select", "Resume");
-}
-
-// ─── renderSaveStates ─────────────────────────────────────────────────────────
-void InGameMenu::renderSaveStates(bool isSaving) {
-    const auto& pal = m_theme->palette();
-    m_theme->drawTextCentered(isSaving ? "Save State" : "Load State",
-        m_w/2, 40, pal.accent, FontSize::TITLE);
-
-    if (m_slots.empty()) {
-        m_theme->drawTextCentered("No save states yet",
-            m_w/2, m_h/2, pal.textSecond, FontSize::BODY);
-        m_theme->drawFooterHints(m_w, m_h, "", "Back");
-        return;
-    }
-
-    int cols   = SLOT_COLS;
-    int cardW  = (m_w - 120) / cols - 16;
-    int cardH  = (int)(cardW * 0.65f) + 40;
-    int padX   = 16;
-    int gridW  = cols * cardW + (cols-1) * padX;
-    int startX = (m_w - gridW) / 2;
-    int startY = 90;
-
-    for (int i = 0; i < (int)m_slots.size() && i < SLOTS_PER_PAGE; i++) {
-        int col = i % cols, row = i / cols;
-        renderSlotCard(m_slots[i],
-            startX + col*(cardW+padX), startY + row*(cardH+12),
-            cardW, cardH, i == m_selectedSlot);
-    }
-    m_theme->drawFooterHints(m_w, m_h, isSaving ? "Save here" : "Load", "Back");
-}
-
-// ─── renderSlotCard ───────────────────────────────────────────────────────────
-void InGameMenu::renderSlotCard(const SaveSlot& slot, int x, int y,
-                                 int w, int h, bool selected) {
-    const auto& pal = m_theme->palette();
-    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(m_renderer,
-        selected ? pal.bgCardHover.r : pal.bgCard.r,
-        selected ? pal.bgCardHover.g : pal.bgCard.g,
-        selected ? pal.bgCardHover.b : pal.bgCard.b, 220);
-    SDL_Rect card = { x, y, w, h };
-    SDL_RenderFillRect(m_renderer, &card);
-    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
-    if (selected) {
-        SDL_SetRenderDrawColor(m_renderer, pal.accent.r, pal.accent.g, pal.accent.b, 255);
-        SDL_RenderDrawRect(m_renderer, &card);
-    }
-    int thumbH = h - 36;
-    if (slot.exists) {
-        SDL_Texture* thumb = nullptr;
-        for (int i = 0; i < (int)m_slots.size(); i++)
-            if (m_slots[i].slotNumber == slot.slotNumber && i < (int)m_thumbTextures.size())
-                { thumb = m_thumbTextures[i]; break; }
-        if (thumb) {
-            SDL_RenderCopy(m_renderer, thumb, nullptr, &SDL_Rect{x+2,y+2,w-4,thumbH-4});
-        } else {
-            m_theme->drawRect({x+2,y+2,w-4,thumbH-4}, pal.bgPanel);
-            m_theme->drawTextCentered("No Preview", x+w/2, y+thumbH/2, pal.textDisable, FontSize::TINY);
-        }
-        m_theme->drawText(slot.timestamp, x+6, y+thumbH+4, pal.textPrimary, FontSize::TINY);
-    } else {
-        m_theme->drawRect({x+2,y+2,w-4,thumbH-4}, pal.bgPanel);
-        std::string label = slot.slotNumber < 0 ? "Auto Save" :
-                            "Slot " + std::to_string(slot.slotNumber + 1);
-        m_theme->drawTextCentered(label,  x+w/2, y+h/2-8,  pal.textDisable, FontSize::SMALL);
-        m_theme->drawTextCentered("Empty",x+w/2, y+h/2+14, pal.textDisable, FontSize::TINY);
-    }
 }
 
 // ─── renderTextureAsDisc ──────────────────────────────────────────────────────
