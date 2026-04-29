@@ -39,6 +39,7 @@ set(FRONTEND_SOURCES
     src/ui/remap_screen.cpp
     src/ui/trophy_room.cpp
     src/ui/trophy_hub.cpp
+	src/ui/omnisave_vault.cpp
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

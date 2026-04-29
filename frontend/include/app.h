@@ -20,6 +20,8 @@
 #include "remap_screen.h"
 #include "trophy_room.h"
 #include "trophy_hub.h"
+#include "omnisave_vault.h"
+#include "memcard_manager.h"
 #include <ctime>
 
 class GameBrowser;
@@ -38,6 +40,7 @@ enum class AppState {
     REMAPPING,
     TROPHY_ROOM,
     TROPHY_HUB,
+	OMNISAVE_VAULT,
     SCRAPING,
     SHUTDOWN
 };
@@ -108,6 +111,10 @@ private:
     std::unique_ptr<RemapScreen>      m_remapScreen;
     std::unique_ptr<TrophyRoom>       m_trophyRoom;
     std::unique_ptr<TrophyHub>        m_trophyHub;
+	std::unique_ptr<OmniSaveVault>    m_omniSave;
+	std::unique_ptr<MemCardManager>   m_memCards;
+	std::string m_currentGameTitle;   // clean display title for current game
+	std::string m_currentGameSerial;  // serial (e.g. SCUS-94900) for memcard lookup
     InputMap                           m_inputMap;    // global button map, loaded from saves/input_map.json
 
     Uint32 m_inputCooldownUntil = 0;

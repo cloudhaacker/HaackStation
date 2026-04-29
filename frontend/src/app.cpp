@@ -21,6 +21,8 @@
 #include "rewind_manager.h"
 #include "input_map.h"
 #include "trophy_hub.h"
+#include "omnisave_vault.h"   // ← OmniSave
+#include "memcard_manager.h"  // ← MemCardManager
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdexcept>
@@ -180,6 +182,15 @@ void HaackApp::init() {
         setState(AppState::TROPHY_ROOM);
     });
 
+    // ── MemCardManager + OmniSave ─────────────────────────────────────────────
+    m_memCards = std::make_unique<MemCardManager>();
+    m_memCards->setBaseDir("memcards/");
+    m_memCards->setMode(MemCardMode::SHARED); // default: one shared card
+
+    m_omniSave = std::make_unique<OmniSaveVault>(
+        m_renderer, m_theme.get(), m_nav.get(),
+        m_saveStates.get(), m_memCards.get());
+
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();
     m_playHistory->load();
@@ -223,13 +234,13 @@ void HaackApp::init() {
     int ffMult = FF_MULTIPLIERS[
         std::max(0, std::min(m_haackSettings.fastForwardSpeed, FF_TABLE_SIZE - 1))];
     std::cout << "[HaackStation] Ready — "
-              << m_scanner->getLibrary().size() << " games found\n";
-    std::cout << "[HaackStation] Keyboard:\n"
+              << m_scanner->getLibrary().size() << " games found\n"
+              << "[HaackStation] Keyboard:\n"
               << "  SHELF:   Arrows=Navigate  X=Launch  Enter=Settings  F2=Details  Esc=Quit\n"
               << "  INGAME:  Arrows=D-pad  X=Cross  Z=Circle  A=Square  S=Triangle\n"
               << "           Q=L1  W=R1  E=L2  R=R2  Enter=Start  Space=Select\n"
               << "           F=Fast Forward (hold)  BackQuote=Rewind (hold)\n"
-              << "           F1=In-game menu  Esc=Quit to shelf\n"
+              << "           F1=In-game menu  F5=OmniSave (Save)  F7=OmniSave (Load)  Esc=Quit to shelf\n"
               << "  GLOBAL:  F11=Fullscreen\n"
               << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n"
               << "[HaackStation] Rewind: hold L2 (controller) or ` (backtick)\n";
@@ -396,6 +407,7 @@ void HaackApp::handleEvents() {
                     if (m_remapScreen)    m_remapScreen->onWindowResize(w, h);
                     if (m_trophyRoom)     m_trophyRoom->onWindowResize(w, h);
                     if (m_details)        m_details->onWindowResize(w, h);
+                    if (m_omniSave)       m_omniSave->onWindowResize(w, h);  // ← OmniSave
                 }
                 break;
 
@@ -406,16 +418,22 @@ void HaackApp::handleEvents() {
 
                 if (m_state == AppState::IN_GAME) {
                     if (key == SDLK_ESCAPE) { stopGame(); continue; }
+
+                    // ── F5: open OmniSave in SAVING mode ─────────────────────
                     if (key == SDLK_F5) {
-                        m_saveStates->saveState(0);
-                        std::cout << "[App] Quick save slot 1\n";
+                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                                         OmniSaveMode::SAVING);
+                        setState(AppState::OMNISAVE_VAULT);
                         continue;
                     }
+                    // ── F7: open OmniSave in LOADING mode ────────────────────
                     if (key == SDLK_F7) {
-                        m_saveStates->loadState(0);
-                        std::cout << "[App] Quick load slot 1\n";
+                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                                         OmniSaveMode::LOADING);
+                        setState(AppState::OMNISAVE_VAULT);
                         continue;
                     }
+
                     if (key == SDLK_F1) {
                         if (m_inGameMenu->isOpen()) m_inGameMenu->close();
                         else                        m_inGameMenu->open();
@@ -571,12 +589,13 @@ void HaackApp::handleEvents() {
             m_inGameMenu->handleEvent(e);
         } else {
             switch (m_state) {
-                case AppState::GAME_BROWSER: m_browser->handleEvent(e);     break;
-                case AppState::SETTINGS:     m_settings->handleEvent(e);    break;
-                case AppState::REMAPPING:    m_remapScreen->handleEvent(e); break;
-                case AppState::TROPHY_ROOM:  m_trophyRoom->handleEvent(e);  break;
-                case AppState::TROPHY_HUB:   m_trophyHub->handleEvent(e);   break;
-                case AppState::SCRAPING:     m_scraper->handleEvent(e);     break;
+                case AppState::GAME_BROWSER:   m_browser->handleEvent(e);     break;
+                case AppState::SETTINGS:       m_settings->handleEvent(e);    break;
+                case AppState::REMAPPING:      m_remapScreen->handleEvent(e); break;
+                case AppState::TROPHY_ROOM:    m_trophyRoom->handleEvent(e);  break;
+                case AppState::TROPHY_HUB:     m_trophyHub->handleEvent(e);   break;
+                case AppState::SCRAPING:       m_scraper->handleEvent(e);     break;
+                case AppState::OMNISAVE_VAULT: m_omniSave->handleEvent(e);    break;  // ← OmniSave
                 default: break;
             }
         }
@@ -601,20 +620,21 @@ void HaackApp::processInGameMenuActions() {
         // Cooldown prevents the CONFIRM press that closed the menu from
         // immediately registering as a PS1 button press in-game.
         m_inputCooldownUntil = SDL_GetTicks() + 250;
+
     } else if (action == InGameMenuAction::SAVE_STATE) {
-        int slot = m_inGameMenu->selectedSlot();
-        SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
-        m_saveStates->saveState(slot, shot);
-        if (shot) SDL_FreeSurface(shot);
+        // ── Route to OmniSave instead of saving silently ──────────────────────
         m_inGameMenu->close();
-        m_inputCooldownUntil = SDL_GetTicks() + 250;
+        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                         OmniSaveMode::SAVING);
+        setState(AppState::OMNISAVE_VAULT);
+
     } else if (action == InGameMenuAction::LOAD_STATE) {
-        int slot = m_inGameMenu->selectedSlot();
-        auto slots = m_saveStates->listSlots();
-        if (slot < (int)slots.size())
-            m_saveStates->loadState(slots[slot].slotNumber);
+        // ── Route to OmniSave instead of loading silently ────────────────────
         m_inGameMenu->close();
-        m_inputCooldownUntil = SDL_GetTicks() + 500;
+        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                         OmniSaveMode::LOADING);
+        setState(AppState::OMNISAVE_VAULT);
+
     } else if (action == InGameMenuAction::CHANGE_DISC) {
         int disc = m_inGameMenu->pendingDiscIndex();
         m_inGameMenu->close();
@@ -675,6 +695,7 @@ void HaackApp::processInGameMenuActions() {
             }
         }
         m_inputCooldownUntil = SDL_GetTicks() + 500;
+
     } else if (action == InGameMenuAction::QUIT_TO_SHELF) {
         m_inGameMenu->close();
         stopGame();
@@ -890,6 +911,19 @@ void HaackApp::update(float deltaMs) {
                 setState(AppState::GAME_BROWSER);
             }
             break;
+
+        // ── OmniSave Vault ────────────────────────────────────────────────────
+        case AppState::OMNISAVE_VAULT:
+            m_omniSave->update(deltaMs);
+            if (m_omniSave->wantsClose()) {
+                m_omniSave->resetClose();
+                // Return to the game if one is loaded, otherwise back to shelf
+                setState(m_core->isGameLoaded()
+                    ? AppState::IN_GAME : AppState::GAME_BROWSER);
+                m_inputCooldownUntil = SDL_GetTicks() + 300;
+            }
+            break;
+
         default: break;
     }
 }
@@ -919,11 +953,12 @@ void HaackApp::render() {
             if (m_rewinding)            renderRewindIndicator();
             if (m_turboActive)          renderTurboIndicator();
             break;
-        case AppState::SETTINGS:     m_settings->render();      break;
-        case AppState::REMAPPING:    m_remapScreen->render();   break;
-        case AppState::TROPHY_ROOM:  m_trophyRoom->render();    break;
-        case AppState::TROPHY_HUB:   m_trophyHub->render();     break;
-        case AppState::SCRAPING:     m_scraper->render();       break;
+        case AppState::SETTINGS:       m_settings->render();      break;
+        case AppState::REMAPPING:      m_remapScreen->render();   break;
+        case AppState::TROPHY_ROOM:    m_trophyRoom->render();    break;
+        case AppState::TROPHY_HUB:     m_trophyHub->render();     break;
+        case AppState::SCRAPING:       m_scraper->render();       break;
+        case AppState::OMNISAVE_VAULT: m_omniSave->render();      break;  // ← OmniSave
         default: break;
     }
     // Screenshot notification renders on top of any state
@@ -1110,6 +1145,15 @@ void HaackApp::launchGame(const std::string& path) {
         fs::path p(path);
         std::string title = p.stem().string();
         m_saveStates->setCurrentGame(title, path);
+
+        // ── Store clean title and serial for OmniSave ─────────────────────────
+        m_currentGameTitle  = stripRomRegion(p.stem().string());
+        // Serial comes from the GameEntry if available; fall back to empty string
+        // (MemCardManager will use shared card when serial is empty)
+        {
+            const GameEntry* ge = m_browser->selectedGameEntry();
+            m_currentGameSerial = (ge && !ge->serial.empty()) ? ge->serial : "";
+        }
 
         // Record in play history (moves to front if already present)
         if (m_playHistory) {
@@ -1326,6 +1370,8 @@ void HaackApp::stopGame() {
     m_rewindHeldSince = 0;
     m_rumbleNextAt    = 0;
     m_currentGamePath.clear();
+    m_currentGameTitle.clear();   // ← clear OmniSave title on exit
+    m_currentGameSerial.clear();  // ← clear OmniSave serial on exit
 
     // Reset rewind buffer so it doesn't hold stale state across games
     if (m_rewind) m_rewind->reset();
@@ -1398,19 +1444,6 @@ void HaackApp::toggleFullscreen() {
 // ─── stripRomRegion ───────────────────────────────────────────────────────────
 // Strips region / revision tags from a ROM filename stem so it matches
 // the clean name ScreenScraper uses for its media folders.
-//
-// Rules (applied left-to-right, all parenthetical/bracketed groups stripped):
-//   (USA)  (Europe)  (Japan)  (World)  (En)  etc.  → removed
-//   (Rev X)  (v1.0)  (Disc 1)                       → removed
-//   [!]  [b]  [h]  [T+Eng]                          → removed
-//   Leading/trailing whitespace trimmed after stripping.
-//
-// Examples:
-//   "Crash Bandicoot (USA)"              → "Crash Bandicoot"
-//   "Final Fantasy VII (USA) (Disc 1)"  → "Final Fantasy VII"
-//   "Castlevania - Symphony of the Night (USA) (Track 1)" → "Castlevania - Symphony of the Night"
-//   "Spyro the Dragon [!]"              → "Spyro the Dragon"
-//
 std::string HaackApp::stripRomRegion(const std::string& stem) {
     // Remove all parenthetical (...) and bracketed [...] groups
     static const std::regex tagPattern(R"(\s*[\(\[][^\)\]]*[\)\]])");
@@ -1424,10 +1457,6 @@ std::string HaackApp::stripRomRegion(const std::string& stem) {
 }
 
 // ─── takeUIScreenshot ────────────────────────────────────────────────────────
-// Captures whatever is currently on screen (menus, shelf, in-game — anything)
-// and saves it to: media/screenshots/HaackStation/ui_YYYY-MM-DD_HH-MM-SS.png
-// Uses the SDL renderer directly, so it captures the composited frame.
-// Named with "ui_" prefix so it sorts separately from game captures.
 void HaackApp::takeUIScreenshot() {
     int w, h;
     SDL_GetRendererOutputSize(m_renderer, &w, &h);
@@ -1448,9 +1477,6 @@ void HaackApp::takeUIScreenshot() {
         return;
     }
 
-    // Save to media/screenshots/HaackStation/
-    // Prefixed "ui_" so it floats to the bottom alphabetically in game folders
-    // and is obviously distinct from game captures.
     std::string mediaDir = m_haackSettings.romsPath.empty()
         ? "media/" : m_haackSettings.romsPath + "/media/";
     std::string dir = mediaDir + "screenshots/HaackStation/";
@@ -1472,9 +1498,6 @@ void HaackApp::takeUIScreenshot() {
 }
 
 // ─── parseM3uDiscs ───────────────────────────────────────────────────────────
-// If path is an M3U playlist, returns the list of disc paths it contains.
-// Non-M3U paths (single disc games) return a vector with just that one path.
-// Paths in the M3U are resolved relative to the M3U's own directory.
 std::vector<std::string> HaackApp::parseM3uDiscs(const std::string& path) {
     fs::path p(path);
     std::string ext = p.extension().string();
@@ -1507,11 +1530,6 @@ std::vector<std::string> HaackApp::parseM3uDiscs(const std::string& path) {
 }
 
 // ─── takeScreenshot ───────────────────────────────────────────────────────────
-// Captures the clean game framebuffer and saves it to:
-//   media/screenshots/[clean game title]/capture_YYYY-MM-DD_HH-MM-SS.png
-//
-// The folder name uses stripRomRegion() so it matches ScreenScraper's
-// "Crash Bandicoot" folder (not "Crash Bandicoot (USA)").
 void HaackApp::takeScreenshot() {
     if (!m_saveStates || !m_core->isGameLoaded()) return;
 
@@ -1561,10 +1579,6 @@ void HaackApp::updateGameInput() {
 
     int mask = 0;
 
-    // Use SDL_GameControllerFromInstanceID to get the already-open controller
-    // handle from ControllerNav rather than opening a second handle with
-    // SDL_GameControllerOpen. Opening it again each frame can return a
-    // different internal state and makes the close at the end redundant.
     SDL_GameController* ctrl = nullptr;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -1607,9 +1621,6 @@ void HaackApp::updateGameInput() {
         Sint16 r2 = SDL_GameControllerGetAxis(ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
 
         // ── L2: rewind with hold delay ─────────────────────────────────────
-        // L2 as a PS1 button is also needed in-game, so we treat a SHORT press
-        // as the PS1 L2 button, and activate rewind only after REWIND_HOLD_DELAY_MS.
-        // This mirrors how FF works on R2.
         if (l2 > 8000) {
             mask |= (1 << RETRO_DEVICE_ID_JOYPAD_L2); // pass through always
             if (m_rewindHeldSince == 0)
@@ -1632,11 +1643,7 @@ void HaackApp::updateGameInput() {
             }
         }
 
-        // ── R1 + R2 combo = Turbo toggle (checked FIRST, takes priority over FF) ──
-        // We must read R1 and R2 together before deciding what each does alone.
-        // If BOTH are held for TURBO_HOLD_DELAY_MS, turbo toggles on or off.
-        // While R1+R2 are both held, R2 does NOT activate fast-forward, and
-        // R1 is NOT passed to the PS1 game — the combo is fully consumed.
+        // ── R1 + R2 combo = Turbo toggle ──────────────────────────────────────
         bool r1Held     = btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
         bool r2Held     = (r2 > 8000);
         bool turboCombo = r1Held && r2Held;
@@ -1677,12 +1684,7 @@ void HaackApp::updateGameInput() {
     }
 
     // ── Unified turbo hold timer ──────────────────────────────────────────────
-    // CRITICAL: Read BOTH inputs here before deciding whether to reset the timer.
-    // The old design had two separate else-branches that each reset
-    // m_turboHeldSince=0, so they fought each other every frame and the
-    // timer could never accumulate. Now: one combined check.
     {
-        // Re-read controller state (may have been closed above)
         bool ctrlCombo = false;
         for (int _i = 0; _i < SDL_NumJoysticks(); _i++) {
             if (!SDL_IsGameController(_i)) continue;
@@ -1706,24 +1708,22 @@ void HaackApp::updateGameInput() {
                 m_turboActive    = !m_turboActive;
                 m_turboHeldSince = 0xFFFFFFFF;
                 std::cout << "[Turbo] " << (m_turboActive ? "ON" : "OFF") << "\n";
-                // Tell the bridge so the audio callback uses the right skip threshold
                 if (m_core) {
                     int tIdx = std::max(0, std::min(m_haackSettings.turboSpeed, 4));
                     double ratio = m_turboActive ? TURBO_RATIOS[tIdx] : 1.0;
                     m_core->setTurboRatio(ratio);
                 }
-                // Mute / unmute audio according to the turbo mute setting
                 if (m_haackSettings.turboMuteAudio && m_core) {
                     SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
                     if (audioDev) {
                         SDL_PauseAudioDevice(audioDev, m_turboActive ? 1 : 0);
                         if (!m_turboActive)
-                            SDL_ClearQueuedAudio(audioDev); // flush stale buffered audio
+                            SDL_ClearQueuedAudio(audioDev);
                     }
                 }
             }
         } else {
-            m_turboHeldSince = 0;  // no input → safe to reset
+            m_turboHeldSince = 0;
         }
     }
 
