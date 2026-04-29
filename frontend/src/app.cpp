@@ -240,7 +240,7 @@ void HaackApp::init() {
               << "  INGAME:  Arrows=D-pad  X=Cross  Z=Circle  A=Square  S=Triangle\n"
               << "           Q=L1  W=R1  E=L2  R=R2  Enter=Start  Space=Select\n"
               << "           F=Fast Forward (hold)  BackQuote=Rewind (hold)\n"
-              << "           F1=In-game menu  F5=OmniSave Vault  Esc=Quit to shelf\n"
+              << "           F1=In-game menu  F5=OmniSave (Save)  F7=OmniSave (Load)  Esc=Quit to shelf\n"
               << "  GLOBAL:  F11=Fullscreen\n"
               << "[HaackStation] Fast forward: " << ffMult << "x (hold R2 or F)\n"
               << "[HaackStation] Rewind: hold L2 (controller) or ` (backtick)\n";
@@ -419,12 +419,17 @@ void HaackApp::handleEvents() {
                 if (m_state == AppState::IN_GAME) {
                     if (key == SDLK_ESCAPE) { stopGame(); continue; }
 
-                    // ── F5: open OmniSave Vault ───────────────────────────────
+                    // ── F5: open OmniSave in SAVING mode ─────────────────────
                     if (key == SDLK_F5) {
-                        // Capture game frame before switching screens
-                        SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                                         OmniSaveMode::BROWSE, shot);
+                                         OmniSaveMode::SAVING);
+                        setState(AppState::OMNISAVE_VAULT);
+                        continue;
+                    }
+                    // ── F7: open OmniSave in LOADING mode ────────────────────
+                    if (key == SDLK_F7) {
+                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                                         OmniSaveMode::LOADING);
                         setState(AppState::OMNISAVE_VAULT);
                         continue;
                     }
@@ -1122,6 +1127,21 @@ void HaackApp::launchGame(const std::string& path) {
 
     m_core->setCoreOption("beetle_psx_hw_skip_bios",
         m_haackSettings.fastBoot ? "enabled" : "disabled");
+
+    // ── Memory card setup — must happen before loadGame() ─────────────────────
+    // The core reads RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY during retro_load_game.
+    // We point it at the MemCardManager's directory so the .srm file the core
+    // writes lands in the same place OmniSave looks for .mcr files.
+    // prepareSlot1() creates the blank card file if it doesn't exist yet.
+    {
+        const GameEntry* ge = m_browser->selectedGameEntry();
+        std::string serial  = (ge && !ge->serial.empty()) ? ge->serial : "";
+        m_memCards->prepareSlot1(serial);
+        std::string saveDir = m_memCards->saveDirectory(serial);
+        fs::create_directories(saveDir);
+        m_core->setSavePath(saveDir);
+        std::cout << "[HaackStation] Memory card dir: " << saveDir << "\n";
+    }
 
     if (!m_core->loadGame(path)) {
         std::cerr << "[HaackStation] Failed to load game.\n";

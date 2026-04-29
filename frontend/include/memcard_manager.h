@@ -45,6 +45,11 @@ public:
     std::string prepareSlot1(const std::string& gameSerial);
     std::string prepareSlot2(const std::string& gameSerial);
 
+    // Returns just the directory the core should use as its save directory.
+    // The core writes <GameTitle>.srm into this folder — by pointing it at
+    // the same folder our .mcr lives in, the core and OmniSave agree on location.
+    std::string saveDirectory(const std::string& gameSerial) const;
+
     // Returns human-readable info about current memory card state
     std::string statusString(const std::string& gameSerial) const;
 

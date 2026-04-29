@@ -59,6 +59,12 @@ std::string MemCardManager::prepareSlot2(const std::string& gameSerial) {
     return path;
 }
 
+std::string MemCardManager::saveDirectory(const std::string& gameSerial) const {
+    if (m_mode == MemCardMode::PER_GAME && !gameSerial.empty())
+        return m_baseDir + "per_game/";
+    return m_baseDir + "shared/";
+}
+
 std::string MemCardManager::slotPath(int slot,
                                       const std::string& gameSerial) const {
     if (m_mode == MemCardMode::PER_GAME && !gameSerial.empty()) {

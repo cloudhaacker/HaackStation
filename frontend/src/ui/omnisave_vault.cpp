@@ -115,8 +115,38 @@ void OmniSaveVault::loadMemCardEntries() {
     freeMemCardTextures();
     if (!m_memCards) return;
 
-    // Prepare the slot-1 path (creates file if missing) then parse it
-    std::string path = m_memCards->prepareSlot1(m_gameSerial);
+    // prepareSlot1() returns our .mcr path and creates it if missing.
+    // The core may have written a .srm file into the same directory instead
+    // (Beetle PSX HW names it <GameTitle>.srm). We check for both and prefer
+    // whichever is larger (i.e. has actual save data in it).
+    std::string mcrPath = m_memCards->prepareSlot1(m_gameSerial);
+
+    // Also look for a .srm in the same directory with the game title stem
+    std::string srmPath;
+    if (!m_gameTitle.empty()) {
+        fs::path dir = fs::path(mcrPath).parent_path();
+        fs::path candidate = dir / (m_gameTitle + ".srm");
+        if (fs::exists(candidate))
+            srmPath = candidate.string();
+        // Also try with the serial as filename (some cores use that)
+        if (srmPath.empty() && !m_gameSerial.empty()) {
+            candidate = dir / (m_gameSerial + ".srm");
+            if (fs::exists(candidate))
+                srmPath = candidate.string();
+        }
+    }
+
+    // Pick the best path: prefer whichever file has more data
+    std::string path = mcrPath;
+    if (!srmPath.empty()) {
+        size_t srmSz = fs::exists(srmPath) ? fs::file_size(srmPath) : 0;
+        size_t mcrSz = fs::exists(mcrPath) ? fs::file_size(mcrPath) : 0;
+        if (srmSz > mcrSz) {
+            path = srmPath;
+            std::cout << "[OmniSave] Using .srm from core: " << srmPath << "\n";
+        }
+    }
+
     if (!fs::exists(path)) return;
 
     m_cardEntries = parseMcr(path);
@@ -418,15 +448,25 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
     }
 
     if (a == NavAction::CONFIRM) {
-        doLoadAction();
-        return;
-    }
-    if (a == NavAction::MENU) {
-        // Start / square = save to this slot
-        doSaveAction();
+        // A = context-sensitive primary action:
+        //   on the "+ New Save" sentinel → save (nothing to overwrite)
+        //   on an existing slot          → load
+        const SaveSlot& sel = m_slots[m_stateSel];
+        if (sel.slotNumber == -2 || !sel.exists) {
+            doSaveAction();
+        } else {
+            doLoadAction();
+        }
         return;
     }
     if (a == NavAction::OPTIONS) {
+        // X/Square = explicit "Save Here" — overwrites the selected slot
+        // (deliberate second button prevents accidental overwrite)
+        doSaveAction();
+        return;
+    }
+    if (a == NavAction::MENU) {
+        // Start = Delete selected slot
         doDeleteState();
         return;
     }
@@ -742,16 +782,16 @@ void OmniSaveVault::renderSaveStatePanel(int x, int y, int w, int h) {
 void OmniSaveVault::renderFooter() {
     if (m_focus == OmniPanel::SAVESTATES) {
         m_theme->drawFooterHints(m_w, m_h,
-            "Load",          // A
-            "Back",          // B
-            "Save Here",     // X (Start in this context)
-            "Delete");       // Y
+            "Load / New Save",  // A  (context-sensitive)
+            "Back",             // B
+            "Save Here",        // Y/Triangle = OPTIONS
+            "Delete");          // Start
     } else {
         m_theme->drawFooterHints(m_w, m_h,
-            "View Entry",    // A
-            "Back",          // B
-            "",              // X
-            "Delete");       // Y
+            "View Entry",       // A
+            "Back",             // B
+            "",                 // X
+            "Delete");          // Y (future)
     }
     // Draw L1/R1 panel-switch hint on the right side manually
     int footY = m_h - m_theme->layout().footerH;
