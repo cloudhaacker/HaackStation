@@ -784,18 +784,24 @@ void OmniSaveVault::renderFooter() {
         m_theme->drawFooterHints(m_w, m_h,
             "Load / New Save",  // A  (context-sensitive)
             "Back",             // B
-            "Save Here",        // Y/Triangle = OPTIONS
-            "Delete");          // Start
+            "Save Here",        // X/Square = OPTIONS
+            "");                // Y (unused)
     } else {
         m_theme->drawFooterHints(m_w, m_h,
             "View Entry",       // A
             "Back",             // B
             "",                 // X
-            "Delete");          // Y (future)
+            "");                // Y
     }
     // Draw L1/R1 panel-switch hint on the right side manually
     int footY = m_h - m_theme->layout().footerH;
     int cy    = footY + (m_theme->layout().footerH - 34) / 2;
     m_theme->drawButtonHint(m_w - 220, cy, "L1/R1",
                             "Switch Panel", m_theme->palette().textSecond);
+
+    // Start = Delete (save states panel only) — shown at far right before L1/R1
+    if (m_focus == OmniPanel::SAVESTATES) {
+        m_theme->drawButtonHint(m_w - 390, cy, "Start",
+                                "Delete", m_theme->palette().textSecond);
+    }
 }

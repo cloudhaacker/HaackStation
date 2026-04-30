@@ -3,6 +3,8 @@
 #include "audio_replacer.h"
 #include "texture_replacer.h"
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
@@ -199,6 +201,112 @@ void LibretroBridge::unloadGame() {
     }
 
     std::cout << "[Bridge] Game unloaded\n";
+}
+
+// ─── Save RAM flush ───────────────────────────────────────────────────────────
+// Reads RETRO_MEMORY_SAVE_RAM from the core and writes it to destPath using
+// an atomic temp-file → rename strategy so crashes never corrupt the card.
+// Beetle PSX HW exposes 128 KB (131072 bytes) of SRAM = one PS1 memory card.
+bool LibretroBridge::flushSaveRAM(const std::string& destPath) {
+    if (!m_gameLoaded || !m_retro_get_memory_data || !m_retro_get_memory_size)
+        return false;
+
+    // RETRO_MEMORY_SAVE_RAM = 0
+    void*  buf  = m_retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t size = m_retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+
+    if (!buf || size == 0) {
+        std::cerr << "[Bridge] flushSaveRAM: core returned null/empty SRAM buffer\n";
+        return false;
+    }
+
+    // Sanity check — PS1 card is exactly 128 KB
+    static constexpr size_t PS1_CARD_BYTES = 131072;
+    if (size != PS1_CARD_BYTES) {
+        std::cerr << "[Bridge] flushSaveRAM: unexpected SRAM size " << size
+                  << " (expected " << PS1_CARD_BYTES << ")\n";
+        return false;
+    }
+
+    // Atomic write: write to .tmp, then rename over the real file.
+    // If we crash mid-write the .tmp is left behind but the .mcr is intact.
+    std::string tmp = destPath + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f.is_open()) {
+            std::cerr << "[Bridge] flushSaveRAM: could not open " << tmp << " for write\n";
+            return false;
+        }
+        f.write(static_cast<const char*>(buf), static_cast<std::streamsize>(size));
+        if (!f.good()) {
+            std::cerr << "[Bridge] flushSaveRAM: write error on " << tmp << "\n";
+            return false;
+        }
+    } // file closed here before rename
+
+    // std::filesystem::rename is atomic on POSIX; on Windows it replaces atomically
+    // on NTFS (same volume). Both are fine for our use case.
+    std::error_code ec;
+    std::filesystem::rename(tmp, destPath, ec);
+    if (ec) {
+        std::cerr << "[Bridge] flushSaveRAM: rename failed: " << ec.message() << "\n";
+        return false;
+    }
+
+    std::cout << "[Bridge] SaveRAM flushed → " << destPath
+              << " (" << size << " bytes)\n";
+    return true;
+}
+
+// ─── Save RAM load ────────────────────────────────────────────────────────────
+// Reads srcPath (.mcr file) and copies it into the core's RETRO_MEMORY_SAVE_RAM
+// buffer. Must be called after loadGame() — Beetle allocates the buffer during
+// retro_load_game(). This is what makes saves persist across sessions: without
+// it, Beetle always starts with a zeroed buffer regardless of what's on disk.
+bool LibretroBridge::loadSaveRAM(const std::string& srcPath) {
+    if (!m_gameLoaded || !m_retro_get_memory_data || !m_retro_get_memory_size)
+        return false;
+
+    void*  buf  = m_retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t size = m_retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+
+    if (!buf || size == 0) {
+        std::cerr << "[Bridge] loadSaveRAM: core SRAM buffer not available\n";
+        return false;
+    }
+
+    static constexpr size_t PS1_CARD_BYTES = 131072;
+    if (size != PS1_CARD_BYTES) {
+        std::cerr << "[Bridge] loadSaveRAM: unexpected SRAM size " << size << "\n";
+        return false;
+    }
+
+    std::ifstream f(srcPath, std::ios::binary);
+    if (!f.is_open()) {
+        // No card file on disk yet — this is normal for a brand new game.
+        // Leave the buffer as-is (Beetle initialises it to a blank card).
+        std::cout << "[Bridge] loadSaveRAM: no card file at " << srcPath
+                  << " — starting with blank card\n";
+        return false;
+    }
+
+    // Read the file into a staging buffer first so a short/corrupt file
+    // doesn't partially overwrite the SRAM buffer.
+    std::vector<char> staging(PS1_CARD_BYTES, 0);
+    f.read(staging.data(), static_cast<std::streamsize>(PS1_CARD_BYTES));
+    std::streamsize bytesRead = f.gcount();
+    f.close();
+
+    if (bytesRead != static_cast<std::streamsize>(PS1_CARD_BYTES)) {
+        std::cerr << "[Bridge] loadSaveRAM: short read — " << bytesRead
+                  << " bytes (expected " << PS1_CARD_BYTES << "), ignoring\n";
+        return false;
+    }
+
+    std::memcpy(buf, staging.data(), PS1_CARD_BYTES);
+    std::cout << "[Bridge] SaveRAM loaded ← " << srcPath
+              << " (" << bytesRead << " bytes)\n";
+    return true;
 }
 
 // ─── Per-frame emulation ──────────────────────────────────────────────────────

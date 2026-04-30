@@ -119,6 +119,14 @@ private:
 
     Uint32 m_inputCooldownUntil = 0;
 
+    // ── Memory card flush ─────────────────────────────────────────────────────
+    // Path of the .mcr file currently active for the running game.
+    // Set in launchGame(), cleared in the quit-to-browser path.
+    // flushSaveRAM() writes to this path; empty string = no game running.
+    std::string m_activeCardPath;
+    Uint32      m_memcardFlushTimer = 0;          // ms accumulator
+    static constexpr Uint32 MEMCARD_FLUSH_INTERVAL_MS = 30000; // flush every 30s
+
     // Session playtime tracking — set when a game launches, used on stopGame()
     // to compute elapsed seconds and pass to PlayHistory::recordStop().
     time_t m_sessionStartTime = 0;

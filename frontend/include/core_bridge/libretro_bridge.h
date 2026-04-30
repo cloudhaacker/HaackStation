@@ -45,6 +45,18 @@ public:
     bool loadGame(const std::string& gamePath);
     void unloadGame();
 
+    // Flush the core's in-RAM memory card (RETRO_MEMORY_SAVE_RAM) to disk.
+    // Uses atomic write (temp file → rename) so a crash mid-flush never
+    // corrupts the existing card. Returns true if data was written.
+    // Call before unloadGame() and on a ~30s interval during gameplay.
+    bool flushSaveRAM(const std::string& srcPath);
+
+    // Load a memory card file from disk into the core's SRAM buffer.
+    // Must be called AFTER loadGame() succeeds — Beetle allocates the SRAM
+    // buffer during retro_load_game(), so calling this before loadGame() is
+    // a no-op. Returns true if the file was read and copied into the buffer.
+    bool loadSaveRAM(const std::string& srcPath);
+
     void runFrame();
     void blitFramebuffer(SDL_Renderer* renderer);
     void setButtonState(int port, int buttonMask);

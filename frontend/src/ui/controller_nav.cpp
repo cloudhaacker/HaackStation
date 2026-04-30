@@ -168,8 +168,9 @@ NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return NavAction::RIGHT;
         case SDL_CONTROLLER_BUTTON_A:             return NavAction::CONFIRM;
         case SDL_CONTROLLER_BUTTON_B:             return NavAction::BACK;
+        case SDL_CONTROLLER_BUTTON_X:             return NavAction::OPTIONS;
         case SDL_CONTROLLER_BUTTON_START:         return NavAction::MENU;
-        case SDL_CONTROLLER_BUTTON_Y:             return NavAction::OPTIONS;
+        case SDL_CONTROLLER_BUTTON_Y:             return NavAction::NONE;
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return NavAction::SHOULDER_L;
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return NavAction::SHOULDER_R;
         default: return NavAction::NONE;
@@ -183,6 +184,13 @@ NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
 //   X              → Confirm (maps to Cross / controller A)
 //   Z              → Back    (maps to Circle / controller B)
 //   Page Up/Down   → L1/R1   (screenshot cycling in details panel)
+//
+// Controller face button mapping:
+//   A (Cross)      → NavAction::CONFIRM
+//   B (Circle)     → NavAction::BACK
+//   X (Square)     → NavAction::OPTIONS  (context action — e.g. "Save Here" in OmniSave)
+//   Y (Triangle)   → NavAction::NONE     (unmapped — was OPTIONS before Session 24)
+//   Start          → NavAction::MENU
 //
 // APP-LEVEL SHORTCUTS (intercepted in app.cpp BEFORE this function):
 //   Enter          → Start / Open Settings from shelf

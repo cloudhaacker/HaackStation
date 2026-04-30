@@ -62,6 +62,12 @@ public:
     // Standard PS1 memory card size (128KB)
     static constexpr size_t STANDARD_CARD_BYTES = 131072;
 
+    // Returns the .mcr file path for slot 1 for the given serial.
+    // Used by app.cpp to tell flushSaveRAM() exactly where to write.
+    std::string activeCardPath(const std::string& gameSerial) const {
+        return slotPath(1, gameSerial);
+    }
+
 private:
     std::string slotPath(int slot, const std::string& gameSerial) const;
     void ensureDirectories() const;

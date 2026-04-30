@@ -250,7 +250,12 @@ void HaackApp::shutdown() {
     SettingsManager settingsMgr;
     settingsMgr.save(m_haackSettings);
 
-    if (m_core && m_core->isGameLoaded()) m_core->unloadGame();
+    if (m_core && m_core->isGameLoaded()) {
+        // Flush memcard before unload so in-game saves aren't lost on exit.
+        if (!m_activeCardPath.empty())
+            m_core->flushSaveRAM(m_activeCardPath);
+        m_core->unloadGame();
+    }
     m_splash.reset();
     m_settings.reset();
     m_browser.reset();
@@ -838,6 +843,18 @@ void HaackApp::update(float deltaMs) {
             if (m_inGameMenu && m_inGameMenu->isOpen())
                 m_inGameMenu->update(deltaMs);
             if (m_ra) m_ra->update(deltaMs);
+            // ── Periodic memory card flush ─────────────────────────────────
+            // Beetle PSX HW keeps memcard data in RAM; we own the flush.
+            // Every 30 seconds, write the SRAM buffer to the .mcr file so
+            // a crash doesn't lose more than 30s of in-game saves.
+            // Atomic write (temp → rename) means no corruption on crash.
+            if (!m_activeCardPath.empty()) {
+                m_memcardFlushTimer += (Uint32)deltaMs;
+                if (m_memcardFlushTimer >= MEMCARD_FLUSH_INTERVAL_MS) {
+                    m_memcardFlushTimer = 0;
+                    m_core->flushSaveRAM(m_activeCardPath);
+                }
+            }
             break;
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
@@ -1139,8 +1156,16 @@ void HaackApp::launchGame(const std::string& path) {
         m_memCards->prepareSlot1(serial);
         std::string saveDir = m_memCards->saveDirectory(serial);
         fs::create_directories(saveDir);
-        m_core->setSavePath(saveDir);
-        std::cout << "[HaackStation] Memory card dir: " << saveDir << "\n";
+        // Use absolute path — Beetle PSX HW silently discards relative paths
+        // for RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY on some Windows configurations.
+        std::string absSaveDir = fs::absolute(saveDir).string();
+        m_core->setSavePath(absSaveDir);
+        // Store the exact .mcr path so the flush timer and quit path know
+        // where to write the SRAM buffer.
+        m_activeCardPath = fs::absolute(
+            m_memCards->activeCardPath(serial)).string();
+        m_memcardFlushTimer = 0;
+        std::cout << "[HaackStation] Memory card: " << m_activeCardPath << "\n";
     }
 
     if (!m_core->loadGame(path)) {
@@ -1170,6 +1195,15 @@ void HaackApp::launchGame(const std::string& path) {
         }
         if (m_ra && m_ra->isLoggedIn())
             m_ra->loadGame(path, m_core.get());
+
+        // ── Load memory card data into core SRAM buffer ───────────────────────
+        // Beetle PSX HW with libretro memcard method starts with a zeroed SRAM
+        // buffer every launch. We own the persistence — read our .mcr file into
+        // the buffer so the game sees existing saves immediately.
+        // Must happen AFTER loadGame() and AFTER RA loadGame() (both may call
+        // retro_run internally on some cores, but Beetle doesn't — order is safe).
+        if (!m_activeCardPath.empty())
+            m_core->loadSaveRAM(m_activeCardPath);
 
         // ── Apply per-game settings ───────────────────────────────────────────
         // Load and apply any per-game overrides (resolution, shader, etc.)
@@ -1435,6 +1469,14 @@ void HaackApp::stopGame() {
         }
     }
     if (m_ra) m_ra->unloadGame();
+    // Flush memcard RAM → disk before the core is unloaded.
+    // This is the critical flush — without it, in-game saves made since the
+    // last 30s autosave would be lost.
+    if (!m_activeCardPath.empty()) {
+        m_core->flushSaveRAM(m_activeCardPath);
+        m_activeCardPath.clear();
+        m_memcardFlushTimer = 0;
+    }
     m_core->unloadGame();
     m_browser->resetAfterGame();
     setState(AppState::GAME_BROWSER);
