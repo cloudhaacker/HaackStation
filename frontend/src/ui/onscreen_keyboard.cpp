@@ -113,6 +113,8 @@ void OnScreenKeyboard::clampSelection() {
     m_col = std::clamp(m_col, 0, cols - 1);
 }
 
+// navigate — full behaviour including row-wrap on LEFT/RIGHT.
+// Used for single fresh presses so the user can zip between rows.
 void OnScreenKeyboard::navigate(NavAction a) {
     int prevRow = m_row;
     int prevCol = m_col;
@@ -124,7 +126,6 @@ void OnScreenKeyboard::navigate(NavAction a) {
     } else if (a == NavAction::LEFT) {
         m_col--;
         if (m_col < 0) {
-            // Wrap to previous row last key
             m_row--;
             if (m_row >= 0)
                 m_col = (int)m_rows[m_row].size() - 1;
@@ -133,7 +134,6 @@ void OnScreenKeyboard::navigate(NavAction a) {
         m_col++;
         int cols = (int)m_rows[m_row].size();
         if (m_col >= cols) {
-            // Wrap to next row first key
             m_row++;
             m_col = 0;
         }
@@ -141,9 +141,8 @@ void OnScreenKeyboard::navigate(NavAction a) {
 
     clampSelection();
 
-    // If we moved rows, try to preserve approximate horizontal position
+    // Moving UP/DOWN: preserve approximate horizontal position across rows
     if (m_row != prevRow && a != NavAction::LEFT && a != NavAction::RIGHT) {
-        // Map prevCol's x-fraction onto new row
         int prevCols = (int)m_rows[prevRow].size();
         int newCols  = (int)m_rows[m_row].size();
         if (prevCols > 0 && newCols > 0) {
@@ -153,29 +152,66 @@ void OnScreenKeyboard::navigate(NavAction a) {
     }
 }
 
-// navigateWithClamp — calls navigate() and cancels held repeat at keyboard edges
-// so d-pad hold stops cleanly instead of flooding events at the boundary.
+// navigateWithClamp — used for held-repeat events.
+// UP/DOWN: same as navigate but stops at top/bottom row.
+// LEFT/RIGHT: clamps at the current row's edges — no row-wrap while holding.
+// This prevents the "fly through entire keyboard" behaviour on hold.
 void OnScreenKeyboard::navigateWithClamp(NavAction a) {
     int prevRow = m_row;
     int prevCol = m_col;
 
-    navigate(a);
-
-    bool atEdge = false;
-    if (a == NavAction::UP    && m_row == 0 && prevRow == 0) atEdge = true;
-    if (a == NavAction::DOWN  && m_row == NUM_ROWS - 1 && prevRow == NUM_ROWS - 1) atEdge = true;
-    if (a == NavAction::LEFT  && m_row == prevRow && m_col == 0 && prevCol == 0) atEdge = true;
-    if (a == NavAction::RIGHT) {
+    if (a == NavAction::UP) {
+        if (m_row > 0) m_row--;
+        else { m_nav->cancelHeld(); return; }
+    } else if (a == NavAction::DOWN) {
+        if (m_row < NUM_ROWS - 1) m_row++;
+        else { m_nav->cancelHeld(); return; }
+    } else if (a == NavAction::LEFT) {
+        if (m_col > 0) m_col--;
+        else { m_nav->cancelHeld(); return; }  // stop at left edge of this row
+    } else if (a == NavAction::RIGHT) {
         int cols = (int)m_rows[m_row].size();
-        if (m_row == prevRow && m_col == cols - 1 && prevCol == cols - 1) atEdge = true;
+        if (m_col < cols - 1) m_col++;
+        else { m_nav->cancelHeld(); return; }  // stop at right edge of this row
     }
 
-    if (atEdge) m_nav->cancelHeld();
+    clampSelection();
+
+    // Preserve approximate horizontal position when moving between rows
+    if (m_row != prevRow && a != NavAction::LEFT && a != NavAction::RIGHT) {
+        int prevCols = (int)m_rows[prevRow].size();
+        int newCols  = (int)m_rows[m_row].size();
+        if (prevCols > 0 && newCols > 0) {
+            float frac = (float)prevCol / (float)(prevCols - 1);
+            m_col = std::clamp((int)std::round(frac * (newCols - 1)), 0, newCols - 1);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  activateSelected — fires the currently highlighted key
 // ─────────────────────────────────────────────────────────────────────────────
+// flashKeyForChar — finds the OSK key matching the typed character and
+// stores its position + starts a 150ms highlight timer.
+// Called when physical keyboard input arrives via SDL_TEXTINPUT.
+void OnScreenKeyboard::flashKeyForChar(char c) {
+    std::string target(1, c);
+    // Search both layers (value and shiftValue)
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int col = 0; col < (int)m_rows[r].size(); ++col) {
+            const OskKey& k = m_rows[r][col];
+            if (k.value == target || k.shiftValue == target) {
+                m_flashRow = r;
+                m_flashCol = col;
+                m_flashMs  = 150;
+                return;
+            }
+        }
+    }
+    // No match (e.g. a character not on this keyboard) — clear flash
+    m_flashMs = 0;
+}
+
 void OnScreenKeyboard::activateSelected() {
     if (m_row < 0 || m_row >= NUM_ROWS) return;
     if (m_col < 0 || m_col >= (int)m_rows[m_row].size()) return;
@@ -260,6 +296,9 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
                 m_text += *inp;
             ++inp;
         }
+        // Flash the matching OSK key so physical typing feels connected
+        if (e.text.text[0] != '\0')
+            flashKeyForChar(e.text.text[0]);
         return;
     }
     if (e.type == SDL_KEYDOWN) {
@@ -291,6 +330,12 @@ void OnScreenKeyboard::update(float deltaMs) {
     } else if (held == NavAction::OPTIONS) {
         // Hold Square = hold backspace
         if (!m_text.empty()) m_text.pop_back();
+    }
+
+    // Tick down the physical-key flash timer
+    if (m_flashMs > 0) {
+        m_flashMs -= (int)deltaMs;
+        if (m_flashMs < 0) m_flashMs = 0;
     }
 
     // Cursor blink
@@ -435,7 +480,7 @@ void OnScreenKeyboard::renderTextField(int x, int y, int w) {
                                pal.textPrimary, FontSize::BODY);
 }
 
-void OnScreenKeyboard::renderKey(const SDL_Rect& r, const OskKey& key, bool selected) {
+void OnScreenKeyboard::renderKey(const SDL_Rect& r, const OskKey& key, bool selected, bool flashed) {
     const auto& pal = m_theme->palette();
 
     bool shiftActive = (m_shifted || m_capsLock);
@@ -444,7 +489,6 @@ void OnScreenKeyboard::renderKey(const SDL_Rect& r, const OskKey& key, bool sele
     // For symbol/action keys: use the layer label as-is.
     std::string lbl;
     if (!key.isAction && !key.value.empty()) {
-        // Character key — display the actual typed value as the label
         lbl = shiftActive ? key.shiftValue : key.value;
     } else {
         lbl = shiftActive ? key.shiftLabel : key.label;
@@ -455,13 +499,18 @@ void OnScreenKeyboard::renderKey(const SDL_Rect& r, const OskKey& key, bool sele
     SDL_Color bg;
     if (selected) {
         bg = pal.accent;
+    } else if (flashed) {
+        // Brief highlight when a physical keyboard key is typed — slightly
+        // lighter than the selection color so it's clearly different.
+        bg = { (Uint8)std::min(255, pal.accent.r + 60),
+               (Uint8)std::min(255, pal.accent.g + 60),
+               (Uint8)std::min(255, pal.accent.b + 60), 255 };
     } else if (key.isAction && key.label == "SHIFT" && shiftActive) {
-        // Shift key lit when shift/caps active
         bg = m_capsLock ? pal.accent : pal.accentDim;
     } else if (key.isAction && key.label == "OK") {
-        bg = { 40, 120, 80, 255 };  // green tint for OK
+        bg = { 40, 120, 80, 255 };
     } else if (key.isAction) {
-        bg = { 35, 35, 75, 255 };   // slightly lighter than bgPanel
+        bg = { 35, 35, 75, 255 };
     } else {
         bg = pal.bgCard;
     }
@@ -494,8 +543,9 @@ void OnScreenKeyboard::renderKeyboard(int x, int y, int w, int h) {
         int rowY  = startY + ri * (KEY_H + KEY_PAD);
         auto keys = computeRowRects(ri, x, rowY, w);
         for (auto& kr : keys) {
-            bool sel = (ri == m_row && kr.keyIdx == m_col);
-            renderKey(kr.rect, m_rows[ri][kr.keyIdx], sel);
+            bool sel     = (ri == m_row && kr.keyIdx == m_col);
+            bool flashed = (m_flashMs > 0 && ri == m_flashRow && kr.keyIdx == m_flashCol);
+            renderKey(kr.rect, m_rows[ri][kr.keyIdx], sel, flashed);
         }
     }
 }
