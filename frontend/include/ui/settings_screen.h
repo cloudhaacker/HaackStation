@@ -1,7 +1,9 @@
 #pragma once
 #include "controller_nav.h"
 #include "theme_engine.h"
+#include "onscreen_keyboard.h"
 #include <SDL2/SDL.h>
+#include <memory>
 #include <string>
 #include <vector>
 #include <functional>
@@ -111,11 +113,13 @@ public:
     void update(float deltaMs);
     void render();
 
-    bool wantsClose()  const { return m_wantsClose; }
-    bool wantsScrape() const { return m_wantsScrape; }
-    bool wantsRemap()  const { return m_wantsRemap; }
-    void clearScrape()       { m_wantsScrape = false; }
-    void clearRemap()        { m_wantsRemap  = false; }
+    bool wantsClose()   const { return m_wantsClose; }
+    bool wantsScrape()  const { return m_wantsScrape; }
+    bool wantsRemap()   const { return m_wantsRemap; }
+    bool wantsRaLogin() const { return m_wantsRaLogin; }
+    void clearScrape()        { m_wantsScrape  = false; }
+    void clearRemap()         { m_wantsRemap   = false; }
+    void clearRaLogin()       { m_wantsRaLogin = false; }
     void onWindowResize(int w, int h);
     bool wantsQuit()  const { return m_wantsQuit; }
     void resetClose()       { m_wantsClose = false; m_wantsQuit = false; }
@@ -132,6 +136,14 @@ private:
     ControllerNav* m_nav      = nullptr;
     HaackSettings* m_settings = nullptr;
 
+    // On-screen keyboard (modal overlay, used by RA settings tab)
+    std::unique_ptr<OnScreenKeyboard> m_osk;
+
+    // Temporary staging for RA credentials entered via OSK
+    // (copied to m_settings->raUser / raPassword only on Login action)
+    std::string m_raUsernameStaging;
+    std::string m_raPasswordStaging;
+
     std::vector<SettingTab> m_tabs;
     int  m_activeTab    = 0;
     int  m_activeItem   = 0;
@@ -140,6 +152,7 @@ private:
     bool m_wantsQuit    = false;
     bool m_wantsScrape  = false;
     bool m_wantsRemap   = false;
+    bool m_wantsRaLogin = false;   // set by Login action; cleared by app after re-init
     bool m_editingChoice = false;  // true while LEFT/RIGHT adjusts a CHOICE/SLIDER
 	int  m_windowW      = 1280;
     int  m_windowH      = 720;

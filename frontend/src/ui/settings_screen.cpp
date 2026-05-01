@@ -51,6 +51,10 @@ SettingsScreen::SettingsScreen(SDL_Renderer* renderer, ThemeEngine* theme,
     : m_renderer(renderer), m_theme(theme), m_nav(nav), m_settings(settings)
 {
     SDL_GetRendererOutputSize(renderer, &m_windowW, &m_windowH);
+    m_osk = std::make_unique<OnScreenKeyboard>(renderer, theme, nav);
+    // Pre-seed staging from saved settings so field shows current value on open
+    m_raUsernameStaging = settings->raUser;
+    m_raPasswordStaging = "";   // Never pre-populate password for security
     buildTabs();
 }
 
@@ -122,12 +126,84 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeSep());
         tab.items.push_back(makeLabel("ff_note", "Fast Forward toggle",
             "Per-game toggle option coming in per-game settings"));
+        m_tabs.push_back(tab);
+    }
+
+    // ── RetroAchievements ─────────────────────────────────────────────────────
+    {
+        SettingTab tab;
+        tab.label = "RetroAchievements";
+
+        // ── Account section ───────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("ra_acct_header", "Account",
+            m_settings->raUser.empty() ? "Not logged in"
+                                       : ("Logged in as: " + m_settings->raUser)));
+
+        tab.items.push_back(makeAction("ra_username", "Set Username",
+            m_raUsernameStaging.empty() ? "Tap to enter username" : m_raUsernameStaging,
+            [this]() {
+                m_osk->setText(m_raUsernameStaging);
+                m_osk->open("RetroAchievements Username", 64, false,
+                    [this](bool ok, const std::string& text) {
+                        if (ok) {
+                            m_raUsernameStaging = text;
+                            buildTabs(); // refresh label
+                        }
+                    });
+            }));
+
+        tab.items.push_back(makeAction("ra_password", "Set Password",
+            m_raPasswordStaging.empty() ? "Tap to enter password"
+                                        : std::string(m_raPasswordStaging.size(), '*'),
+            [this]() {
+                m_osk->open("RetroAchievements Password", 64, true,
+                    [this](bool ok, const std::string& text) {
+                        if (ok) {
+                            m_raPasswordStaging = text;
+                            buildTabs(); // refresh label
+                        }
+                    });
+            }));
+
+        tab.items.push_back(makeAction("ra_login", "Login",
+            "Save credentials and connect",
+            [this]() {
+                if (!m_raUsernameStaging.empty() && !m_raPasswordStaging.empty()) {
+                    m_settings->raUser     = m_raUsernameStaging;
+                    m_settings->raPassword = m_raPasswordStaging;
+                    m_raPasswordStaging.clear();
+                    m_wantsRaLogin = true;  // signals app.cpp to re-initialize RAManager
+                    buildTabs(); // refresh account label
+                    std::cout << "[RA Settings] Login requested for user: "
+                              << m_settings->raUser << "\n";
+                }
+            }));
+
+        tab.items.push_back(makeAction("ra_logout", "Logout",
+            "Clear saved credentials",
+            [this]() {
+                m_settings->raUser     = "";
+                m_settings->raPassword = "";
+                m_settings->raApiKey   = "";
+                m_raUsernameStaging.clear();
+                m_raPasswordStaging.clear();
+                m_wantsRaLogin = true;  // signals app.cpp to shut down RA session
+                buildTabs();
+            }));
+
         tab.items.push_back(makeSep());
-        tab.items.push_back(makeLabel("ra_section", "RetroAchievements",
-            "Achievement capture options"));
+
+        // ── Options section ───────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("ra_opts_header", "Options", ""));
+
+        tab.items.push_back(makeToggle("ra_hardcore", "Hardcore Mode",
+            "Disables save states, rewind, and cheats — unlocks Hardcore badges",
+            &m_settings->raHardcore));
+
         tab.items.push_back(makeToggle("ra_auto_screenshot", "Trophy Auto-Screenshot",
-            "Auto-capture a screenshot when an achievement unlocks",
+            "Capture a screenshot when an achievement unlocks",
             &m_settings->raAutoScreenshot));
+
         m_tabs.push_back(tab);
     }
 
@@ -236,6 +312,11 @@ void SettingsScreen::buildTabs() {
 }
 
 void SettingsScreen::handleEvent(const SDL_Event& e) {
+    // While OSK is open, it consumes all input
+    if (m_osk->isOpen()) {
+        m_osk->handleEvent(e);
+        return;
+    }
     NavAction action = m_nav->processEvent(e);
     if (action == NavAction::NONE) return;
     // SDL fires repeated SDL_KEYDOWN events while a key is held (e.key.repeat > 0).
@@ -400,6 +481,10 @@ void SettingsScreen::activateCurrentItem() {
 }
 
 void SettingsScreen::update(float /*deltaMs*/) {
+    if (m_osk->isOpen()) {
+        m_osk->update(0.f);
+        return;
+    }
     // updateHeld fires every frame so d-pad hold works even between SDL events
     NavAction held = m_nav->updateHeld(SDL_GetTicks());
     if (held != NavAction::NONE) navigateAction(held, true);
@@ -439,6 +524,9 @@ void SettingsScreen::render() {
 
     renderTab(m_tabs[m_activeTab]);
     m_theme->drawFooterHints(m_windowW, m_windowH, "Select / Toggle", "");
+
+    // OSK renders on top of everything when open
+    if (m_osk->isOpen()) m_osk->render();
 }
 
 void SettingsScreen::renderTab(const SettingTab& tab) {

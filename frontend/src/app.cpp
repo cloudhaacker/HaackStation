@@ -861,6 +861,30 @@ void HaackApp::update(float deltaMs) {
             if (m_settings->wantsQuit()) {
                 applySettings();
                 m_running = false;
+            } else if (m_settings->wantsRaLogin()) {
+                m_settings->clearRaLogin();
+                // Re-initialize RAManager with whatever is now in m_haackSettings.
+                // If raUser is empty (logout), shutdown() disables RA cleanly.
+                if (m_ra) {
+                    m_ra->shutdown();
+                    if (!m_haackSettings.raUser.empty()) {
+                        m_ra->setRenderer(m_renderer);
+                        m_ra->setTheme(m_theme.get());
+                        m_ra->setAutoScreenshot(m_haackSettings.raAutoScreenshot);
+                        m_ra->setTokenSaveCallback([this](const std::string& token) {
+                            saveRaToken(token);
+                        });
+                        m_ra->initialize(m_haackSettings.raUser,
+                                          m_haackSettings.raApiKey,
+                                          m_haackSettings.raPassword);
+                        // Clear raw password from settings now that RAManager
+                        // has it — the session token saved by the callback is
+                        // used for future logins, so the password is not needed.
+                        m_haackSettings.raPassword = "";
+                    }
+                    SettingsManager mgr;
+                    mgr.save(m_haackSettings);
+                }
             } else if (m_settings->wantsScrape()) {
                 m_settings->clearScrape();
                 applySettings();
