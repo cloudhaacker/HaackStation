@@ -120,6 +120,10 @@ public:
     void clearScrape()        { m_wantsScrape  = false; }
     void clearRemap()         { m_wantsRemap   = false; }
     void clearRaLogin()       { m_wantsRaLogin = false; }
+    // Called by app.cpp after the async RA login callback fires.
+    // success=true  → show "Logged in as: X"
+    // success=false → show "Login failed" and restore "Not logged in" label
+    void notifyLoginResult(bool success);
     void onWindowResize(int w, int h);
     bool wantsQuit()  const { return m_wantsQuit; }
     void resetClose()       { m_wantsClose = false; m_wantsQuit = false; }
@@ -152,7 +156,8 @@ private:
     bool m_wantsQuit    = false;
     bool m_wantsScrape  = false;
     bool m_wantsRemap   = false;
-    bool m_wantsRaLogin = false;   // set by Login action; cleared by app after re-init
+    bool m_wantsRaLogin  = false;   // set by Login action; cleared by app after re-init
+    bool m_raLoginPending = false;  // true while waiting for async login callback
     bool m_editingChoice = false;  // true while LEFT/RIGHT adjusts a CHOICE/SLIDER
 	int  m_windowW      = 1280;
     int  m_windowH      = 720;

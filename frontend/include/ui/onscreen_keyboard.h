@@ -129,6 +129,7 @@ private:
 
     void clampSelection();
     void navigate(NavAction a);
+    void navigateWithClamp(NavAction a);  // navigate + cancelHeld at edges
     void activateSelected();
 
     // ── Text state ────────────────────────────────────────────────────────────

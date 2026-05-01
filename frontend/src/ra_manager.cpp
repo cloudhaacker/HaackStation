@@ -532,6 +532,8 @@ bool RAManager::initialize(const std::string& username,
                     std::cerr << "[RA] Login failed: "
                               << (errorMessage ? errorMessage : "unknown") << "\n";
                     std::cerr << "[RA] Check ra_user and ra_password in config\n";
+                    if (self->m_loginFailCallback)
+                        self->m_loginFailCallback();
                 }
             }, this);
     } else if (!tokenOrKey.empty()) {
@@ -549,6 +551,8 @@ bool RAManager::initialize(const std::string& username,
                     std::cerr << "[RA] Token login failed: "
                               << (errorMessage ? errorMessage : "unknown") << "\n";
                     std::cerr << "[RA] Add ra_password to config for fresh login\n";
+                    if (self->m_loginFailCallback)
+                        self->m_loginFailCallback();
                 }
             }, this);
     } else {

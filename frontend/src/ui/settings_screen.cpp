@@ -63,6 +63,16 @@ void SettingsScreen::onWindowResize(int w, int h) {
     m_windowH = h;
 }
 
+void SettingsScreen::notifyLoginResult(bool success) {
+    m_raLoginPending = false;
+    if (!success) {
+        // Login failed — clear the user we wrote so the tab shows "Not logged in"
+        m_settings->raUser     = "";
+        m_settings->raPassword = "";
+    }
+    buildTabs(); // refresh Account label with final state
+}
+
 void SettingsScreen::buildTabs() {
     m_tabs.clear();
 
@@ -136,6 +146,7 @@ void SettingsScreen::buildTabs() {
 
         // ── Account section ───────────────────────────────────────────────────
         tab.items.push_back(makeLabel("ra_acct_header", "Account",
+            m_raLoginPending   ? "Connecting..." :
             m_settings->raUser.empty() ? "Not logged in"
                                        : ("Logged in as: " + m_settings->raUser)));
 
@@ -172,7 +183,8 @@ void SettingsScreen::buildTabs() {
                     m_settings->raUser     = m_raUsernameStaging;
                     m_settings->raPassword = m_raPasswordStaging;
                     m_raPasswordStaging.clear();
-                    m_wantsRaLogin = true;  // signals app.cpp to re-initialize RAManager
+                    m_wantsRaLogin  = true;
+                    m_raLoginPending = true;   // show "Connecting..." until result arrives
                     buildTabs(); // refresh account label
                     std::cout << "[RA Settings] Login requested for user: "
                               << m_settings->raUser << "\n";
@@ -187,6 +199,7 @@ void SettingsScreen::buildTabs() {
                 m_settings->raApiKey   = "";
                 m_raUsernameStaging.clear();
                 m_raPasswordStaging.clear();
+                m_raLoginPending = false;
                 m_wantsRaLogin = true;  // signals app.cpp to shut down RA session
                 buildTabs();
             }));
@@ -480,9 +493,9 @@ void SettingsScreen::activateCurrentItem() {
     }
 }
 
-void SettingsScreen::update(float /*deltaMs*/) {
+void SettingsScreen::update(float deltaMs) {
     if (m_osk->isOpen()) {
-        m_osk->update(0.f);
+        m_osk->update(deltaMs);
         return;
     }
     // updateHeld fires every frame so d-pad hold works even between SDL events

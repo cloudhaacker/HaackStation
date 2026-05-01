@@ -153,6 +153,26 @@ void OnScreenKeyboard::navigate(NavAction a) {
     }
 }
 
+// navigateWithClamp — calls navigate() and cancels held repeat at keyboard edges
+// so d-pad hold stops cleanly instead of flooding events at the boundary.
+void OnScreenKeyboard::navigateWithClamp(NavAction a) {
+    int prevRow = m_row;
+    int prevCol = m_col;
+
+    navigate(a);
+
+    bool atEdge = false;
+    if (a == NavAction::UP    && m_row == 0 && prevRow == 0) atEdge = true;
+    if (a == NavAction::DOWN  && m_row == NUM_ROWS - 1 && prevRow == NUM_ROWS - 1) atEdge = true;
+    if (a == NavAction::LEFT  && m_row == prevRow && m_col == 0 && prevCol == 0) atEdge = true;
+    if (a == NavAction::RIGHT) {
+        int cols = (int)m_rows[m_row].size();
+        if (m_row == prevRow && m_col == cols - 1 && prevCol == cols - 1) atEdge = true;
+    }
+
+    if (atEdge) m_nav->cancelHeld();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  activateSelected — fires the currently highlighted key
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,7 +225,6 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
     if (!m_open) return;
 
     NavAction a = m_nav->processEvent(e);
-    if (a == NavAction::NONE) a = m_nav->updateHeld(SDL_GetTicks());
 
     if (a == NavAction::BACK) {
         // B / Circle — cancel without confirming
@@ -224,7 +243,7 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
 
     if (a == NavAction::UP || a == NavAction::DOWN ||
         a == NavAction::LEFT || a == NavAction::RIGHT) {
-        navigate(a);
+        navigateWithClamp(a);
         return;
     }
 
@@ -263,6 +282,18 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
 // ─────────────────────────────────────────────────────────────────────────────
 void OnScreenKeyboard::update(float deltaMs) {
     if (!m_open) return;
+
+    // Drive d-pad hold-to-scroll — same pattern as SettingsScreen / GameBrowser
+    NavAction held = m_nav->updateHeld(SDL_GetTicks());
+    if (held == NavAction::UP || held == NavAction::DOWN ||
+        held == NavAction::LEFT || held == NavAction::RIGHT) {
+        navigateWithClamp(held);
+    } else if (held == NavAction::OPTIONS) {
+        // Hold Square = hold backspace
+        if (!m_text.empty()) m_text.pop_back();
+    }
+
+    // Cursor blink
     m_cursorBlinkMs += (Uint32)deltaMs;
     if (m_cursorBlinkMs >= 530) {
         m_cursorBlinkMs = 0;
@@ -408,7 +439,16 @@ void OnScreenKeyboard::renderKey(const SDL_Rect& r, const OskKey& key, bool sele
     const auto& pal = m_theme->palette();
 
     bool shiftActive = (m_shifted || m_capsLock);
-    const std::string& lbl = shiftActive ? key.shiftLabel : key.label;
+
+    // For character keys: show lowercase label when unshifted, uppercase when shifted.
+    // For symbol/action keys: use the layer label as-is.
+    std::string lbl;
+    if (!key.isAction && !key.value.empty()) {
+        // Character key — display the actual typed value as the label
+        lbl = shiftActive ? key.shiftValue : key.value;
+    } else {
+        lbl = shiftActive ? key.shiftLabel : key.label;
+    }
 
     // Background
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);

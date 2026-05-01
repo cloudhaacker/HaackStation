@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <atomic>
 #include "settings_screen.h"
 #include "scrape_screen.h"
 #include "game_scraper.h"
@@ -125,6 +126,10 @@ private:
     // flushSaveRAM() writes to this path; empty string = no game running.
     std::string m_activeCardPath;
     Uint32      m_memcardFlushTimer = 0;          // ms accumulator
+
+    // Async RA login result: -1=pending, 0=failed, 1=success.
+    // Set by the login callback thread; polled on main thread in SETTINGS update.
+    std::shared_ptr<std::atomic<int>> m_pendingLoginResult;
     static constexpr Uint32 MEMCARD_FLUSH_INTERVAL_MS = 30000; // flush every 30s
 
     // Session playtime tracking — set when a game launches, used on stopGame()

@@ -82,6 +82,10 @@ public:
     void setTokenSaveCallback(std::function<void(const std::string&)> cb) {
         m_tokenSaveCallback = cb;
     }
+    // Called when login fails — lets app.cpp notify the settings screen.
+    void setLoginFailCallback(std::function<void()> cb) {
+        m_loginFailCallback = cb;
+    }
     void shutdown();
     bool isLoggedIn() const { return m_loggedIn; }
 
@@ -116,6 +120,7 @@ public:
 	bool takePendingTrophyScreenshot() {
         if (m_trophyShotCountdown == 0) return false;
         if (SDL_GetTicks() < m_trophyShotCountdown) return false;  // still waiting
+        m_trophyShotCountdown = 0;  // reset so we only fire once
         captureTrophyScreenshot(m_pendingShotAchId, m_pendingShotTitle);
         return true;
     }
@@ -195,7 +200,8 @@ public:
 
     static RAManager* s_instance;
 
-private:
+    // Queue a notification popup (achievement unlock or system message like login).
+    // Safe to call from app.cpp — e.g. login success notification.
     void queueNotification(const AchievementInfo& achievement);
     void captureTrophyScreenshot(uint32_t achId, const std::string& achTitle);
     void processHttpRequest(const std::string& url,
@@ -222,6 +228,7 @@ private:
     std::string       m_password;
     std::string       m_sessionToken;
     std::function<void(const std::string&)> m_tokenSaveCallback;
+    std::function<void()>                   m_loginFailCallback;
     std::string       m_badgeDir    = "media/badges/";
 
     RAGameInfo        m_gameInfo;

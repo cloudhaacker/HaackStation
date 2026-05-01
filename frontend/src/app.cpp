@@ -28,6 +28,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <fstream>
+#include <atomic>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -871,16 +872,52 @@ void HaackApp::update(float deltaMs) {
                         m_ra->setRenderer(m_renderer);
                         m_ra->setTheme(m_theme.get());
                         m_ra->setAutoScreenshot(m_haackSettings.raAutoScreenshot);
-                        m_ra->setTokenSaveCallback([this](const std::string& token) {
+
+                        // Shared flag so the async callback can signal the main thread.
+                        // -1 = pending, 0 = failed, 1 = success
+                        auto loginResult = std::make_shared<std::atomic<int>>(-1);
+                        std::string loginUser = m_haackSettings.raUser;
+
+                        m_ra->setTokenSaveCallback([this, loginResult, loginUser]
+                                                   (const std::string& token) {
                             saveRaToken(token);
+                            loginResult->store(1);  // success — callback reached = logged in
                         });
+
+                        m_ra->setLoginFailCallback([loginResult]() {
+                            loginResult->store(0);  // failure
+                        });
+
                         m_ra->initialize(m_haackSettings.raUser,
                                           m_haackSettings.raApiKey,
                                           m_haackSettings.raPassword);
-                        // Clear raw password from settings now that RAManager
-                        // has it — the session token saved by the callback is
-                        // used for future logins, so the password is not needed.
                         m_haackSettings.raPassword = "";
+
+                        // Poll the result on the main thread each frame until it resolves.
+                        // Store the pending check as a lambda we run in the SETTINGS update.
+                        m_pendingLoginResult = loginResult;
+
+                    } else {
+                        // Logout path — immediately notify settings
+                        if (m_settings) m_settings->notifyLoginResult(true);
+                    }
+                    SettingsManager mgr;
+                    mgr.save(m_haackSettings);
+                }
+            } else if (m_pendingLoginResult) {
+                int result = m_pendingLoginResult->load();
+                if (result != -1) {
+                    bool ok = (result == 1);
+                    m_pendingLoginResult = nullptr;
+                    if (m_settings) m_settings->notifyLoginResult(ok);
+                    if (ok) {
+                        // Queue a "logged in" notification — same system as achievements
+                        AchievementInfo loginNotif;
+                        loginNotif.id    = 0;
+                        loginNotif.title = "Logged in to RetroAchievements";
+                        loginNotif.description = "Welcome back, " + m_haackSettings.raUser + "!";
+                        loginNotif.points = 0;
+                        if (m_ra) m_ra->queueNotification(loginNotif);
                     }
                     SettingsManager mgr;
                     mgr.save(m_haackSettings);
