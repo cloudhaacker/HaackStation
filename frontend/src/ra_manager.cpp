@@ -520,12 +520,14 @@ bool RAManager::initialize(const std::string& username,
                 if (result == RC_OK) {
                     std::cout << "[RA] Logged in successfully\n";
                     self->m_loggedIn = true;
-                    // Queue login notification
+                    // Hold the login notification — it will be injected when
+                    // the first game loads so both panels appear together.
                     AchievementInfo loginNotif;
                     loginNotif.id          = UINT32_MAX;
                     loginNotif.title       = "Logged in as " + self->m_username;
                     loginNotif.description = "RetroAchievements connected";
-                    self->queueNotification(loginNotif);
+                    self->m_pendingLoginNotif    = loginNotif;
+                    self->m_hasPendingLoginNotif = true;
                     const rc_client_user_t* user = rc_client_get_user_info(client);
                     if (user && user->token && strlen(user->token) > 0) {
                         self->m_sessionToken = user->token;
@@ -551,12 +553,14 @@ bool RAManager::initialize(const std::string& username,
                 if (result == RC_OK) {
                     std::cout << "[RA] Logged in with token\n";
                     self->m_loggedIn = true;
-                    // Queue login notification so user sees RA is connected
+                    // Hold the login notification — injected when the first
+                    // game loads so both panels appear together.
                     AchievementInfo loginNotif;
                     loginNotif.id          = UINT32_MAX;
                     loginNotif.title       = "Logged in as " + self->m_username;
                     loginNotif.description = "RetroAchievements connected";
-                    self->queueNotification(loginNotif);
+                    self->m_pendingLoginNotif    = loginNotif;
+                    self->m_hasPendingLoginNotif = true;
                 } else {
                     std::cerr << "[RA] Token login failed: "
                               << (errorMessage ? errorMessage : "unknown") << "\n";
@@ -828,29 +832,23 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
 void RAManager::queueNotification(const AchievementInfo& achievement) {
     std::cout << "[RA] Queuing notification: " << achievement.title << "\n";
     Uint32 showUntil = SDL_GetTicks() + (Uint32)NOTIFY_DURATION_MS;
+    std::lock_guard<std::mutex> lock(m_notifyMutex);
+    // When the game-load notification arrives, inject the held login notification
+    // first so both panels enter together from frame 0 of their slide-in.
+    if (achievement.id == 0 && m_hasPendingLoginNotif) {
+        UnlockNotification loginN;
+        loginN.achievement = m_pendingLoginNotif;
+        loginN.showUntil   = showUntil;
+        loginN.slideAnim   = 0.f;
+        loginN.sliding_in  = true;
+        m_notifications.push_back(loginN);
+        m_hasPendingLoginNotif = false;
+    }
     UnlockNotification n;
     n.achievement = achievement;
     n.showUntil   = showUntil;
     n.slideAnim   = 0.f;
     n.sliding_in  = true;
-    std::lock_guard<std::mutex> lock(m_notifyMutex);
-    // When the game-load notification arrives, sync any existing login notification
-    // to the same showUntil. Without this, login was queued at boot and has only
-    // a second or two left on its timer by the time the game finishes loading —
-    // so it barely appears before sliding off.
-    if (achievement.id == 0) {
-        for (auto& existing : m_notifications) {
-            if (existing.achievement.id == UINT32_MAX) {
-                // Restart the login notification's slide-in in sync with the
-                // game-load notification. Without this, login is mid-animation
-                // at a random slideAnim value when the game notification arrives,
-                // causing the two panels to slide in out of phase.
-                existing.showUntil  = showUntil;
-                existing.slideAnim  = 0.f;
-                existing.sliding_in = true;
-            }
-        }
-    }
     m_notifications.push_back(n);
 }
 

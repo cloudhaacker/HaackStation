@@ -23,6 +23,7 @@
 
 #define RC_CLIENT_UNKNOWN_GAME_ID (uint32_t)-1
 #define RC_CLIENT_RECENT_UNLOCK_DELAY_SECONDS (10 * 60) /* ten minutes */
+#define RC_CLIENT_ACHIEVEMENT_WARNING_ID 101000001
 
 #define RC_MINIMUM_UNPAUSED_FRAMES 20
 #define RC_PAUSE_DECAY_MULTIPLIER 4
@@ -240,7 +241,7 @@ static void rc_client_log_message_va(const rc_client_t* client, const char* form
     char buffer[2048];
 
 #ifdef __STDC_SECURE_LIB__
-    vsprintf_s(buffer, sizeof(buffer), format, args);
+    vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, format, args);
 #elif __STDC_VERSION__ >= 199901L /* vsnprintf requires c99 */
     vsnprintf(buffer, sizeof(buffer), format, args);
 #else /* c89 doesn't have a size-limited vsprintf function - assume the buffer is large enough */
@@ -934,6 +935,11 @@ static void rc_client_subset_get_user_game_summary(const rc_client_t* client,
   for (; achievement < stop; ++achievement) {
     switch (achievement->public_.category) {
       case RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE:
+        if (achievement->public_.id >= RC_CLIENT_ACHIEVEMENT_WARNING_ID) {
+          /* ignore warning achievements */
+          continue;
+        }
+
         ++summary->num_core_achievements;
         summary->points_core += achievement->public_.points;
 
@@ -4606,6 +4612,11 @@ static void rc_client_award_achievement(rc_client_t* client, rc_client_achieveme
 
   rc_mutex_unlock(&client->state.mutex);
 
+  if (achievement->public_.id >= RC_CLIENT_ACHIEVEMENT_WARNING_ID) {
+    RC_CLIENT_LOG_INFO_FORMATTED(client, "Unlocked warning achievement %u: %s", achievement->public_.id, achievement->public_.title);
+    return;
+  }
+
   if (client->callbacks.can_submit_achievement_unlock &&
       !client->callbacks.can_submit_achievement_unlock(achievement->public_.id, client)) {
     RC_CLIENT_LOG_INFO_FORMATTED(client, "Achievement %u unlock blocked by client", achievement->public_.id);
@@ -5809,9 +5820,6 @@ static void rc_client_update_memref_values(rc_client_t* client) {
       modified_memref_list = modified_memref_list->next;
     } while (modified_memref_list);
   }
-
-  if (client->game->runtime.richpresence && client->game->runtime.richpresence->richpresence)
-    rc_update_values(client->game->runtime.richpresence->richpresence->values, client->state.legacy_peek, client);
 
   if (invalidated_memref)
     rc_client_update_active_achievements(client->game);

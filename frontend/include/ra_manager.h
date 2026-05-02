@@ -261,6 +261,11 @@ private:
     // which path produced this gameId).
     std::string m_loadingPath;
 
+    // Login notification held here until the first game loads, so it slides in
+    // together with the game-load notification rather than appearing solo at boot.
+    bool            m_hasPendingLoginNotif = false;
+    AchievementInfo m_pendingLoginNotif;
+
     // Unlock notification queue
     std::mutex                    m_notifyMutex;
     std::vector<UnlockNotification> m_notifications;
