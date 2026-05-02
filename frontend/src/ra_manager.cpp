@@ -827,12 +827,30 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
 // ─── Notifications ────────────────────────────────────────────────────────────
 void RAManager::queueNotification(const AchievementInfo& achievement) {
     std::cout << "[RA] Queuing notification: " << achievement.title << "\n";
+    Uint32 showUntil = SDL_GetTicks() + (Uint32)NOTIFY_DURATION_MS;
     UnlockNotification n;
     n.achievement = achievement;
-    n.showUntil   = SDL_GetTicks() + (Uint32)NOTIFY_DURATION_MS;
+    n.showUntil   = showUntil;
     n.slideAnim   = 0.f;
     n.sliding_in  = true;
     std::lock_guard<std::mutex> lock(m_notifyMutex);
+    // When the game-load notification arrives, sync any existing login notification
+    // to the same showUntil. Without this, login was queued at boot and has only
+    // a second or two left on its timer by the time the game finishes loading —
+    // so it barely appears before sliding off.
+    if (achievement.id == 0) {
+        for (auto& existing : m_notifications) {
+            if (existing.achievement.id == UINT32_MAX) {
+                // Restart the login notification's slide-in in sync with the
+                // game-load notification. Without this, login is mid-animation
+                // at a random slideAnim value when the game notification arrives,
+                // causing the two panels to slide in out of phase.
+                existing.showUntil  = showUntil;
+                existing.slideAnim  = 0.f;
+                existing.sliding_in = true;
+            }
+        }
+    }
     m_notifications.push_back(n);
 }
 
