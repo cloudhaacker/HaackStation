@@ -574,6 +574,11 @@ bool RAManager::initialize(const std::string& username,
 void RAManager::shutdown() {
     unloadGame();
     if (m_client) {
+        // rc_client_unload_game should be called before rc_client_destroy.
+        // We do it here at shutdown rather than in unloadGame() — between game
+        // sessions, skipping it avoids disrupting rcheevos async state and
+        // allows begin_identify_and_load_game to fire correctly on the next game.
+        rc_client_unload_game(m_client);
         rc_client_destroy(m_client);
         m_client = nullptr;
     }
@@ -700,8 +705,12 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
 }
 
 void RAManager::unloadGame() {
-    if (m_client && m_gameLoaded)
-        rc_client_unload_game(m_client);
+    // Do NOT call rc_client_unload_game() here — it disrupts rcheevos internal
+    // async state in a way that prevents the next begin_identify_and_load_game
+    // callback from firing correctly (rc_client_get_game_info returns null after
+    // a fresh begin_identify call on the second game load).
+    // rc_client_begin_identify_and_load_game handles implicit game replacement.
+    // rc_client_unload_game is called in shutdown() before rc_client_destroy.
     m_gameLoaded = false;
     m_gameInfo   = RAGameInfo{};
     m_core       = nullptr;
@@ -845,13 +854,20 @@ void RAManager::render(int screenW, int screenH) {
     const auto& pal = m_theme->palette();
     int notifY = screenH - NOTIFY_H - 20;
 
-    for (auto& n : m_notifications) {
-        if (n.slideAnim <= 0.f) continue;
-        // Slide from right: at slideAnim=1 the panel is flush to the right edge.
+    // Two-pass render so login notifications always appear ABOVE game-load/unlock
+    // notifications, regardless of queue insertion order:
+    //   Pass 1 — game-load (id==0) and achievement unlocks  → rendered at bottom
+    //   Pass 2 — login success (id==UINT32_MAX)             → rendered above them
+    // notifY starts at the bottom and advances upward each panel.
+    SDL_Color gold   = { 255, 215, 0,   255 };
+    SDL_Color raBlue = { 32,  144, 255, 255 };
+
+    auto renderNotif = [&](UnlockNotification& n) {
+        if (n.slideAnim <= 0.f) return;
         int slideX = (int)((1.f - n.slideAnim) * (NOTIFY_W + 8));
-        int x = screenW - NOTIFY_W + slideX;
-        int y = notifY;
-        int panelW = screenW - x;  // extends flush to right screen edge
+        int x      = screenW - NOTIFY_W + slideX;
+        int y      = notifY;
+        int panelW = screenW - x;
 
         // Background
         SDL_Rect panel = { x, y, panelW, NOTIFY_H };
@@ -861,19 +877,16 @@ void RAManager::render(int screenW, int screenH) {
         SDL_RenderFillRect(m_renderer, &panel);
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-        // RA gold accent border on left edge of panel
+        // Default gold border (overridden below for login)
         SDL_SetRenderDrawColor(m_renderer, 255, 215, 0, 255);
         SDL_Rect border = { x, y, 4, NOTIFY_H };
         SDL_RenderFillRect(m_renderer, &border);
 
-        SDL_Color gold   = { 255, 215, 0,   255 };
-        SDL_Color raBlue = { 32,  144, 255, 255 };
-
-        // Clip text to panel bounds so long titles don't overflow
+        // Clip text to panel bounds
         SDL_Rect clip = { x + 4, y, panelW - 8, NOTIFY_H };
         SDL_RenderSetClipRect(m_renderer, &clip);
 
-        // ── Icon / badge ─────────────────────────────────────────────────────
+        // Icon / badge
         int textX = x + 12;
         if (!n.achievement.badgeLocalPath.empty() &&
             fs::exists(n.achievement.badgeLocalPath)) {
@@ -888,11 +901,10 @@ void RAManager::render(int screenW, int screenH) {
             }
         }
 
-        // Game-loaded notification (id == 0) vs login notification vs achievement unlock
         if (n.achievement.id == UINT32_MAX) {
-            // Login success notification — green accent
+            // Login success — green accent
             SDL_SetRenderDrawColor(m_renderer, 60, 200, 100, 255);
-            SDL_RenderFillRect(m_renderer, &border);  // override gold border with green
+            SDL_RenderFillRect(m_renderer, &border);
             m_theme->drawText("RetroAchievements",
                 textX, y + 8, SDL_Color{60,200,100,255}, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -900,6 +912,7 @@ void RAManager::render(int screenW, int screenH) {
             m_theme->drawText(n.achievement.description,
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         } else if (n.achievement.id == 0) {
+            // Game loaded — blue accent
             m_theme->drawText("RetroAchievements",
                 textX, y + 8, raBlue, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -907,6 +920,7 @@ void RAManager::render(int screenW, int screenH) {
             m_theme->drawText(n.achievement.description,
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         } else {
+            // Achievement unlock — gold accent
             m_theme->drawText("Achievement Unlocked!",
                 textX, y + 8, gold, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -915,9 +929,19 @@ void RAManager::render(int screenW, int screenH) {
                 textX, y + 52, pal.textSecond, FontSize::TINY);
         }
 
-        SDL_RenderSetClipRect(m_renderer, nullptr);  // restore clip
-
+        SDL_RenderSetClipRect(m_renderer, nullptr);
         notifY -= NOTIFY_H + 8;
+    };
+
+    // Pass 1: game-load (id==0) and achievement unlocks (bottom slots)
+    for (auto& n : m_notifications) {
+        if (n.achievement.id != UINT32_MAX)
+            renderNotif(n);
+    }
+    // Pass 2: login notifications (above everything else)
+    for (auto& n : m_notifications) {
+        if (n.achievement.id == UINT32_MAX)
+            renderNotif(n);
     }
 }
 

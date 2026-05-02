@@ -157,23 +157,25 @@ void OnScreenKeyboard::navigate(NavAction a) {
 }
 
 // navigateWithClamp — used for held-repeat events.
-// UP/DOWN: same as navigate but stops at top/bottom row.
-// LEFT/RIGHT: clamps within the current row — when the edge is hit,
-// wraps to the adjacent row (same as a single press would) but then
-// clamps immediately so the next hold tick starts from the new row edge.
-// This prevents "fly through the whole keyboard" while still letting
-// the user move between rows by holding through an edge naturally.
+// UP/DOWN: stops silently at top/bottom row (no cancelHeld — that would kill
+//   the held state entirely, preventing movement once you hit an edge).
+// LEFT/RIGHT: clamps within the current row. cancelHeld() at L/R edge is
+//   still correct — you don't want to accidentally leave the row.
 void OnScreenKeyboard::navigateWithClamp(NavAction a) {
     if (a == NavAction::UP) {
-        if (m_row > 0) m_row--;
-        else { m_nav->cancelHeld(); return; }
-        clampSelection();
-        m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
+        if (m_row > 0) {
+            m_row--;
+            clampSelection();
+            m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
+        }
+        // At top row: do nothing — silent stop, held state stays alive
     } else if (a == NavAction::DOWN) {
-        if (m_row < NUM_ROWS - 1) m_row++;
-        else { m_nav->cancelHeld(); return; }
-        clampSelection();
-        m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
+        if (m_row < NUM_ROWS - 1) {
+            m_row++;
+            clampSelection();
+            m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
+        }
+        // At bottom row: do nothing — silent stop, held state stays alive
     } else if (a == NavAction::LEFT) {
         // Held: hard stop at left edge of current row — no wrap
         if (m_col > 0) m_col--;
