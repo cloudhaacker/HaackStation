@@ -29,6 +29,7 @@
 #include <map>
 #include <functional>
 #include <mutex>
+#include <ctime>
 
 // rcheevos rc_client API — included directly so all rc_client_* function
 // prototypes are visible to every translation unit that includes this header.
@@ -50,6 +51,7 @@ struct AchievementInfo {
     uint32_t    points      = 0;
     bool        unlocked    = false;
     bool        hardcore    = false;
+    time_t      unlockTime  = 0;    // Unix timestamp of unlock; 0 = never unlocked
     SDL_Texture* badge      = nullptr; // Loaded badge texture (not used by TrophyRoom)
 };
 
@@ -85,6 +87,12 @@ public:
     // Called when login fails — lets app.cpp notify the settings screen.
     void setLoginFailCallback(std::function<void()> cb) {
         m_loginFailCallback = cb;
+    }
+    // Null out all callbacks before shutdown so in-flight HTTP requests
+    // that fire after rc_client_destroy don't call into dead app memory.
+    void clearCallbacks() {
+        m_tokenSaveCallback = nullptr;
+        m_loginFailCallback = nullptr;
     }
     void shutdown();
     bool isLoggedIn() const { return m_loggedIn; }
@@ -203,6 +211,8 @@ public:
     // Queue a notification popup (achievement unlock or system message like login).
     // Safe to call from app.cpp — e.g. login success notification.
     void queueNotification(const AchievementInfo& achievement);
+
+private:
     void captureTrophyScreenshot(uint32_t achId, const std::string& achTitle);
     void processHttpRequest(const std::string& url,
                              const std::string& postData,

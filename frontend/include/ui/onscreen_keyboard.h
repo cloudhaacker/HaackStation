@@ -145,6 +145,16 @@ private:
     Uint32 m_cursorBlinkMs = 0;
     bool   m_cursorVisible = true;
 
+    // Physical keyboard flash — briefly highlights the matching OSK key when
+    // the user types via a real keyboard so the visual stays connected.
+    int m_flashRow = -1;
+    int m_flashCol = -1;
+    int m_flashMs  = 0;   // countdown in ms; 0 = no flash active
+
+    // True while the user is typing via physical keyboard.
+    // Controller selection highlight is suppressed until d-pad is used again.
+    bool m_physicalKeyboardActive = false;
+
     // ── Rendering ─────────────────────────────────────────────────────────────
     SDL_Renderer* m_renderer = nullptr;
     ThemeEngine*  m_theme    = nullptr;
@@ -172,7 +182,8 @@ private:
     void renderTextField(int x, int y, int w);
     void renderKeyboard(int x, int y, int w, int h);
     void renderFooter(const SDL_Rect& ov);
-    void renderKey(const SDL_Rect& r, const OskKey& key, bool selected);
+    void renderKey(const SDL_Rect& r, const OskKey& key, bool selected, bool flashed = false);
+    void flashKeyForChar(char c);
 
     // Button hint textures (loaded lazily from assets/osk/)
     SDL_Texture* m_texCross   = nullptr;

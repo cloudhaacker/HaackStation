@@ -16,8 +16,9 @@ enum class NavAction {
     UP, DOWN, LEFT, RIGHT,  // D-pad / left stick
     CONFIRM,                // A / Cross
     BACK,                   // B / Circle
-    MENU,                   // Start / Options  
-    OPTIONS,                // Y / Triangle — context menu
+    MENU,                   // Start
+    OPTIONS,                // X / Square — context action (OmniSave, OSK backspace, etc.)
+    FAVORITE,               // Y / Triangle — toggle favorite in game browser
     PAGE_UP,                // L1/L2
     PAGE_DOWN,              // R1/R2
     SHOULDER_L,             // L1

@@ -520,6 +520,12 @@ bool RAManager::initialize(const std::string& username,
                 if (result == RC_OK) {
                     std::cout << "[RA] Logged in successfully\n";
                     self->m_loggedIn = true;
+                    // Queue login notification
+                    AchievementInfo loginNotif;
+                    loginNotif.id          = UINT32_MAX;
+                    loginNotif.title       = "Logged in as " + self->m_username;
+                    loginNotif.description = "RetroAchievements connected";
+                    self->queueNotification(loginNotif);
                     const rc_client_user_t* user = rc_client_get_user_info(client);
                     if (user && user->token && strlen(user->token) > 0) {
                         self->m_sessionToken = user->token;
@@ -532,8 +538,6 @@ bool RAManager::initialize(const std::string& username,
                     std::cerr << "[RA] Login failed: "
                               << (errorMessage ? errorMessage : "unknown") << "\n";
                     std::cerr << "[RA] Check ra_user and ra_password in config\n";
-                    if (self->m_loginFailCallback)
-                        self->m_loginFailCallback();
                 }
             }, this);
     } else if (!tokenOrKey.empty()) {
@@ -547,12 +551,16 @@ bool RAManager::initialize(const std::string& username,
                 if (result == RC_OK) {
                     std::cout << "[RA] Logged in with token\n";
                     self->m_loggedIn = true;
+                    // Queue login notification so user sees RA is connected
+                    AchievementInfo loginNotif;
+                    loginNotif.id          = UINT32_MAX;
+                    loginNotif.title       = "Logged in as " + self->m_username;
+                    loginNotif.description = "RetroAchievements connected";
+                    self->queueNotification(loginNotif);
                 } else {
                     std::cerr << "[RA] Token login failed: "
                               << (errorMessage ? errorMessage : "unknown") << "\n";
                     std::cerr << "[RA] Add ra_password to config for fresh login\n";
-                    if (self->m_loginFailCallback)
-                        self->m_loginFailCallback();
                 }
             }, this);
     } else {
@@ -720,6 +728,7 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
             info.description = ach->description ? ach->description : "";
             info.points      = ach->points;
             info.unlocked    = true;
+            info.unlockTime  = time(nullptr);  // record the moment of unlock
 
             // Suppress unofficial / void / test achievements — they are not
             // real unlocks and should never show as notifications or be cached.
@@ -778,7 +787,8 @@ void RAManager::handleEvent(const rc_client_event_t* event) {
                 if (it != m_cachedAchievementsMap.end()) {
                     for (auto& cached : it->second) {
                         if (cached.id == info.id) {
-                            cached.unlocked = true;
+                            cached.unlocked   = true;
+                            cached.unlockTime = time(nullptr);
                             break;
                         }
                     }
@@ -878,8 +888,18 @@ void RAManager::render(int screenW, int screenH) {
             }
         }
 
-        // Game-loaded notification (id == 0) vs achievement unlock
-        if (n.achievement.id == 0) {
+        // Game-loaded notification (id == 0) vs login notification vs achievement unlock
+        if (n.achievement.id == UINT32_MAX) {
+            // Login success notification — green accent
+            SDL_SetRenderDrawColor(m_renderer, 60, 200, 100, 255);
+            SDL_RenderFillRect(m_renderer, &border);  // override gold border with green
+            m_theme->drawText("RetroAchievements",
+                textX, y + 8, SDL_Color{60,200,100,255}, FontSize::SMALL);
+            m_theme->drawText(n.achievement.title,
+                textX, y + 28, pal.textPrimary, FontSize::BODY);
+            m_theme->drawText(n.achievement.description,
+                textX, y + 52, pal.textSecond, FontSize::TINY);
+        } else if (n.achievement.id == 0) {
             m_theme->drawText("RetroAchievements",
                 textX, y + 8, raBlue, FontSize::SMALL);
             m_theme->drawText(n.achievement.title,
@@ -985,6 +1005,7 @@ std::vector<AchievementInfo> RAManager::getAchievements() const {
             info.description = a->description ? a->description : "";
             info.points      = a->points;
             info.unlocked    = (a->state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED);
+            info.unlockTime  = (info.unlocked && a->unlock_time) ? (time_t)a->unlock_time : 0;
             result.push_back(info);
         }
     }
@@ -1014,6 +1035,7 @@ std::vector<AchievementInfo> RAManager::getAchievementsWithBadgePaths() const {
             info.description = a->description ? a->description : "";
             info.points      = a->points;
             info.unlocked    = (a->state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED);
+            info.unlockTime  = (info.unlocked && a->unlock_time) ? (time_t)a->unlock_time : 0;
 
             if (a->badge_name && strlen(a->badge_name) > 0) {
                 std::string name = a->badge_name;
@@ -1176,6 +1198,7 @@ void RAManager::saveGameAchievementsToDisk(uint32_t gameId) {
         f << "      \"description\": \""        << jsonEscape(a.description) << "\",\n";
         f << "      \"points\": "               << a.points << ",\n";
         f << "      \"unlocked\": "             << (a.unlocked ? "true" : "false") << ",\n";
+        f << "      \"unlockTime\": "           << (long long)a.unlockTime << ",\n";
         f << "      \"hardcore\": "             << (a.hardcore ? "true" : "false") << ",\n";
         f << "      \"badgeLocalPath\": \""     << jsonEscape(a.badgeLocalPath) << "\",\n";
         f << "      \"badgeLockLocalPath\": \"" << jsonEscape(a.badgeLockLocalPath) << "\"\n";
@@ -1220,6 +1243,20 @@ static uint32_t jsonU32(const std::string& json, const std::string& key) {
     pos++;
     while (pos < json.size() && (json[pos]==' '||json[pos]=='\t')) pos++;
     uint32_t val = 0;
+    while (pos < json.size() && json[pos]>='0' && json[pos]<='9')
+        val = val*10 + (json[pos++]-'0');
+    return val;
+}
+
+static int64_t jsonInt64(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return 0;
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return 0;
+    pos++;
+    while (pos < json.size() && (json[pos]==' '||json[pos]=='\t')) pos++;
+    int64_t val = 0;
     while (pos < json.size() && json[pos]>='0' && json[pos]<='9')
         val = val*10 + (json[pos++]-'0');
     return val;
@@ -1298,6 +1335,7 @@ void RAManager::loadAllCachedGamesFromDisk() {
                     a.description        = jsonStr(obj,"description");
                     a.points             = jsonU32(obj,"points");
                     a.unlocked           = jsonBool(obj,"unlocked");
+                    a.unlockTime         = (time_t)jsonInt64(obj,"unlockTime");
                     a.hardcore           = jsonBool(obj,"hardcore");
                     a.badgeLocalPath     = jsonStr(obj,"badgeLocalPath");
                     a.badgeLockLocalPath = jsonStr(obj,"badgeLockLocalPath");

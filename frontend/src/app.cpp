@@ -251,8 +251,20 @@ void HaackApp::shutdown() {
     SettingsManager settingsMgr;
     settingsMgr.save(m_haackSettings);
 
+    // Clear the pending login result immediately so no callback fires
+    // during teardown and touches partially-destroyed state.
+    m_pendingLoginResult = nullptr;
+
+    // Shut down RA first — before renderer/window are destroyed.
+    // Clear callbacks before rc_client_destroy so any in-flight HTTP
+    // requests that fire after destroy don't call into dead app memory.
+    if (m_ra) {
+        m_ra->clearCallbacks();
+        m_ra->shutdown();
+        m_ra.reset();
+    }
+
     if (m_core && m_core->isGameLoaded()) {
-        // Flush memcard before unload so in-game saves aren't lost on exit.
         if (!m_activeCardPath.empty())
             m_core->flushSaveRAM(m_activeCardPath);
         m_core->unloadGame();
@@ -913,10 +925,10 @@ void HaackApp::update(float deltaMs) {
                     if (ok) {
                         // Queue a "logged in" notification — same system as achievements
                         AchievementInfo loginNotif;
-                        loginNotif.id    = 0;
-                        loginNotif.title = "Logged in to RetroAchievements";
-                        loginNotif.description = "Welcome back, " + m_haackSettings.raUser + "!";
-                        loginNotif.points = 0;
+                        loginNotif.id          = UINT32_MAX; // sentinel: login notification
+                        loginNotif.title       = "Logged in as " + m_haackSettings.raUser;
+                        loginNotif.description = "RetroAchievements connected";
+                        loginNotif.points      = 0;
                         if (m_ra) m_ra->queueNotification(loginNotif);
                     }
                     SettingsManager mgr;

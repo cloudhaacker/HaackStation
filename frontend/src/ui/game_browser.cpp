@@ -130,7 +130,7 @@ void GameBrowser::handleEvent(const SDL_Event& e) {
     }
 
     // X button (SDL_CONTROLLER_BUTTON_X) = Details Panel
-    // Y button handled via NavAction::OPTIONS = Favorite toggle
+    // Y / Triangle handled via NavAction::FAVORITE = Favorite toggle
     if (e.type == SDL_CONTROLLERBUTTONDOWN &&
         e.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
         m_wantsDetails = true;
@@ -237,8 +237,8 @@ void GameBrowser::moveSelection(NavAction action, bool isRepeat) {
             break;
         }
 
-        case NavAction::OPTIONS:
-            // Y button = toggle favorite
+        case NavAction::FAVORITE:
+            // Y / Triangle = toggle favorite
             m_wantsFavoriteToggle = true;
             break;
 

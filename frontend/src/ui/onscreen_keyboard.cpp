@@ -84,6 +84,10 @@ void OnScreenKeyboard::open(const std::string& prompt, int maxLen,
     m_wantsClose = false;
     m_cursorBlinkMs = 0;
     m_cursorVisible = true;
+    m_physicalKeyboardActive = false;
+    m_flashRow = -1;
+    m_flashCol = -1;
+    m_flashMs  = 0;
 
     if (!m_assetsLoaded) loadAssets();
 
@@ -154,37 +158,31 @@ void OnScreenKeyboard::navigate(NavAction a) {
 
 // navigateWithClamp — used for held-repeat events.
 // UP/DOWN: same as navigate but stops at top/bottom row.
-// LEFT/RIGHT: clamps at the current row's edges — no row-wrap while holding.
-// This prevents the "fly through entire keyboard" behaviour on hold.
+// LEFT/RIGHT: clamps within the current row — when the edge is hit,
+// wraps to the adjacent row (same as a single press would) but then
+// clamps immediately so the next hold tick starts from the new row edge.
+// This prevents "fly through the whole keyboard" while still letting
+// the user move between rows by holding through an edge naturally.
 void OnScreenKeyboard::navigateWithClamp(NavAction a) {
-    int prevRow = m_row;
-    int prevCol = m_col;
-
     if (a == NavAction::UP) {
         if (m_row > 0) m_row--;
         else { m_nav->cancelHeld(); return; }
+        clampSelection();
+        m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
     } else if (a == NavAction::DOWN) {
         if (m_row < NUM_ROWS - 1) m_row++;
         else { m_nav->cancelHeld(); return; }
+        clampSelection();
+        m_col = std::clamp(m_col, 0, (int)m_rows[m_row].size() - 1);
     } else if (a == NavAction::LEFT) {
+        // Held: hard stop at left edge of current row — no wrap
         if (m_col > 0) m_col--;
-        else { m_nav->cancelHeld(); return; }  // stop at left edge of this row
+        else m_nav->cancelHeld();
     } else if (a == NavAction::RIGHT) {
+        // Held: hard stop at right edge of current row — no wrap
         int cols = (int)m_rows[m_row].size();
         if (m_col < cols - 1) m_col++;
-        else { m_nav->cancelHeld(); return; }  // stop at right edge of this row
-    }
-
-    clampSelection();
-
-    // Preserve approximate horizontal position when moving between rows
-    if (m_row != prevRow && a != NavAction::LEFT && a != NavAction::RIGHT) {
-        int prevCols = (int)m_rows[prevRow].size();
-        int newCols  = (int)m_rows[m_row].size();
-        if (prevCols > 0 && newCols > 0) {
-            float frac = (float)prevCol / (float)(prevCols - 1);
-            m_col = std::clamp((int)std::round(frac * (newCols - 1)), 0, newCols - 1);
-        }
+        else m_nav->cancelHeld();
     }
 }
 
@@ -279,6 +277,7 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
 
     if (a == NavAction::UP || a == NavAction::DOWN ||
         a == NavAction::LEFT || a == NavAction::RIGHT) {
+        m_physicalKeyboardActive = false;   // d-pad used — restore controller highlight
         navigateWithClamp(a);
         return;
     }
@@ -290,6 +289,7 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
 
     // Keyboard text input (physical keyboard support)
     if (e.type == SDL_TEXTINPUT) {
+        m_physicalKeyboardActive = true;
         const char* inp = e.text.text;
         while (*inp) {
             if (m_maxLen == 0 || (int)m_text.size() < m_maxLen)
@@ -302,6 +302,7 @@ void OnScreenKeyboard::handleEvent(const SDL_Event& e) {
         return;
     }
     if (e.type == SDL_KEYDOWN) {
+        m_physicalKeyboardActive = true;
         if (e.key.keysym.sym == SDLK_BACKSPACE && !m_text.empty()) {
             m_text.pop_back();
         } else if (e.key.keysym.sym == SDLK_RETURN || e.key.keysym.sym == SDLK_KP_ENTER) {
@@ -326,6 +327,7 @@ void OnScreenKeyboard::update(float deltaMs) {
     NavAction held = m_nav->updateHeld(SDL_GetTicks());
     if (held == NavAction::UP || held == NavAction::DOWN ||
         held == NavAction::LEFT || held == NavAction::RIGHT) {
+        m_physicalKeyboardActive = false;
         navigateWithClamp(held);
     } else if (held == NavAction::OPTIONS) {
         // Hold Square = hold backspace
@@ -543,7 +545,9 @@ void OnScreenKeyboard::renderKeyboard(int x, int y, int w, int h) {
         int rowY  = startY + ri * (KEY_H + KEY_PAD);
         auto keys = computeRowRects(ri, x, rowY, w);
         for (auto& kr : keys) {
-            bool sel     = (ri == m_row && kr.keyIdx == m_col);
+            // Suppress controller highlight while user is typing from physical keyboard.
+            // It comes back the moment d-pad is touched.
+            bool sel     = !m_physicalKeyboardActive && (ri == m_row && kr.keyIdx == m_col);
             bool flashed = (m_flashMs > 0 && ri == m_flashRow && kr.keyIdx == m_flashCol);
             renderKey(kr.rect, m_rows[ri][kr.keyIdx], sel, flashed);
         }

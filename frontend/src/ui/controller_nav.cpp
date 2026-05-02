@@ -170,7 +170,7 @@ NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
         case SDL_CONTROLLER_BUTTON_B:             return NavAction::BACK;
         case SDL_CONTROLLER_BUTTON_X:             return NavAction::OPTIONS;
         case SDL_CONTROLLER_BUTTON_START:         return NavAction::MENU;
-        case SDL_CONTROLLER_BUTTON_Y:             return NavAction::NONE;
+        case SDL_CONTROLLER_BUTTON_Y:             return NavAction::FAVORITE;
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return NavAction::SHOULDER_L;
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return NavAction::SHOULDER_R;
         default: return NavAction::NONE;
@@ -188,8 +188,8 @@ NavAction ControllerNav::sdlButtonToAction(SDL_GameControllerButton btn) const {
 // Controller face button mapping:
 //   A (Cross)      → NavAction::CONFIRM
 //   B (Circle)     → NavAction::BACK
-//   X (Square)     → NavAction::OPTIONS  (context action — e.g. "Save Here" in OmniSave)
-//   Y (Triangle)   → NavAction::NONE     (unmapped — was OPTIONS before Session 24)
+//   X (Square)     → NavAction::OPTIONS  (context action — e.g. "Save Here" in OmniSave, backspace in OSK)
+//   Y (Triangle)   → NavAction::FAVORITE (toggle favorite in game browser)
 //   Start          → NavAction::MENU
 //
 // APP-LEVEL SHORTCUTS (intercepted in app.cpp BEFORE this function):

@@ -2,8 +2,44 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 namespace fs = std::filesystem;
+
+// ─── formatUnlockTime ─────────────────────────────────────────────────────────
+// Returns a friendly relative string for display in the detail strip.
+// e.g. "Today", "Yesterday", "3 days ago", "Apr 12", "Apr 12 2024"
+static std::string formatUnlockTime(time_t t) {
+    if (t == 0) return "";
+
+    time_t now = time(nullptr);
+    double diff = difftime(now, t);
+
+    // Convert both to local calendar days for "today/yesterday" detection
+    struct tm unlockTm = *localtime(&t);
+    struct tm nowTm    = *localtime(&now);
+
+    bool sameYear = (unlockTm.tm_year == nowTm.tm_year);
+    int daysDiff  = (int)(diff / 86400.0);
+
+    if (daysDiff == 0 && unlockTm.tm_yday == nowTm.tm_yday && sameYear)
+        return "Today";
+    if (daysDiff <= 1 && unlockTm.tm_yday == nowTm.tm_yday - 1 && sameYear)
+        return "Yesterday";
+    if (daysDiff < 7)
+        return std::to_string(daysDiff) + " days ago";
+
+    // Older — show "Mon DD" or "Mon DD YYYY"
+    static const char* months[] = {
+        "Jan","Feb","Mar","Apr","May","Jun",
+        "Jul","Aug","Sep","Oct","Nov","Dec"
+    };
+    std::string s = std::string(months[unlockTm.tm_mon])
+                  + " " + std::to_string(unlockTm.tm_mday);
+    if (!sameYear)
+        s += " " + std::to_string(1900 + unlockTm.tm_year);
+    return s;
+}
 
 // ─── Construction / destruction ───────────────────────────────────────────────
 TrophyRoom::TrophyRoom(SDL_Renderer* renderer, ThemeEngine* theme,
@@ -630,8 +666,16 @@ void TrophyRoom::renderDetailStrip() {
         SDL_Color gold = { 255, 210, 60, 255 };
         std::string ptsStr = std::to_string(entry.info.points) + " pts";
         m_theme->drawTextCentered(ptsStr, ptsX + 55, badgeY + 12, gold, FontSize::BODY);
-        m_theme->drawTextCentered("UNLOCKED",
-            ptsX + 55, badgeY + 38, SDL_Color{80,200,120,255}, FontSize::TINY);
+
+        // Show unlock timestamp if we have one, otherwise just "UNLOCKED"
+        std::string timeStr = formatUnlockTime(entry.info.unlockTime);
+        if (!timeStr.empty()) {
+            m_theme->drawTextCentered(timeStr,
+                ptsX + 55, badgeY + 38, SDL_Color{80,200,120,255}, FontSize::TINY);
+        } else {
+            m_theme->drawTextCentered("UNLOCKED",
+                ptsX + 55, badgeY + 38, SDL_Color{80,200,120,255}, FontSize::TINY);
+        }
     } else {
         m_theme->drawTextCentered(std::to_string(entry.info.points) + " pts",
             ptsX + 55, badgeY + 12, pal.textDisable, FontSize::BODY);
