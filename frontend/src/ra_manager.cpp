@@ -635,6 +635,15 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
             }
             // result == RC_OK — game identified and loaded successfully
             const rc_client_game_t* game = rc_client_get_game_info(client);
+            if (!game) {
+                // This can happen if rc_client_unload_game() was called between
+                // sessions and disrupted rcheevos internal state. We no longer
+                // call unload_game between sessions (only in shutdown), so this
+                // should not occur. Log it if it does for diagnosis.
+                std::cerr << "[RA] RC_OK but get_game_info returned null — "
+                          << "rcheevos state may have been disrupted\n";
+                return;
+            }
             if (game) {
                 self->m_gameInfo.id        = game->id;
                 self->m_gameInfo.title     = game->title       ? game->title       : "";
@@ -714,8 +723,10 @@ void RAManager::unloadGame() {
     m_gameLoaded = false;
     m_gameInfo   = RAGameInfo{};
     m_core       = nullptr;
-    std::lock_guard<std::mutex> lock(m_notifyMutex);
-    m_notifications.clear();
+    // Do NOT clear notifications here — let them expire via showUntil so they
+    // slide off cleanly. Hard-clearing causes the login or game-load notification
+    // to vanish mid-animation when the user loads a second game in the same session.
+    // Achievement unlocks are 5 s max and will be long gone before the next game loads.
 }
 
 // ─── Per-frame ────────────────────────────────────────────────────────────────
@@ -832,8 +843,15 @@ void RAManager::update(float deltaMs) {
         if (n.sliding_in) {
             n.slideAnim += deltaMs / NOTIFY_ANIM_MS;
             if (n.slideAnim >= 1.f) { n.slideAnim = 1.f; n.sliding_in = false; }
-        } else if ((float)(n.showUntil - now) < NOTIFY_ANIM_MS && now < n.showUntil) {
-            n.slideAnim = (float)(n.showUntil - now) / NOTIFY_ANIM_MS;
+        } else if (now < n.showUntil) {
+            // Still within display window — begin slide-out when close to expiry
+            float remaining = (float)(n.showUntil - now);
+            if (remaining < NOTIFY_ANIM_MS)
+                n.slideAnim = remaining / NOTIFY_ANIM_MS;
+        } else {
+            // Past showUntil — drive slideAnim to 0 so the erase condition fires
+            n.slideAnim -= deltaMs / NOTIFY_ANIM_MS;
+            if (n.slideAnim < 0.f) n.slideAnim = 0.f;
         }
     }
     m_notifications.erase(
