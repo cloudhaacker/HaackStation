@@ -1223,9 +1223,34 @@ void HaackApp::launchGame(const std::string& path) {
     // We point it at the MemCardManager's directory so the .srm file the core
     // writes lands in the same place OmniSave looks for .mcr files.
     // prepareSlot1() creates the blank card file if it doesn't exist yet.
+    //
+    // Per-game memcard mode must be resolved HERE — before prepareSlot1() —
+    // because slotPath() uses the current mode to compute the card filename.
+    // applyPerGameSettings() runs after loadGame() which is too late.
     {
         const GameEntry* ge = m_browser->selectedGameEntry();
         std::string serial  = (ge && !ge->serial.empty()) ? ge->serial : "";
+
+        // Apply per-game memcard mode override before choosing the card path.
+        // We do a lightweight load here (idempotent); applyPerGameSettings()
+        // will re-load the same config shortly after and handle the other overrides.
+        {
+            PerGameSettings pgs;
+            pgs.load(serial, path);
+            const GameOverrides& ov = pgs.overrides();
+            if (ov.overrideMemCard) {
+                MemCardMode mode = (ov.memCardSlot == 1)
+                    ? MemCardMode::PER_GAME
+                    : MemCardMode::SHARED;
+                m_memCards->setMode(mode);
+                std::cout << "[HaackStation] Memcard mode (per-game override): "
+                          << (mode == MemCardMode::PER_GAME ? "PER_GAME" : "SHARED") << "\n";
+            } else {
+                // No override — fall back to global default (SHARED).
+                m_memCards->setMode(MemCardMode::SHARED);
+            }
+        }
+
         m_memCards->prepareSlot1(serial);
         std::string saveDir = m_memCards->saveDirectory(serial);
         fs::create_directories(saveDir);
@@ -1281,7 +1306,7 @@ void HaackApp::launchGame(const std::string& path) {
         // ── Apply per-game settings ───────────────────────────────────────────
         // Load and apply any per-game overrides (resolution, shader, etc.)
         // This must happen after the core is loaded and game path is set.
-        applyPerGameSettings(path, ""); // serial detection can be added later
+        applyPerGameSettings(path, m_currentGameSerial);
 
         // ── Initialise rewind buffer for this game ─────────────────────────
         if (m_rewind) {
@@ -1397,6 +1422,12 @@ void HaackApp::applyPerGameSettings(const std::string& gamePath,
         std::cout << "[PerGame] Texture replacement override: "
                   << (ov.textureReplacement ? "on" : "off") << "\n";
 
+    // Memory card mode is applied earlier in launchGame() (before prepareSlot1),
+    // so we just log the state here for confirmation.
+    if (ov.overrideMemCard)
+        std::cout << "[PerGame] Memcard mode override: "
+                  << (ov.memCardSlot == 1 ? "per-game" : "shared") << " (applied at launch)\n";
+
     std::cout << "[PerGame] Applied overrides for: " << gamePath << "\n";
 }
 
@@ -1410,6 +1441,10 @@ void HaackApp::revertPerGameSettings() {
     int resIdx = std::max(0, std::min(m_haackSettings.internalRes, 4));
     if (m_core && m_core->isCoreLoaded())
         m_core->setCoreOption("beetle_psx_hw_internal_resolution", resOpts[resIdx]);
+
+    // Reset memcard mode to global default so the next game launch starts clean.
+    if (m_memCards)
+        m_memCards->setMode(MemCardMode::SHARED);
 
     m_perGameSettings.clear();
     std::cout << "[PerGame] Reverted to global settings\n";

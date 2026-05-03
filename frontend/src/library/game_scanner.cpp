@@ -333,6 +333,11 @@ ScanResult GameScanner::scanDirectoryInternal(const std::string& dirPath) {
         entry.title        = info.displayName;
         entry.format       = info.format;
         entry.coverArtPath = findCoverArt(info.displayName, info.path);
+        entry.serial       = DiscFormats::readSerial(info.path);
+        if (!entry.serial.empty())
+            std::cout << "[Scanner] Serial detected: " << entry.serial << " for " << info.displayName << "\n";
+        else
+            std::cout << "[Scanner] Serial not detected for " << info.displayName << "\n";
 
         result.games.push_back(std::move(entry));
     }
@@ -369,10 +374,15 @@ std::unordered_set<std::string> GameScanner::buildSuppressedSet(
         m3uEntry.isMultiDisc = true;
         m3uEntry.discCount   = static_cast<int>(info.m3uDiscs.size());
         m3uEntry.coverArtPath = findCoverArt(info.displayName, info.path);
+        // Read serial from first disc in playlist (same disc for all entries)
+        m3uEntry.serial      = DiscFormats::readSerial(info.path);
 
         std::cout << "[GameScanner] Multi-disc game: \""
                   << m3uEntry.title << "\" ("
                   << m3uEntry.discCount << " discs)\n";
+        if (!m3uEntry.serial.empty())
+            std::cout << "[Scanner] Serial detected: " << m3uEntry.serial
+                      << " for " << m3uEntry.title << "\n";
 
         m3uEntries.push_back(std::move(m3uEntry));
     }

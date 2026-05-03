@@ -44,6 +44,12 @@ public:
     // True if this extension could be a PS1 disc image
     static bool isDiscExtension(const std::string& ext);
 
+    // Read the PS1 serial (e.g. "SCUS-94255") directly from the disc image
+    // by parsing SYSTEM.CNF at sector 23 of track 1.
+    // Returns empty string if detection fails (unreadable, not PS1, etc.)
+    // Supports BIN/CUE, CHD (requires HAVE_LIBCHDR), ISO, and M3U (first disc).
+    static std::string readSerial(const std::string& path);
+
 private:
     static DiscInfo validateIso(const std::string& path);
     static DiscInfo validateBinCue(const std::string& path);
