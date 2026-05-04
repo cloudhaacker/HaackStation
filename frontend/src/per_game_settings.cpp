@@ -57,7 +57,6 @@ bool PerGameSettings::load(const std::string& gameSerial,
             else if (key == "texture_replace")   boolVal(m_overrides.textureReplacement, m_overrides.overrideTextures);
             else if (key == "ai_upscaling")      boolVal(m_overrides.aiUpscaling,       m_overrides.overrideAiUpscaling);
             else if (key == "audio_replace")     boolVal(m_overrides.audioReplacement,  m_overrides.overrideAudioReplace);
-            else if (key == "memcard_slot")      intVal(m_overrides.memCardSlot,        m_overrides.overrideMemCard);
         }
 
         m_loaded = true;
@@ -96,8 +95,6 @@ void PerGameSettings::save(const std::string& gameSerial,
         f << "ai_upscaling=" << (overrides.aiUpscaling ? "true" : "false") << "\n";
     if (overrides.overrideAudioReplace)
         f << "audio_replace=" << (overrides.audioReplacement ? "true" : "false") << "\n";
-    if (overrides.overrideMemCard)
-        f << "memcard_slot=" << overrides.memCardSlot << "\n";
 
     std::cout << "[PerGame] Saved config: " << path << "\n";
 }

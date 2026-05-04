@@ -7,8 +7,6 @@
 //   - Enable texture replacement for Crash Bandicoot but not FF7
 //   - Use CRT shader for some games, sharp bilinear for others
 //   - Different internal resolution per game
-//   - Game-specific memory card slot assignment
-//
 // Settings are stored as simple INI-style files:
 //   saves/per_game/SCUS-94900.cfg
 //
@@ -37,13 +35,11 @@ struct GameOverrides {
     bool  audioReplacement      = false;
 
     // Memory card
-    bool  overrideMemCard       = false;
-    int   memCardSlot           = 0;   // 0 = shared, 1 = per-game
 
     bool hasAnyOverride() const {
         return overrideRenderer || overrideResolution || overrideShader ||
                overrideTextures || overrideAiUpscaling ||
-               overrideAudioReplace || overrideMemCard;
+               overrideAudioReplace;
     }
 };
 

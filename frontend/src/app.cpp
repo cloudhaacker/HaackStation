@@ -186,8 +186,7 @@ void HaackApp::init() {
     // ── MemCardManager + OmniSave ─────────────────────────────────────────────
     m_memCards = std::make_unique<MemCardManager>();
     m_memCards->setBaseDir("memcards/");
-    m_memCards->setMode(MemCardMode::SHARED); // default: one shared card
-
+	m_memCards->setMode(MemCardMode::PER_GAME); // default: each game gets its own card
     m_omniSave = std::make_unique<OmniSaveVault>(
         m_renderer, m_theme.get(), m_nav.get(),
         m_saveStates.get(), m_memCards.get());
@@ -1231,25 +1230,10 @@ void HaackApp::launchGame(const std::string& path) {
         const GameEntry* ge = m_browser->selectedGameEntry();
         std::string serial  = (ge && !ge->serial.empty()) ? ge->serial : "";
 
-        // Apply per-game memcard mode override before choosing the card path.
-        // We do a lightweight load here (idempotent); applyPerGameSettings()
-        // will re-load the same config shortly after and handle the other overrides.
-        {
-            PerGameSettings pgs;
-            pgs.load(serial, path);
-            const GameOverrides& ov = pgs.overrides();
-            if (ov.overrideMemCard) {
-                MemCardMode mode = (ov.memCardSlot == 1)
-                    ? MemCardMode::PER_GAME
-                    : MemCardMode::SHARED;
-                m_memCards->setMode(mode);
-                std::cout << "[HaackStation] Memcard mode (per-game override): "
-                          << (mode == MemCardMode::PER_GAME ? "PER_GAME" : "SHARED") << "\n";
-            } else {
-                // No override — fall back to global default (SHARED).
-                m_memCards->setMode(MemCardMode::SHARED);
-            }
-        }
+        // PER_GAME is the global default — every game gets its own isolated .mcr.
+        // Mode was already set at init; assert it here so launchGame is self-contained.
+        m_memCards->setMode(MemCardMode::PER_GAME);
+        std::cout << "[HaackStation] Memcard mode: PER_GAME\n";
 
         m_memCards->prepareSlot1(serial);
         std::string saveDir = m_memCards->saveDirectory(serial);
@@ -1424,9 +1408,7 @@ void HaackApp::applyPerGameSettings(const std::string& gamePath,
 
     // Memory card mode is applied earlier in launchGame() (before prepareSlot1),
     // so we just log the state here for confirmation.
-    if (ov.overrideMemCard)
-        std::cout << "[PerGame] Memcard mode override: "
-                  << (ov.memCardSlot == 1 ? "per-game" : "shared") << " (applied at launch)\n";
+
 
     std::cout << "[PerGame] Applied overrides for: " << gamePath << "\n";
 }
@@ -1444,8 +1426,8 @@ void HaackApp::revertPerGameSettings() {
 
     // Reset memcard mode to global default so the next game launch starts clean.
     if (m_memCards)
-        m_memCards->setMode(MemCardMode::SHARED);
-
+        m_memCards->setMode(MemCardMode::PER_GAME);
+	
     m_perGameSettings.clear();
     std::cout << "[PerGame] Reverted to global settings\n";
 }
