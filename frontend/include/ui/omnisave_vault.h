@@ -51,6 +51,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <functional>
 
 // ─── PS1 memory card save entry ───────────────────────────────────────────────
 // Parsed from a .mcr directory block (128 bytes per entry, starting at byte 128)
@@ -107,6 +108,15 @@ public:
     bool consumeCardReload() {
         if (m_wantsCardReload) { m_wantsCardReload = false; return true; }
         return false;
+    }
+	
+    // Callbacks for SRAM protection during state loads.
+    // App sets these before open() so the vault can flush/reload the card
+    // independently of the core pointer.
+    void setSramCallbacks(std::function<void()> flush,
+                          std::function<void()> reload) {
+        m_sramFlush  = std::move(flush);
+        m_sramReload = std::move(reload);
     }
 
 private:
@@ -171,6 +181,10 @@ private:
     bool m_wantsClose  = false;
     bool m_saveWritten = false;
 	bool m_wantsCardReload = false;
+	
+    // SRAM protection callbacks — set once at init by app.cpp	
+    std::function<void()> m_sramFlush;   // flush core SRAM → active .mcr
+    std::function<void()> m_sramReload;  // reload active .mcr → core SRAM
 
     int m_w = 1280;
     int m_h = 720;

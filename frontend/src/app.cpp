@@ -190,6 +190,10 @@ void HaackApp::init() {
     m_omniSave = std::make_unique<OmniSaveVault>(
         m_renderer, m_theme.get(), m_nav.get(),
         m_saveStates.get(), m_memCards.get());
+    m_omniSave->setSramCallbacks(
+        [this]() { if (m_core->isGameLoaded()) m_core->flushSaveRAM(m_activeCardPath); },
+        [this]() { if (m_core->isGameLoaded()) m_core->loadSaveRAM(m_activeCardPath); }
+    );
 
     // Play history — load from disk and pass to browser
     m_playHistory = std::make_unique<PlayHistory>();

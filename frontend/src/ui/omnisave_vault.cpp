@@ -510,8 +510,15 @@ void OmniSaveVault::doLoadAction() {
     const SaveSlot& sel = m_slots[m_stateSel];
     if (!sel.exists || sel.slotNumber == -2) return;
 
+    // Card saves are sacred: flush SRAM → disk before the state load so any
+    // in-game card writes made since OmniSave opened aren't lost. After the
+    // state restores game CPU/GPU state, reload the card from disk so the
+    // core's SRAM buffer reflects the on-disk card (not the state snapshot).
+    if (m_sramFlush)  m_sramFlush();
+
     if (m_saves->loadState(sel.slotNumber)) {
         std::cout << "[OmniSave] Loaded slot " << sel.slotNumber << "\n";
+        if (m_sramReload) m_sramReload();
         m_wantsClose = true;  // return to game after successful load
     }
 }
