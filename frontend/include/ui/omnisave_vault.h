@@ -101,6 +101,13 @@ public:
         if (m_saveWritten) { m_saveWritten = false; return true; }
         return false;
     }
+	
+    // Returns true and clears flag if the user confirmed a card reload.
+    // App should call flushSaveRAM → loadSaveRAM on its active card path.
+    bool consumeCardReload() {
+        if (m_wantsCardReload) { m_wantsCardReload = false; return true; }
+        return false;
+    }
 
 private:
     // ── Data loading ──────────────────────────────────────────────────────────
@@ -163,6 +170,7 @@ private:
 
     bool m_wantsClose  = false;
     bool m_saveWritten = false;
+	bool m_wantsCardReload = false;
 
     int m_w = 1280;
     int m_h = 720;

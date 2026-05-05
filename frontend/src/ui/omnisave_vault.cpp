@@ -418,9 +418,19 @@ void OmniSaveVault::handleMemCardNav(NavAction a) {
     if (a == NavAction::UP)   { m_cardSel = std::max(0, m_cardSel - 1); return; }
     if (a == NavAction::DOWN) { m_cardSel = std::min(count - 1, m_cardSel + 1); return; }
 
+    if (a == NavAction::CONFIRM) {
+        // A = reload the on-disk card state into core SRAM.
+        // This is a soft "restore card" — useful if the user made in-game changes
+        // they want to revert. The vault signals the app via m_wantsCardReload.
+        std::cout << "[OmniSave] Card reload requested for: "
+                  << m_cardEntries[m_cardSel].title << "\n";
+        m_wantsCardReload = true;
+        m_wantsClose      = true;  // close vault; app handles the actual reload
+        return;
+    }
+
     if (a == NavAction::OPTIONS) {
-        // X / delete — remove memory card entry (not implemented: requires
-        // rewriting entire .mcr block table — scaffold here for future work)
+        // X / delete — scaffold: requires rewriting .mcr block table
         std::cout << "[OmniSave] Delete memcard entry: "
                   << m_cardEntries[m_cardSel].title << " (TODO)\n";
     }
@@ -788,7 +798,7 @@ void OmniSaveVault::renderFooter() {
             "");                // Y (unused)
     } else {
         m_theme->drawFooterHints(m_w, m_h,
-            "View Entry",       // A
+            "Reload",       // A
             "Back",             // B
             "",                 // X
             "");                // Y

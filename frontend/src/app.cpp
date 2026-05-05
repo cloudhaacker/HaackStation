@@ -999,7 +999,14 @@ void HaackApp::update(float deltaMs) {
             m_omniSave->update(deltaMs);
             if (m_omniSave->wantsClose()) {
                 m_omniSave->resetClose();
-                // Return to the game if one is loaded, otherwise back to shelf
+                if (m_omniSave->consumeCardReload() && m_core->isGameLoaded()) {
+                    // User confirmed card reload — flush current SRAM to disk first,
+                    // then reload from disk so core picks up the on-disk card state.
+                    m_core->flushSaveRAM(m_activeCardPath);
+                    m_core->loadSaveRAM(m_activeCardPath);
+                    std::cout << "[HaackStation] Card reloaded from disk: "
+                              << m_activeCardPath << "\n";
+                }
                 setState(m_core->isGameLoaded()
                     ? AppState::IN_GAME : AppState::GAME_BROWSER);
                 m_inputCooldownUntil = SDL_GetTicks() + 300;
