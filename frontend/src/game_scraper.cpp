@@ -119,20 +119,29 @@ std::string GameScraper::buildApiUrl(const std::string& gameName,
     url += "&regioneid=21";
     url += "&langeid=en";
 
-    std::string searchName = serial.empty() ? gameName : serial;
-    std::string encoded;
-    for (unsigned char c : searchName) {
+    // Encode the game name for fallback romnom search
+    std::string encodedName;
+    for (unsigned char c : gameName) {
         if (isalnum(c) || c == '-' || c == '_' || c == '.') {
-            encoded += (char)c;
+            encodedName += (char)c;
         } else if (c == ' ') {
-            encoded += "%20";
+            encodedName += "%20";
         } else {
             char hex[4];
             snprintf(hex, sizeof(hex), "%%%02X", c);
-            encoded += hex;
+            encodedName += hex;
         }
     }
-    url += "&romnom=" + encoded;
+
+    if (!serial.empty()) {
+        // Use serialnum for precise matching — more reliable than romnom
+        // ScreenScraper changed behaviour: passing serial as romnom now
+        // returns wrong cross-platform results.
+        url += "&serialnum=" + serial;
+        url += "&romnom=" + encodedName;  // include name as hint
+    } else {
+        url += "&romnom=" + encodedName;
+    }
     return url;
 }
 
