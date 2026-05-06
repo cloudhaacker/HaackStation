@@ -279,7 +279,36 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         MemCardEntry entry;
         entry.productCode = std::string(productBuf);
         entry.identifier  = std::string(identBuf);
-        entry.title       = title.empty() ? entry.productCode : title;
+
+        // Strip serial prefix from title if present (e.g. "BASLUS-00553ALUND" → "ALUND")
+        // Some PS1 saves bake the product code into the start of the title field.
+        std::string cleanTitle = title;
+        if (!cleanTitle.empty() && !entry.productCode.empty()) {
+            // Try stripping "BA" + productCode prefix (e.g. "BASCUS-94900")
+            std::string baPrefix = "BA" + entry.productCode;
+            if (cleanTitle.size() > baPrefix.size() &&
+                cleanTitle.compare(0, baPrefix.size(), baPrefix) == 0) {
+                cleanTitle = cleanTitle.substr(baPrefix.size());
+            }
+            // Also try plain productCode prefix (e.g. "SCUS-94900CRASH")
+            else if (cleanTitle.size() > entry.productCode.size() &&
+                     cleanTitle.compare(0, entry.productCode.size(), entry.productCode) == 0) {
+                cleanTitle = cleanTitle.substr(entry.productCode.size());
+            }
+        }
+        // Trim any leading spaces left after prefix strip
+        size_t firstChar = cleanTitle.find_first_not_of(' ');
+        if (firstChar != std::string::npos)
+            cleanTitle = cleanTitle.substr(firstChar);
+
+        // Title priority: decoded Shift-JIS → shelf game title → product code
+        if (!cleanTitle.empty())
+            entry.title = cleanTitle;
+        else if (!m_gameTitle.empty())
+            entry.title = m_gameTitle;   // fall back to shelf title
+        else
+            entry.title = entry.productCode;
+
         entry.blocksUsed  = blocksUsed;
         entry.frameCount  = frameCount;
         entry.firstBlock  = block;
