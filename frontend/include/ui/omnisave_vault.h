@@ -192,7 +192,7 @@ private:
     // ── Layout ────────────────────────────────────────────────────────────────
     static constexpr int HEADER_H     = 88;
     static constexpr int FOOTER_H     = 52;
-    static constexpr int DIVIDER_X_PC = 42;   // left panel = 42% of screen width
+    static constexpr int DIVIDER_X_PC = 50;   // left panel = 50% of screen width
     static constexpr int DIVIDER_W    = 2;
     static constexpr int MARGIN       = 20;
     static constexpr int CARD_ROW_H   = 72;   // memcard entry row height
