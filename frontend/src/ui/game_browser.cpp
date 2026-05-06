@@ -143,7 +143,10 @@ void GameBrowser::handleEvent(const SDL_Event& e) {
     }
 
     NavAction action = m_nav->processEvent(e);
-    if (action != NavAction::NONE) moveSelection(action, false);
+    if (action != NavAction::NONE) {
+        bool isRepeat = (e.type == SDL_KEYDOWN && e.key.repeat != 0);
+        moveSelection(action, isRepeat);
+    }
 }
 
 void GameBrowser::moveSelection(NavAction action, bool isRepeat) {
@@ -165,14 +168,23 @@ void GameBrowser::moveSelection(NavAction action, bool isRepeat) {
             m_selectedCol--;
             if (m_selectedCol < 0) {
                 if (m_selectedRow > 0) {
-                    // Move to end of previous row
-                    m_selectedRow--;
-                    m_selectedCol = cols - 1;
-                } else {
-                    // Wrap: first item → last item in library
+                    if (!isRepeat) {
+                        // Fresh press — move to end of previous row
+                        m_selectedRow--;
+                        m_selectedCol = cols - 1;
+                    } else {
+                        // Hold at start of row — stop, require fresh press
+                        m_selectedCol = 0;
+                        m_nav->cancelHeld();
+                    }
+                } else if (!isRepeat) {
+                    // Fresh press at very first item → wrap to last
                     int lastIdx   = (int)m_activeGames.size() - 1;
                     m_selectedRow = lastIdx / cols;
                     m_selectedCol = lastIdx % cols;
+                } else {
+                    // Hold at very first item — clamp
+                    m_selectedCol = 0;
                 }
             }
             break;
@@ -181,13 +193,21 @@ void GameBrowser::moveSelection(NavAction action, bool isRepeat) {
             int nextCol = m_selectedCol + 1;
             int nextIdx = m_selectedRow * cols + nextCol;
             if (nextIdx >= (int)m_activeGames.size()) {
-                // Past the very last game — wrap to first item (fresh press only)
-                m_selectedRow = 0;
-                m_selectedCol = 0;
+                if (!isRepeat) {
+                    // Fresh press at last game → wrap to first item
+                    m_selectedRow = 0;
+                    m_selectedCol = 0;
+                }
+                // else hold at last game — clamp (do nothing)
             } else if (nextCol >= cols) {
-                // End of this row but more games exist — advance to next row
-                m_selectedRow++;
-                m_selectedCol = 0;
+                if (!isRepeat) {
+                    // Fresh press at row end — advance to next row
+                    m_selectedRow++;
+                    m_selectedCol = 0;
+                } else {
+                    // Hold at row end — stop, require fresh press
+                    m_nav->cancelHeld();
+                }
             } else {
                 m_selectedCol = nextCol;
             }
