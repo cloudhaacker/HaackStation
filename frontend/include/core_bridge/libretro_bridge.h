@@ -57,6 +57,13 @@ public:
     // a no-op. Returns true if the file was read and copied into the buffer.
     bool loadSaveRAM(const std::string& srcPath);
 
+    // ── LiveCard: SRAM checksum ───────────────────────────────────────────────
+    // Fast CRC-32 over the core's in-RAM SRAM buffer (128 KB, ~10 µs on
+    // modern hardware). Returns 0 if no game is loaded or SRAM is unavailable.
+    // The caller compares this against the previous value every ~2 seconds;
+    // a change means the game wrote to the memory card in the interim.
+    uint32_t getSramChecksum() const;
+
     void runFrame();
     void blitFramebuffer(SDL_Renderer* renderer);
     void setButtonState(int port, int buttonMask);

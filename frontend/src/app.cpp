@@ -395,7 +395,49 @@ int HaackApp::run() {
                     accumulator -= fixedStep;
                 }
             }
-            if (m_ra) m_ra->update((float)(elapsed * 1000.0));
+        if (m_ra) m_ra->update((float)(elapsed * 1000.0));
+
+            // ── LiveCard: SRAM checksum poll ───────────────────────────────────
+            // Runs here (not in HaackApp::update) because IN_GAME bypasses
+            // HaackApp::update() entirely — the run() loop handles IN_GAME
+            // timing directly. Every SRAM_POLL_INTERVAL_MS we CRC-32 the
+            // core's SRAM buffer; a change means the game saved to the memory
+            // card — flush immediately and show the toast.
+            // The 30-second safety flush below is intentionally SILENT.
+            if (!m_activeCardPath.empty() && m_core->isGameLoaded()) {
+                float deltaMs = (float)(elapsed * 1000.0);
+                m_sramPollTimer += (Uint32)deltaMs;
+                if (m_sramPollTimer >= SRAM_POLL_INTERVAL_MS) {
+                    m_sramPollTimer = 0;
+                    uint32_t crc = m_core->getSramChecksum();
+                    if (crc != m_sramChecksum && m_sramChecksum != 0) {
+                        m_core->flushSaveRAM(m_activeCardPath);
+                        m_memcardFlushTimer = 0;
+                        m_memcardToastUntil = SDL_GetTicks() + 2500;
+                        std::cout << "[LiveCard] Save detected — flushed to disk\n";
+                    }
+                    m_sramChecksum = crc;
+                }
+            }
+
+            // ── Periodic safety flush (silent — not user-initiated) ────────────
+            if (!m_activeCardPath.empty()) {
+                float deltaMs = (float)(elapsed * 1000.0);
+                m_memcardFlushTimer += (Uint32)deltaMs;
+                if (m_memcardFlushTimer >= MEMCARD_FLUSH_INTERVAL_MS) {
+                    m_memcardFlushTimer = 0;
+                    m_core->flushSaveRAM(m_activeCardPath);
+                }
+            }
+
+            // ── Trophy auto-screenshot toast ───────────────────────────────────
+            // takePendingTrophyScreenshot() runs in render() just before
+            // SDL_RenderPresent. It sets m_screenshotFiredThisFrame=true when
+            // a shot is captured. We poll that flag here (next iteration) to
+            // fire the toast. One-frame delay is imperceptible at 60fps.
+            if (m_ra && m_ra->consumePendingScreenshotFlag())
+                m_trophyShotToastUntil = SDL_GetTicks() + 2500;
+
         } else {
             update((float)(elapsed * 1000.0));
             Uint32 frameMs = SDL_GetTicks() - (Uint32)(lastTime * 1000 / perfFreq);
@@ -856,22 +898,14 @@ void HaackApp::update(float deltaMs) {
             }
             break;
         case AppState::IN_GAME:
+            // NOTE: HaackApp::update() is not called during IN_GAME — the run()
+            // loop handles frame timing directly. The in-game menu is the only
+            // UI component that still needs an update tick here (it runs when
+            // the menu is open and the core is paused).
             if (m_inGameMenu && m_inGameMenu->isOpen())
                 m_inGameMenu->update(deltaMs);
-            if (m_ra) m_ra->update(deltaMs);
-            // ── Periodic memory card flush ─────────────────────────────────
-            // Beetle PSX HW keeps memcard data in RAM; we own the flush.
-            // Every 30 seconds, write the SRAM buffer to the .mcr file so
-            // a crash doesn't lose more than 30s of in-game saves.
-            // Atomic write (temp → rename) means no corruption on crash.
-            if (!m_activeCardPath.empty()) {
-                m_memcardFlushTimer += (Uint32)deltaMs;
-                if (m_memcardFlushTimer >= MEMCARD_FLUSH_INTERVAL_MS) {
-                    m_memcardFlushTimer = 0;
-                    m_core->flushSaveRAM(m_activeCardPath);
-                }
-            }
             break;
+			
         case AppState::SETTINGS:
             m_settings->update(deltaMs);
             if (m_settings->wantsQuit()) {
@@ -1057,6 +1091,12 @@ void HaackApp::render() {
     // Screenshot notification renders on top of any state
     if (m_screenshotNotifyUntil > SDL_GetTicks())
         renderScreenshotNotification();
+    // Memory card save toast (LiveCard — user-initiated saves only)
+    if (m_memcardToastUntil > SDL_GetTicks())
+        renderMemcardToast();
+    // Trophy auto-screenshot toast
+    if (m_trophyShotToastUntil > SDL_GetTicks())
+        renderTrophyShotToast();
     // Trophy auto-screenshot: capture NOW — backbuffer has game + all overlays,
     // RenderPresent hasn't flipped yet so pixels are exactly what the user sees.
     if (m_ra) m_ra->takePendingTrophyScreenshot();
@@ -1202,6 +1242,131 @@ void HaackApp::renderScreenshotNotification() {
     SDL_Color textCol = { 200, 255, 200, alpha };
     m_theme->drawText("Screenshot saved",
         toastX + 10, toastY + 8, textCol, FontSize::SMALL);
+}
+
+// ─── renderMemcardToast ───────────────────────────────────────────────────────
+// Brief toast shown bottom-left when LiveCard detects a game save.
+// Only fires on user-initiated saves (checksum change) — the periodic 30-second
+// safety flush is intentionally silent.
+// Draws a tiny memory-card icon (SDL rects) to the left of the message text.
+void HaackApp::renderMemcardToast() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    Uint32 now       = SDL_GetTicks();
+    Uint32 remaining = m_memcardToastUntil - now;
+    Uint8  alpha     = 220;
+    if (remaining < 400)
+        alpha = (Uint8)(220 * remaining / 400);
+
+    // Position: bottom-left, above the screen edge
+    int toastW = 226, toastH = 36;
+    int toastX = 12;
+    int toastY = h - toastH - 12;
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+
+    // Background
+    SDL_SetRenderDrawColor(m_renderer, 15, 25, 40, alpha);
+    SDL_Rect bg = { toastX, toastY, toastW, toastH };
+    SDL_RenderFillRect(m_renderer, &bg);
+
+    // Cyan-blue accent border (distinct from the green screenshot border)
+    SDL_SetRenderDrawColor(m_renderer, 60, 160, 220, alpha);
+    SDL_RenderDrawRect(m_renderer, &bg);
+
+    // ── Memory-card icon (SDL rects, no external assets needed) ──────────────
+    // Shape: rectangle with top-left corner notched, like a PS1 memory card.
+    //   full rect:  8 × 11 px
+    //   notch:      3 × 3 px cutout at top-left
+    //   label slot: 8 × 3 px inset strip near bottom
+    int ix = toastX + 8;
+    int iy = toastY + (toastH - 11) / 2;
+
+    SDL_SetRenderDrawColor(m_renderer, 60, 160, 220, alpha);
+
+    // Outer card body (draw as four lines to preserve notch)
+    // Top edge — skip the notch (first 3 px)
+    SDL_RenderDrawLine(m_renderer, ix + 3, iy,     ix + 7, iy);
+    // Right edge
+    SDL_RenderDrawLine(m_renderer, ix + 7, iy,     ix + 7, iy + 10);
+    // Bottom edge
+    SDL_RenderDrawLine(m_renderer, ix + 7, iy + 10, ix,    iy + 10);
+    // Left edge (below notch)
+    SDL_RenderDrawLine(m_renderer, ix,     iy + 3, ix,     iy + 10);
+    // Notch diagonal (single pixel corner)
+    SDL_RenderDrawLine(m_renderer, ix,     iy + 3, ix + 3, iy);
+
+    // Label slot — small filled rect near bottom of card
+    SDL_Rect slot = { ix + 1, iy + 7, 6, 2 };
+    SDL_RenderFillRect(m_renderer, &slot);
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // Text — offset right of the icon
+    SDL_Color textCol = { 160, 220, 255, alpha };
+    m_theme->drawText("Game saved to memory card",
+        toastX + 22, toastY + (toastH - (int)FontSize::SMALL) / 2 - 1,
+        textCol, FontSize::SMALL);
+}
+
+// ─── renderTrophyShotToast ────────────────────────────────────────────────────
+// Brief toast shown bottom-left (above the memcard toast if both are visible)
+// when RAManager captures an automatic trophy screenshot.
+// Distinct message from the manual screenshot toast so users know exactly why
+// a screenshot fired.
+void HaackApp::renderTrophyShotToast() {
+    int w, h;
+    SDL_GetRendererOutputSize(m_renderer, &w, &h);
+
+    Uint32 now       = SDL_GetTicks();
+    Uint32 remaining = m_trophyShotToastUntil - now;
+    Uint8  alpha     = 220;
+    if (remaining < 400)
+        alpha = (Uint8)(220 * remaining / 400);
+
+    int toastW = 226, toastH = 36;
+    int toastX = 12;
+    // Stack above the memcard toast if both happen to be showing simultaneously
+    int toastY = h - toastH - 12 - 44;
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+
+    // Background
+    SDL_SetRenderDrawColor(m_renderer, 30, 20, 10, alpha);
+    SDL_Rect bg = { toastX, toastY, toastW, toastH };
+    SDL_RenderFillRect(m_renderer, &bg);
+
+    // Gold accent border — matches trophy / RA colour language
+    SDL_SetRenderDrawColor(m_renderer, 210, 170, 50, alpha);
+    SDL_RenderDrawRect(m_renderer, &bg);
+
+    // ── Trophy icon: simple star / trophy silhouette using SDL lines ──────────
+    // Draws a minimal cup shape: base bar, stem, cup left/right arcs (lines).
+    int ix = toastX + 8;
+    int iy = toastY + (toastH - 11) / 2;
+
+    SDL_SetRenderDrawColor(m_renderer, 210, 170, 50, alpha);
+    // Cup opening (top arc approximated as three segments)
+    SDL_RenderDrawLine(m_renderer, ix,     iy,     ix + 2, iy - 2); // left lip
+    SDL_RenderDrawLine(m_renderer, ix + 2, iy - 2, ix + 5, iy - 2); // top flat
+    SDL_RenderDrawLine(m_renderer, ix + 5, iy - 2, ix + 7, iy);     // right lip
+    // Cup sides
+    SDL_RenderDrawLine(m_renderer, ix,     iy,     ix + 1, iy + 4); // left side
+    SDL_RenderDrawLine(m_renderer, ix + 7, iy,     ix + 6, iy + 4); // right side
+    // Cup bottom / stem
+    SDL_RenderDrawLine(m_renderer, ix + 1, iy + 4, ix + 6, iy + 4); // bottom of cup
+    SDL_RenderDrawLine(m_renderer, ix + 3, iy + 4, ix + 3, iy + 7); // stem
+    SDL_RenderDrawLine(m_renderer, ix + 4, iy + 4, ix + 4, iy + 7);
+    // Base bar
+    SDL_RenderDrawLine(m_renderer, ix + 1, iy + 7, ix + 6, iy + 7);
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    SDL_Color textCol = { 255, 220, 130, alpha };
+    m_theme->drawText("Trophy screenshot saved",
+        toastX + 22, toastY + (toastH - (int)FontSize::SMALL) / 2 - 1,
+        textCol, FontSize::SMALL);
 }
 
 void HaackApp::setState(AppState next) {

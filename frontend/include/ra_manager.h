@@ -123,14 +123,26 @@ public:
     void setAutoScreenshot(bool enabled) { m_autoScreenshot = enabled; }
 
     // Called by app.cpp AFTER all overlays are drawn, BEFORE SDL_RenderPresent.
-    // Uses a 4-frame countdown so the slide-in animation has time to settle
+    // Uses a time-based delay so the slide-in animation has time to settle
     // before we capture — avoids getting a half-slid notification in the shot.
-	bool takePendingTrophyScreenshot() {
+    // Returns true if a screenshot was actually captured this call.
+    bool takePendingTrophyScreenshot() {
         if (m_trophyShotCountdown == 0) return false;
         if (SDL_GetTicks() < m_trophyShotCountdown) return false;  // still waiting
         m_trophyShotCountdown = 0;  // reset so we only fire once
         captureTrophyScreenshot(m_pendingShotAchId, m_pendingShotTitle);
         return true;
+    }
+
+    // Returns true (and clears the flag) if a trophy screenshot was captured
+    // since the last call. Call once per frame from app.cpp update() AFTER
+    // takePendingTrophyScreenshot() has run in render(). One-shot: resets on read.
+    bool consumePendingScreenshotFlag() {
+        if (m_screenshotFiredThisFrame) {
+            m_screenshotFiredThisFrame = false;
+            return true;
+        }
+        return false;
     }
 
     // Get current game info and achievement list
@@ -229,6 +241,7 @@ private:
     bool              m_gameLoaded  = false;
     bool              m_hardcore          = false;
     bool              m_autoScreenshot      = false;
+    bool              m_screenshotFiredThisFrame = false;
     Uint32            m_trophyShotCountdown = 0;    // SDL_GetTicks() target time; 0 = inactive
     std::string       m_pendingShotTitle;
     uint32_t          m_pendingShotAchId    = 0;

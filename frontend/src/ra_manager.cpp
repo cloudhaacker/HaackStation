@@ -1037,10 +1037,12 @@ void RAManager::captureTrophyScreenshot(uint32_t achId,
     std::string path = dir + std::to_string(achId) + "_"
                            + safeTitle + "_" + timestamp + ".png";
 
-    if (IMG_SavePNG(surf, path.c_str()) == 0)
+    if (IMG_SavePNG(surf, path.c_str()) == 0) {
         std::cout << "[RA] Trophy screenshot saved: " << path << "\n";
-    else
+        m_screenshotFiredThisFrame = true;
+    } else {
         std::cerr << "[RA] Trophy screenshot failed: " << SDL_GetError() << "\n";
+    }
 
     SDL_FreeSurface(surf);
 }

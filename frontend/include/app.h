@@ -77,6 +77,8 @@ private:
     void renderTurboIndicator();                     // ← NEW
     void renderTurboDiagnostic();                    // TEMP: remove once turbo confirmed working
     void renderScreenshotNotification();
+    void renderMemcardToast();           // LiveCard: "Game saved to memory card"
+    void renderTrophyShotToast();        // RA auto-screenshot: "Trophy screenshot saved"
 
     // ── Rewind helpers ────────────────────────────────────────────────────────
     // stripRomRegion() removes parenthetical / bracketed region & revision tags
@@ -126,6 +128,22 @@ private:
     // flushSaveRAM() writes to this path; empty string = no game running.
     std::string m_activeCardPath;
     Uint32      m_memcardFlushTimer = 0;          // ms accumulator
+
+    // ── LiveCard detection ────────────────────────────────────────────────────
+    // Poll SRAM checksum every SRAM_POLL_INTERVAL_MS. When it changes, the game
+    // wrote to the memory card — flush immediately and show the memcard toast.
+    // The periodic safety flush (30 s) is SILENT — no toast — because it is not
+    // triggered by a user save; it is just a crash-safety backstop.
+    uint32_t m_sramChecksum      = 0;             // last known checksum (0 = uninitialised)
+    Uint32   m_sramPollTimer     = 0;             // ms since last poll
+    Uint32   m_memcardToastUntil = 0;             // show memcard toast until this tick
+    static constexpr Uint32 SRAM_POLL_INTERVAL_MS = 2000; // poll every 2 s
+
+    // ── Trophy auto-screenshot toast ──────────────────────────────────────────
+    // Set to SDL_GetTicks() + DURATION when RAManager fires a trophy screenshot.
+    // Shown separately from the manual screenshot toast so users know why
+    // a screenshot happened — different message, distinct timer.
+    Uint32 m_trophyShotToastUntil = 0;
 
     // Async RA login result: -1=pending, 0=failed, 1=success.
     // Set by the login callback thread; polled on main thread in SETTINGS update.

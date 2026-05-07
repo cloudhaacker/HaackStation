@@ -309,6 +309,33 @@ bool LibretroBridge::loadSaveRAM(const std::string& srcPath) {
     return true;
 }
 
+// ─── LiveCard: SRAM checksum ──────────────────────────────────────────────────
+// CRC-32 over the core's in-RAM SRAM buffer (128 KB). Called every ~2 seconds
+// by app.cpp to detect in-game saves. Cost: ~10 µs on modern hardware.
+// Returns 0 if no game is loaded or SRAM is unavailable (safe sentinel — we
+// guard against a false-positive on first poll in app.cpp by checking != 0).
+uint32_t LibretroBridge::getSramChecksum() const {
+    if (!m_gameLoaded || !m_retro_get_memory_data || !m_retro_get_memory_size)
+        return 0;
+
+    const uint8_t* buf  = static_cast<const uint8_t*>(
+        m_retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    size_t         size = m_retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+
+    if (!buf || size == 0) return 0;
+
+    // Standard CRC-32 (ISO 3309 / ITU-T V.42 polynomial 0xEDB88320)
+    static constexpr uint32_t POLY = 0xEDB88320u;
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= buf[i];
+        for (int b = 0; b < 8; ++b)
+            crc = (crc >> 1) ^ (POLY & -(crc & 1u));
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+
 // ─── Per-frame emulation ──────────────────────────────────────────────────────
 void LibretroBridge::runFrame() {
     if (!m_gameLoaded) return;
