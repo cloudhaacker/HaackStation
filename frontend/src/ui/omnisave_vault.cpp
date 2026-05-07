@@ -22,7 +22,17 @@ static constexpr int MCR_HEADER_OFFSET = 128;    // first directory frame offset
 static constexpr int MCR_ICON_W        = 16;
 static constexpr int MCR_ICON_H        = 16;
 static constexpr int MCR_ICON_BYTES    = 128;    // 16x16 @ 4bpp
-static constexpr int MCR_PALETTE_BYTES = 32;     // 16 colours × 2 bytes (BGR555)
+static constexpr int MCR_PALETTE_BYTES = 32;     // 16 colours × 2 bytes (RGB555)
+
+// Save data block icon layout (offsets within the data block):
+//   0–1:    "SC" magic
+//   2:      icon display flag (0x11=1 frame, 0x12=2, 0x13=3)
+//   3:      title block count
+//   4–99:   save title (96 bytes, Shift-JIS, null-padded)
+//   96–127: palette (32 bytes — 16 × RGB555 little-endian)
+//   128+:   icon frames (128 bytes each, 4bpp packed)
+static constexpr int MCR_ICON_PAL_OFF  = 96;    // palette offset in data block
+static constexpr int MCR_ICON_PIX_OFF  = 128;   // first frame pixel offset
 
 // Directory frame allocation state flags
 static constexpr uint32_t ALLOC_FIRST  = 0x51;  // first block of a save
@@ -184,6 +194,14 @@ void OmniSaveVault::loadSaveSlots() {
 //  MCR parser
 //  Reads the PS1 memory card binary and extracts all valid save entries,
 //  including their animated icon frames decoded to RGBA8888.
+//
+//  Save data block layout (verified against real MCR files):
+//    Offset 0–1:   "SC" magic
+//    Offset 2:     icon display flag (0x11/0x12/0x13 = 1/2/3 frames)
+//    Offset 3:     title block count
+//    Offset 4–95:  save title (92 bytes, Shift-JIS, null-padded)
+//    Offset 96–127: palette (32 bytes, 16 × RGB555 little-endian)
+//    Offset 128+:  icon frames (128 bytes each, 4bpp, hi-nibble = first pixel)
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
     std::vector<MemCardEntry> results;
@@ -240,17 +258,7 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         // Display title starts at byte 64, up to 64 bytes of Shift-JIS
         std::string title = decodeShiftJis(frame + 64, 64);
 
-        // ── Icon data lives in the save data block itself (not directory) ──
-        // The save data block starts at:  frame (block+1) × 8192 bytes from file start
-        // Within that block:
-        //   Offset 0:     "SC" magic (2 bytes)
-        //   Offset 2:     icon display flag (1 byte) — 0x11=1 frame, 0x12=2, 0x13=3
-        //   Offset 3:     title length in bytes (1 byte, but we already have it)
-        //   Offset 4–35:  palette — 16 × BGR555 colours (32 bytes)
-        //   Offset 128:   frame 1 pixel data (128 bytes = 16×16 @ 4bpp)
-        //   Offset 256:   frame 2 pixel data (if frameCount >= 2)
-        //   Offset 384:   frame 3 pixel data (if frameCount == 3)
-
+        // ── Icon data lives in the save data block ─────────────────────────
         size_t dataBlockOff = (size_t)(block + 1) * MCR_BLOCK_SIZE;
         if (dataBlockOff + 512 > fileSize) continue;
 
@@ -262,20 +270,31 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         if      (iconFlag == 0x12) frameCount = 2;
         else if (iconFlag == 0x13) frameCount = 3;
 
-        // Decode palette: 16 BGR555 entries → RGBA8888
+        // ── Decode palette ─────────────────────────────────────────────────
+        // 16 × RGB555 entries at offset 96.
+        // Each 16-bit word: R=bits 0–4, G=bits 5–9, B=bits 10–14, STP=bit 15.
+        // Transparency: pure black (all channels 0) with STP=0 is transparent;
+        //               pure black with STP=1 is opaque black.
         uint32_t palette[16] = {};
         for (int c = 0; c < 16; ++c) {
-            uint16_t raw = (uint16_t)blk[4 + c*2] | ((uint16_t)blk[5 + c*2] << 8);
-            uint8_t r = (uint8_t)(((raw >>  0) & 0x1F) << 3);
-            uint8_t g = (uint8_t)(((raw >>  5) & 0x1F) << 3);
-            uint8_t b = (uint8_t)(((raw >> 10) & 0x1F) << 3);
-            // Entry 0 is transparent in PS1 icon rendering
-            uint8_t a = (c == 0) ? 0 : 255;
-            palette[c] = ((uint32_t)a << 24) | ((uint32_t)b << 16)
-                       | ((uint32_t)g << 8)  |  (uint32_t)r;
+            uint16_t raw = (uint16_t)blk[MCR_ICON_PAL_OFF + c*2]
+                         | ((uint16_t)blk[MCR_ICON_PAL_OFF + c*2 + 1] << 8);
+            uint8_t r5  = (raw >> 0)  & 0x1F;
+            uint8_t g5  = (raw >> 5)  & 0x1F;
+            uint8_t b5  = (raw >> 10) & 0x1F;
+            uint8_t stp = (raw >> 15) & 0x01;
+            uint8_t r = (r5 << 3) | (r5 >> 2);
+            uint8_t g = (g5 << 3) | (g5 >> 2);
+            uint8_t b = (b5 << 3) | (b5 >> 2);
+            uint8_t a = 255;
+            if (r5 == 0 && g5 == 0 && b5 == 0)
+                a = (stp == 0) ? 0 : 255;
+            // Pack as RGBA8888: R<<24 | G<<16 | B<<8 | A
+            palette[c] = ((uint32_t)r << 24) | ((uint32_t)g << 16)
+                       | ((uint32_t)b << 8)  |  (uint32_t)a;
         }
 
-        // Decode each frame — 128 bytes of 4bpp → 256 nibbles → 256 palette indices
+        // ── Build entry ────────────────────────────────────────────────────
         MemCardEntry entry;
         entry.productCode = std::string(productBuf);
         entry.identifier  = std::string(identBuf);
@@ -305,7 +324,7 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         if (!cleanTitle.empty())
             entry.title = cleanTitle;
         else if (!m_gameTitle.empty())
-            entry.title = m_gameTitle;   // fall back to shelf title
+            entry.title = m_gameTitle;
         else
             entry.title = entry.productCode;
 
@@ -313,17 +332,20 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         entry.frameCount  = frameCount;
         entry.firstBlock  = block;
 
+        // ── Decode icon frames ─────────────────────────────────────────────
+        // Each frame is 128 bytes of 4bpp pixel data starting at offset 128.
+        // Each byte holds two pixels: high nibble = first pixel, low nibble = second.
         for (int frm = 0; frm < frameCount; ++frm) {
-            size_t pixOff = 128 + (size_t)frm * MCR_ICON_BYTES;
+            size_t pixOff = MCR_ICON_PIX_OFF + (size_t)frm * MCR_ICON_BYTES;
             if (dataBlockOff + pixOff + MCR_ICON_BYTES > fileSize) break;
 
             const uint8_t* pixData = blk + pixOff;
             std::vector<uint32_t> rgba(MCR_ICON_W * MCR_ICON_H);
 
             for (int px = 0; px < MCR_ICON_W * MCR_ICON_H; px += 2) {
-                uint8_t byte    = pixData[px / 2];
-                uint8_t lo      = byte & 0x0F;
-                uint8_t hi      = (byte >> 4) & 0x0F;
+                uint8_t byte = pixData[px / 2];
+                uint8_t lo   = byte & 0x0F;          // first pixel
+                uint8_t hi   = (byte >> 4) & 0x0F;  // second pixel
                 rgba[px]     = palette[lo];
                 rgba[px + 1] = palette[hi];
             }
@@ -338,9 +360,12 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
     return results;
 }
 
-// Very light Shift-JIS → UTF-8 decoder covering the subset PS1 titles use.
-// Full-width ASCII (0x8140–0x8196) → standard ASCII.
-// Anything we can't decode we replace with '?'.
+// ─────────────────────────────────────────────────────────────────────────────
+//  decodeShiftJis
+//  Very light Shift-JIS → UTF-8 decoder covering the subset PS1 titles use.
+//  Full-width ASCII (0x8140–0x8196) → standard ASCII.
+//  Anything we can't decode we replace with '?'.
+// ─────────────────────────────────────────────────────────────────────────────
 std::string OmniSaveVault::decodeShiftJis(const uint8_t* data, int len) {
     std::string out;
     out.reserve(len);
@@ -387,15 +412,31 @@ std::string OmniSaveVault::decodeShiftJis(const uint8_t* data, int len) {
     return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  buildIconTexture
+//  Converts a 16×16 RGBA8888 pixel array into an SDL_Texture.
+//  Uses SDL_CreateRGBSurfaceFrom with explicit channel masks to guarantee
+//  correct colour interpretation regardless of platform endianness.
+// ─────────────────────────────────────────────────────────────────────────────
 SDL_Texture* OmniSaveVault::buildIconTexture(const std::vector<uint32_t>& rgba) {
-    // Create a 16×16 streaming texture from raw RGBA8888 pixels
-    SDL_Texture* tex = SDL_CreateTexture(m_renderer,
-        SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_STATIC,
-        MCR_ICON_W, MCR_ICON_H);
+    SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(
+        (void*)rgba.data(),
+        MCR_ICON_W, MCR_ICON_H,
+        32,              // bits per pixel
+        MCR_ICON_W * 4,  // pitch in bytes
+        0xFF000000,      // R mask
+        0x00FF0000,      // G mask
+        0x0000FF00,      // B mask
+        0x000000FF       // A mask
+    );
+    if (!surf) return nullptr;
+
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, surf);
+    SDL_FreeSurface(surf);
     if (!tex) return nullptr;
+
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    SDL_UpdateTexture(tex, nullptr, rgba.data(), MCR_ICON_W * sizeof(uint32_t));
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
     return tex;
 }
 
@@ -617,12 +658,10 @@ void OmniSaveVault::renderDivider(int x, int y, int h) {
     // Accent highlight on the active-panel side of the divider
     SDL_Color accent = m_theme->palette().accent;
     if (m_focus == OmniPanel::MEMCARD) {
-        // Glow on right edge of divider (left panel active)
         SDL_SetRenderDrawColor(m_renderer, accent.r, accent.g, accent.b, 120);
         SDL_Rect glow = { x + DIVIDER_W, y, 3, h };
         SDL_RenderFillRect(m_renderer, &glow);
     } else {
-        // Glow on left edge of divider (right panel active)
         SDL_SetRenderDrawColor(m_renderer, accent.r, accent.g, accent.b, 120);
         SDL_Rect glow = { x - 3, y, 3, h };
         SDL_RenderFillRect(m_renderer, &glow);
@@ -685,6 +724,19 @@ void OmniSaveVault::renderMemCardPanel(int x, int y, int w, int h) {
         if (iconTex) {
             SDL_SetTextureBlendMode(iconTex, SDL_BLENDMODE_BLEND);
             SDL_RenderCopy(m_renderer, iconTex, nullptr, &iconDst);
+
+            // CRT scanline overlay — every other row of screen pixels gets a
+            // semi-transparent dark line, simulating the gaps between phosphor
+            // rows on the CRT TVs PS1 icons were designed for.
+            // Each source pixel maps to (ICON_SIZE / MCR_ICON_H) = 4 screen pixels
+            // tall at 64px, so we draw a line on every 4th row (one per source row).
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 40);  // subtle dark line
+            int pixelH = ICON_SIZE / MCR_ICON_H;  // screen pixels per source row
+            for (int scanY = iconDst.y; scanY < iconDst.y + ICON_SIZE; scanY += pixelH) {
+                SDL_Rect scanline = { iconDst.x, scanY, ICON_SIZE, 1 };
+                SDL_RenderFillRect(m_renderer, &scanline);
+            }
         } else {
             // Fallback: coloured placeholder square
             SDL_SetRenderDrawColor(m_renderer, 80, 80, 120, 255);
@@ -834,7 +886,7 @@ void OmniSaveVault::renderFooter() {
             "");                // Y (unused)
     } else {
         m_theme->drawFooterHints(m_w, m_h,
-            "Reload",       // A
+            "Reload",           // A
             "Back",             // B
             "",                 // X
             "");                // Y
