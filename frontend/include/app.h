@@ -64,6 +64,12 @@ public:
     void processInGameMenuActions();
     void takeScreenshot();          // Save game framebuffer to screenshots/
     void takeUIScreenshot();        // F10 — capture any screen to screenshots/HaackStation/
+    void snapshotCardHistory();       // Time Machine: copy current .mcr to history folder
+    void captureCardScreenshot();     // Capture game frame alongside card history entry
+
+    // Maximum per-game card history snapshots to retain before pruning oldest.
+    // 128KB × 20 = 2.5 MB per card — negligible.
+    static constexpr int CARD_HISTORY_MAX = 20;
 
 private:
     void init();

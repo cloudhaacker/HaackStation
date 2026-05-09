@@ -411,10 +411,16 @@ int HaackApp::run() {
                     m_sramPollTimer = 0;
                     uint32_t crc = m_core->getSramChecksum();
                     if (crc != m_sramChecksum && m_sramChecksum != 0) {
+                        // Game wrote to memory card.
+                        // Snapshot BEFORE flush so history captures the pre-save
+                        // card state as the recovery point for THIS save event.
+                        snapshotCardHistory();
+                        captureCardScreenshot();
+                        // Now flush new data to disk.
                         m_core->flushSaveRAM(m_activeCardPath);
                         m_memcardFlushTimer = 0;
                         m_memcardToastUntil = SDL_GetTicks() + 2500;
-                        std::cout << "[LiveCard] Save detected — flushed to disk\n";
+                        std::cout << "[LiveCard] Save detected — snapshot + flush\n";
                     }
                     m_sramChecksum = crc;
                 }
@@ -1811,6 +1817,107 @@ void HaackApp::takeUIScreenshot() {
         std::cerr << "[Screenshot] Failed: " << SDL_GetError() << "\n";
     }
     SDL_FreeSurface(surf);
+}
+
+// ─── snapshotCardHistory ──────────────────────────────────────────────────────
+// Time Machine: copies the current .mcr to a timestamped history folder before
+// each LiveCard flush. Prunes oldest entries if count exceeds CARD_HISTORY_MAX.
+//
+// Folder layout:
+//   memcards/history/<SERIAL>_1/
+//       2026-05-08_21-04-33.mcr    ← each snapshot is a full 128KB card copy
+//       2026-05-08_19-12-07.mcr
+//       ...
+//
+// Snapshots capture the PREVIOUS card state (before the new save overwrites it),
+// giving users a recovery path if they regret the in-game save they just made.
+void HaackApp::snapshotCardHistory() {
+    if (m_activeCardPath.empty() || !fs::exists(m_activeCardPath)) return;
+
+    // Derive history folder from the card filename stem
+    // e.g. "memcards/per_game/SCUS-94900_1.mcr" → "memcards/history/SCUS-94900_1/"
+    fs::path cardPath(m_activeCardPath);
+    std::string stem = cardPath.stem().string();  // "SCUS-94900_1"
+    std::string histDir = "memcards/history/" + stem + "/";
+
+    std::error_code ec;
+    fs::create_directories(histDir, ec);
+    if (ec) {
+        std::cerr << "[CardHistory] Failed to create dir: " << ec.message() << "\n";
+        return;
+    }
+
+    // Build timestamped filename
+    time_t now = time(nullptr);
+    tm* t = localtime(&now);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%d_%H-%M-%S", t);
+    std::string destPath = histDir + ts + ".mcr";
+
+    fs::copy_file(cardPath, destPath,
+                  fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[CardHistory] Snapshot failed: " << ec.message() << "\n";
+        return;
+    }
+    std::cout << "[CardHistory] Snapshot saved: " << destPath << "\n";
+
+    // ── Prune oldest if over retention limit ──────────────────────────────────
+    // Collect all .mcr files in the history folder sorted by filename (which is
+    // lexicographic timestamp order — oldest first).
+    std::vector<fs::path> snapshots;
+    for (const auto& entry : fs::directory_iterator(histDir, ec)) {
+        if (entry.path().extension() == ".mcr")
+            snapshots.push_back(entry.path());
+    }
+    std::sort(snapshots.begin(), snapshots.end());
+
+    while ((int)snapshots.size() > CARD_HISTORY_MAX) {
+        fs::remove(snapshots.front(), ec);
+        std::cout << "[CardHistory] Pruned oldest: "
+                  << snapshots.front().filename() << "\n";
+        snapshots.erase(snapshots.begin());
+    }
+}
+
+// ─── captureCardScreenshot ────────────────────────────────────────────────────
+// Captures the current game framebuffer alongside a card history snapshot.
+// Stored with the same timestamp stem so it pairs with its .mcr counterpart.
+// Silent — no toast, no UI disruption. Used by OmniSave Time Machine UI to show
+// "what were you doing when this save was made."
+//
+// File layout:
+//   memcards/history/<SERIAL>_1/
+//       2026-05-08_21-04-33.mcr    ← card state (from snapshotCardHistory)
+//       2026-05-08_21-04-33.png    ← game frame at save moment (this function)
+//
+// NOTE: LiveCard fires 0–2 seconds after the actual in-game save (poll interval)
+// so the screenshot may catch a frame slightly after the save screen. This is
+// fine for identification — users can still see "I was in Snow Go level."
+void HaackApp::captureCardScreenshot() {
+    if (!m_saveStates || !m_core->isGameLoaded()) return;
+    if (m_activeCardPath.empty()) return;
+
+    SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
+    if (!shot) return;
+
+    fs::path cardPath(m_activeCardPath);
+    std::string stem = cardPath.stem().string();
+    std::string histDir = "memcards/history/" + stem + "/";
+
+    // Use same timestamp as snapshotCardHistory (called in same tick)
+    time_t now = time(nullptr);
+    tm* t = localtime(&now);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%d_%H-%M-%S", t);
+    std::string destPath = histDir + ts + ".png";
+
+    if (IMG_SavePNG(shot, destPath.c_str()) == 0)
+        std::cout << "[CardHistory] Screenshot saved: " << destPath << "\n";
+    else
+        std::cerr << "[CardHistory] Screenshot failed: " << SDL_GetError() << "\n";
+
+    SDL_FreeSurface(shot);
 }
 
 // ─── parseM3uDiscs ───────────────────────────────────────────────────────────
