@@ -72,6 +72,17 @@ struct MemCardEntry {
 enum class OmniSaveMode { BROWSE, SAVING, LOADING };
 enum class OmniPanel    { MEMCARD, SAVESTATES };
 
+// ─── Confirm dialog action types ──────────────────────────────────────────────
+// Identifies which destructive action is awaiting user confirmation.
+// NONE = no dialog active.
+enum class ConfirmAction {
+    NONE,
+    LOAD_STATE,      // Load a save state (replaces live game state)
+    DELETE_STATE,    // Delete a save state file permanently
+    OVERWRITE_STATE, // Save to a slot that already has data (replaces it)
+    RELOAD_CARD,     // Reload memory card from disk (discards in-RAM changes)
+};
+
 class OmniSaveVault {
 public:
     OmniSaveVault(SDL_Renderer* renderer, ThemeEngine* theme,
@@ -102,14 +113,14 @@ public:
         if (m_saveWritten) { m_saveWritten = false; return true; }
         return false;
     }
-	
+
     // Returns true and clears flag if the user confirmed a card reload.
     // App should call flushSaveRAM → loadSaveRAM on its active card path.
     bool consumeCardReload() {
         if (m_wantsCardReload) { m_wantsCardReload = false; return true; }
         return false;
     }
-	
+
     // Callbacks for SRAM protection during state loads.
     // App sets these before open() so the vault can flush/reload the card
     // independently of the core pointer.
@@ -137,6 +148,7 @@ private:
     void renderMemCardPanel(int x, int y, int w, int h);
     void renderSaveStatePanel(int x, int y, int w, int h);
     void renderFooter();
+    void renderConfirmOverlay();   // Modal confirm dialog (drawn on top of everything)
 
     // ── Navigation ────────────────────────────────────────────────────────────
     void handleMemCardNav(NavAction a);
@@ -169,6 +181,15 @@ private:
     int  m_stateSel    = 0;
     int  m_stateScroll = 0;
 
+    // ── Confirm dialog state ──────────────────────────────────────────────────
+    // When m_confirmAction != NONE, the modal overlay is active.
+    // handleEvent() routes all input to the dialog until it resolves.
+    // The dialog message is set at intercept time so it can include slot/entry
+    // context ("Load Slot 2?", "Delete Auto-save?", etc.).
+    ConfirmAction m_confirmAction  = ConfirmAction::NONE;
+    std::string   m_confirmMessage;   // first line, e.g. "Load this save?"
+    std::string   m_confirmDetail;    // second line, e.g. slot label or entry title
+
     // SpriteCard animation
     float  m_iconAnimMs    = 0.f;   // accumulator
     int    m_iconFrame     = 0;     // current frame index (0–2)
@@ -180,9 +201,9 @@ private:
 
     bool m_wantsClose  = false;
     bool m_saveWritten = false;
-	bool m_wantsCardReload = false;
-	
-    // SRAM protection callbacks — set once at init by app.cpp	
+    bool m_wantsCardReload = false;
+
+    // SRAM protection callbacks — set once at init by app.cpp
     std::function<void()> m_sramFlush;   // flush core SRAM → active .mcr
     std::function<void()> m_sramReload;  // reload active .mcr → core SRAM
 
@@ -196,7 +217,7 @@ private:
     static constexpr int DIVIDER_W    = 2;
     static constexpr int MARGIN       = 20;
     static constexpr int CARD_ROW_H   = 72;   // memcard entry row height
-    static constexpr int ICON_SIZE    = 48;   // display size of SpriteCard icon
+    static constexpr int ICON_SIZE    = 64;   // display size of SpriteCard icon
     static constexpr int STATE_CARD_W = 180;  // save state thumbnail card width
     static constexpr int STATE_CARD_H = 130;  // save state thumbnail card height
     static constexpr int STATE_COLS   = 3;    // thumbnail columns in right panel

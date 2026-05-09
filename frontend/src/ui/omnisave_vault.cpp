@@ -459,6 +459,26 @@ void OmniSaveVault::handleEvent(const SDL_Event& e) {
     NavAction a = m_nav->processEvent(e);
     if (a == NavAction::NONE) a = m_nav->updateHeld(SDL_GetTicks());
 
+    // ── Confirm dialog intercept ──────────────────────────────────────────────
+    // When a confirm dialog is active, ALL input is consumed here.
+    // A = confirm the pending action. B/BACK = cancel without consequence.
+    if (m_confirmAction != ConfirmAction::NONE) {
+        if (a == NavAction::CONFIRM) {
+            ConfirmAction action = m_confirmAction;
+            m_confirmAction = ConfirmAction::NONE;   // clear before executing
+            if      (action == ConfirmAction::LOAD_STATE)    doLoadAction();
+            else if (action == ConfirmAction::DELETE_STATE)  doDeleteState();
+            else if (action == ConfirmAction::OVERWRITE_STATE) doSaveAction();
+            else if (action == ConfirmAction::RELOAD_CARD) {
+                m_wantsCardReload = true;
+                m_wantsClose      = true;
+            }
+        } else if (a == NavAction::BACK) {
+            m_confirmAction = ConfirmAction::NONE;   // cancel — do nothing
+        }
+        return;  // swallow all other input while dialog is open
+    }
+
     if (a == NavAction::BACK) {
         m_wantsClose = true;
         return;
@@ -490,12 +510,13 @@ void OmniSaveVault::handleMemCardNav(NavAction a) {
 
     if (a == NavAction::CONFIRM) {
         // A = reload the on-disk card state into core SRAM.
-        // This is a soft "restore card" — useful if the user made in-game changes
-        // they want to revert. The vault signals the app via m_wantsCardReload.
-        std::cout << "[OmniSave] Card reload requested for: "
-                  << m_cardEntries[m_cardSel].title << "\n";
-        m_wantsCardReload = true;
-        m_wantsClose      = true;  // close vault; app handles the actual reload
+        // Requires confirmation — this discards any in-RAM changes not yet flushed.
+        const std::string& entryTitle = m_cardEntries[m_cardSel].title;
+        std::cout << "[OmniSave] Card reload confirm requested for: "
+                  << entryTitle << "\n";
+        m_confirmAction  = ConfirmAction::RELOAD_CARD;
+        m_confirmMessage = "Reload memory card from disk?";
+        m_confirmDetail  = "Unsaved in-game changes will be lost.";
         return;
     }
 
@@ -529,25 +550,53 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
 
     if (a == NavAction::CONFIRM) {
         // A = context-sensitive primary action:
-        //   on the "+ New Save" sentinel → save (nothing to overwrite)
-        //   on an existing slot          → load
+        //   on the "+ New Save" sentinel → save immediately (nothing to lose)
+        //   on an existing slot          → confirm before loading
         const SaveSlot& sel = m_slots[m_stateSel];
         if (sel.slotNumber == -2 || !sel.exists) {
             doSaveAction();
         } else {
-            doLoadAction();
+            // Build a human-readable slot label for the dialog detail line
+            std::string label = (sel.slotNumber == -1)
+                ? "Auto-save"
+                : "Slot " + std::to_string(sel.slotNumber + 1);
+            // Guard: only append timestamp if it's non-empty and not a
+            // duplicate of the label itself (SaveStateManager fallback)
+            if (!sel.timestamp.empty() && sel.timestamp != label)
+                label += "  \xe2\x80\xa2  " + sel.timestamp;
+            m_confirmAction  = ConfirmAction::LOAD_STATE;
+            m_confirmMessage = "Load this save?";
+            m_confirmDetail  = label;
         }
         return;
     }
     if (a == NavAction::OPTIONS) {
-        // X/Square = explicit "Save Here" — overwrites the selected slot
-        // (deliberate second button prevents accidental overwrite)
-        doSaveAction();
+        // X/Square = explicit "Save Here".
+        // If the slot already has data, confirm before overwriting.
+        // New/empty slots save immediately — there's nothing to lose.
+        const SaveSlot& sel = m_slots[m_stateSel];
+        if (sel.exists && sel.slotNumber != -2) {
+            std::string label = (sel.slotNumber == -1)
+                ? "Auto-save"
+                : "Slot " + std::to_string(sel.slotNumber + 1);
+            m_confirmAction  = ConfirmAction::OVERWRITE_STATE;
+            m_confirmMessage = "Overwrite this save?";
+            m_confirmDetail  = label + "  \xe2\x80\x94  Current progress will replace it.";
+        } else {
+            doSaveAction();
+        }
         return;
     }
     if (a == NavAction::MENU) {
-        // Start = Delete selected slot
-        doDeleteState();
+        // Start = Delete — always confirm before destroying data
+        const SaveSlot& sel = m_slots[m_stateSel];
+        if (!sel.exists || sel.slotNumber == -2) return;
+        std::string label = (sel.slotNumber == -1)
+            ? "Auto-save"
+            : "Slot " + std::to_string(sel.slotNumber + 1);
+        m_confirmAction  = ConfirmAction::DELETE_STATE;
+        m_confirmMessage = "Delete this save?";
+        m_confirmDetail  = label + "  \xe2\x80\x94  This cannot be undone.";
         return;
     }
 }
@@ -642,6 +691,78 @@ void OmniSaveVault::render() {
     renderSaveStatePanel(divX + DIVIDER_W, contentY, rightW, contentH);
 
     renderFooter();
+
+    // Confirm dialog renders on top of everything — dims screen behind it
+    if (m_confirmAction != ConfirmAction::NONE)
+        renderConfirmOverlay();
+}
+
+// ─── renderConfirmOverlay ─────────────────────────────────────────────────────
+// Full-screen dimmed backdrop with a centred modal dialog.
+// Shows m_confirmMessage (large) + m_confirmDetail (small) + button hints.
+// [A] Confirm  [B] Cancel
+void OmniSaveVault::renderConfirmOverlay() {
+    const auto& pal = m_theme->palette();
+
+    // ── Full-screen dim ───────────────────────────────────────────────────────
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 160);
+    SDL_Rect full = { 0, 0, m_w, m_h };
+    SDL_RenderFillRect(m_renderer, &full);
+
+    // ── Dialog box ────────────────────────────────────────────────────────────
+    int boxW = 480;
+    int boxH = 160;
+    int boxX = (m_w - boxW) / 2;
+    int boxY = (m_h - boxH) / 2;
+
+    // Background
+    SDL_SetRenderDrawColor(m_renderer,
+        pal.bgCard.r, pal.bgCard.g, pal.bgCard.b, 245);
+    SDL_Rect box = { boxX, boxY, boxW, boxH };
+    SDL_RenderFillRect(m_renderer, &box);
+
+    // Border — colour-coded by action severity
+    SDL_Color borderClr;
+    if (m_confirmAction == ConfirmAction::DELETE_STATE)
+        borderClr = { 220, 80,  80,  255 };  // red    — permanent destruction
+    else if (m_confirmAction == ConfirmAction::OVERWRITE_STATE)
+        borderClr = { 220, 160, 40,  255 };  // amber  — replaces existing data
+    else
+        borderClr = { 60,  160, 220, 255 };  // blue   — safe (load / reload)
+    SDL_SetRenderDrawColor(m_renderer,
+        borderClr.r, borderClr.g, borderClr.b, 255);
+    SDL_RenderDrawRect(m_renderer, &box);
+    // Double border for weight
+    SDL_Rect box2 = { boxX + 1, boxY + 1, boxW - 2, boxH - 2 };
+    SDL_RenderDrawRect(m_renderer, &box2);
+
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // ── Text ──────────────────────────────────────────────────────────────────
+    int cx = boxX + boxW / 2;
+
+    // Primary message — centred, large
+    m_theme->drawTextCentered(m_confirmMessage,
+        cx, boxY + 24, pal.textPrimary, FontSize::BODY);
+
+    // Detail line — centred, small, muted
+    if (!m_confirmDetail.empty()) {
+        m_theme->drawTextCentered(m_confirmDetail,
+            cx, boxY + 58, pal.textSecond, FontSize::SMALL);
+    }
+
+    // ── Button hints ──────────────────────────────────────────────────────────
+    // [A] Confirm   [B] Cancel  — centred at bottom of box
+    int hintY = boxY + boxH - 44;
+    int hintSpacing = 140;
+    int hintCX = cx - hintSpacing / 2;
+
+    // Confirm button colour matches border
+    m_theme->drawButtonHint(hintCX - 60, hintY,
+                            "A", "Confirm", borderClr);
+    m_theme->drawButtonHint(hintCX + 60, hintY,
+                            "B", "Cancel",  pal.textSecond);
 }
 
 void OmniSaveVault::renderHeader() {
