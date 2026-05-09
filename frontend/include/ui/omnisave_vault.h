@@ -80,6 +80,7 @@ enum class ConfirmAction {
     LOAD_STATE,      // Load a save state (replaces live game state)
     DELETE_STATE,    // Delete a save state file permanently
     OVERWRITE_STATE, // Save to a slot that already has data (replaces it)
+    DELETE_ENTRY,    // Delete a PS1 memory card save entry (rewrites .mcr)
     RELOAD_CARD,     // Reload memory card from disk (discards in-RAM changes)
 };
 

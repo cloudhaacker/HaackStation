@@ -466,9 +466,10 @@ void OmniSaveVault::handleEvent(const SDL_Event& e) {
         if (a == NavAction::CONFIRM) {
             ConfirmAction action = m_confirmAction;
             m_confirmAction = ConfirmAction::NONE;   // clear before executing
-            if      (action == ConfirmAction::LOAD_STATE)    doLoadAction();
-            else if (action == ConfirmAction::DELETE_STATE)  doDeleteState();
+            if      (action == ConfirmAction::LOAD_STATE)      doLoadAction();
+            else if (action == ConfirmAction::DELETE_STATE)    doDeleteState();
             else if (action == ConfirmAction::OVERWRITE_STATE) doSaveAction();
+            else if (action == ConfirmAction::DELETE_ENTRY)    doDeleteEntry();
             else if (action == ConfirmAction::RELOAD_CARD) {
                 m_wantsCardReload = true;
                 m_wantsClose      = true;
@@ -521,9 +522,16 @@ void OmniSaveVault::handleMemCardNav(NavAction a) {
     }
 
     if (a == NavAction::OPTIONS) {
-        // X / delete — scaffold: requires rewriting .mcr block table
-        std::cout << "[OmniSave] Delete memcard entry: "
-                  << m_cardEntries[m_cardSel].title << " (TODO)\n";
+        // X/Square = delete memcard entry — always confirm, this is permanent
+        const std::string& title = m_cardEntries[m_cardSel].title;
+        int blocks = m_cardEntries[m_cardSel].blocksUsed;
+        std::string detail = title + "  \xe2\x80\x94  "
+                           + std::to_string(blocks)
+                           + (blocks == 1 ? " block" : " blocks")
+                           + "  \xe2\x80\x94  This cannot be undone.";
+        m_confirmAction  = ConfirmAction::DELETE_ENTRY;
+        m_confirmMessage = "Delete this memory card save?";
+        m_confirmDetail  = detail;
     }
 }
 
@@ -659,10 +667,149 @@ void OmniSaveVault::doDeleteState() {
     m_stateSel = std::min(m_stateSel, (int)m_slots.size() - 1);
 }
 
+// ─── doDeleteEntry ────────────────────────────────────────────────────────────
+// Deletes the selected memory card entry from the .mcr file on disk.
+//
+// PS1 MCR delete algorithm:
+//   1. Load the full 128KB card into memory
+//   2. Walk the directory chain from entry.firstBlock following next-block links
+//   3. For each block in the chain:
+//        - Set allocation state → ALLOC_FREE (0xA0)
+//        - Zero product code, identifier, title, size, next-link fields
+//        - Set next-block link → 0xFFFF (no link)
+//        - Recompute XOR checksum at byte 127
+//   4. Atomic write (temp file → rename) so a crash can't corrupt the card
+//   5. Reload UI entries
+//
+// The XOR checksum covers bytes 0–126 of each 128-byte directory frame.
+// The PS1 BIOS validates this on every boot — must be correct or the card
+// appears corrupt.
 void OmniSaveVault::doDeleteEntry() {
-    // Placeholder — deleting a memcard entry requires rewriting the .mcr
-    // directory frame allocation table. Scaffold for Session 23.
-    std::cout << "[OmniSave] Memcard entry delete: TODO\n";
+    if (m_cardSel < 0 || m_cardSel >= (int)m_cardEntries.size()) return;
+    const MemCardEntry& entry = m_cardEntries[m_cardSel];
+
+    // ── Resolve the card path (same logic as loadMemCardEntries) ─────────────
+    if (!m_memCards) return;
+    std::string mcrPath = m_memCards->prepareSlot1(m_gameSerial);
+
+    // Prefer .srm if it's larger (same selection logic as loadMemCardEntries)
+    std::string path = mcrPath;
+    if (!m_gameTitle.empty()) {
+        fs::path dir = fs::path(mcrPath).parent_path();
+        for (const auto& stem : { m_gameTitle, m_gameSerial }) {
+            if (stem.empty()) continue;
+            fs::path cand = dir / (stem + ".srm");
+            if (fs::exists(cand)) {
+                size_t srmSz = fs::file_size(cand);
+                size_t mcrSz = fs::exists(mcrPath) ? fs::file_size(mcrPath) : 0;
+                if (srmSz > mcrSz) { path = cand.string(); break; }
+            }
+        }
+    }
+
+    if (!fs::exists(path)) {
+        std::cerr << "[OmniSave] Delete failed — card not found: " << path << "\n";
+        return;
+    }
+
+    // ── Load full card into memory ────────────────────────────────────────────
+    std::ifstream fin(path, std::ios::binary);
+    if (!fin.is_open()) {
+        std::cerr << "[OmniSave] Delete failed — cannot open: " << path << "\n";
+        return;
+    }
+    fin.seekg(0, std::ios::end);
+    size_t fileSize = (size_t)fin.tellg();
+    fin.seekg(0);
+    if (fileSize < 131072) {
+        std::cerr << "[OmniSave] Delete failed — file too small\n";
+        return;
+    }
+    std::vector<uint8_t> data(fileSize);
+    fin.read((char*)data.data(), fileSize);
+    fin.close();
+
+    // ── Walk directory chain and free each block ──────────────────────────────
+    // Directory frames are at offset 128 + (block * 128).
+    // Bytes 8–9 of each frame = next block index (0xFFFF = end of chain).
+    int block = entry.firstBlock;
+    int safetyLimit = MCR_MAX_BLOCKS;  // prevent infinite loop on corrupt data
+
+    while (block >= 0 && block < MCR_MAX_BLOCKS && safetyLimit-- > 0) {
+        size_t frameOff = MCR_HEADER_OFFSET + (size_t)block * MCR_DIR_FRAME_SZ;
+        if (frameOff + MCR_DIR_FRAME_SZ > fileSize) break;
+
+        uint8_t* frame = data.data() + frameOff;
+
+        // Read next-block link BEFORE we zero it
+        int nextBlock = (int)frame[8] | ((int)frame[9] << 8);
+        if (nextBlock == 0xFFFF) nextBlock = -1;  // end of chain
+
+        // Free this directory frame:
+        //   byte 0     = allocation state → ALLOC_FREE
+        //   bytes 4–7  = file size → 0
+        //   bytes 8–9  = next block link → 0xFFFF
+        //   bytes 10–21 = product code → zeroed
+        //   bytes 22–29 = identifier → zeroed
+        //   bytes 64–127 = title → zeroed (but 127 gets checksum at end)
+        frame[0] = ALLOC_FREE;
+        frame[4] = frame[5] = frame[6] = frame[7] = 0;
+        frame[8] = 0xFF; frame[9] = 0xFF;  // next link = none
+        std::memset(frame + 10, 0, 12);     // product code
+        std::memset(frame + 22, 0, 8);      // identifier
+        std::memset(frame + 64, 0, 63);     // title (leave byte 127 for checksum)
+
+        // Recompute XOR checksum: XOR of bytes 0–126
+        uint8_t xsum = 0;
+        for (int b = 0; b < 127; ++b) xsum ^= frame[b];
+        frame[127] = xsum;
+
+        std::cout << "[OmniSave] Freed block " << block
+                  << " (chain next=" << nextBlock << ")\n";
+        block = nextBlock;
+    }
+
+    // ── Atomic write: temp file → rename ─────────────────────────────────────
+    // Same pattern as LibretroBridge::flushSaveRAM — crash-safe.
+    std::string tmpPath = path + ".tmp";
+    {
+        std::ofstream fout(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!fout.is_open()) {
+            std::cerr << "[OmniSave] Delete failed — cannot write temp: " << tmpPath << "\n";
+            return;
+        }
+        fout.write((const char*)data.data(), (std::streamsize)data.size());
+        fout.flush();
+    }
+
+    std::error_code ec;
+    fs::rename(tmpPath, path, ec);
+    if (ec) {
+        std::cerr << "[OmniSave] Delete failed — rename error: " << ec.message() << "\n";
+        fs::remove(tmpPath, ec);
+        return;
+    }
+
+    std::cout << "[OmniSave] Deleted memcard entry: " << entry.title
+              << "  (firstBlock=" << entry.firstBlock << ")\n";
+
+    // ── Reload SRAM in core so it matches the new on-disk state ──────────────
+    // IMPORTANT: do NOT call sramFlush() here. We just wrote the corrected
+    // .mcr to disk; flushing first would overwrite it with the core's stale
+    // in-RAM buffer (which still contains the deleted entry), undoing the delete.
+    // Just reload — the core picks up the corrected file directly.
+    if (m_sramReload) m_sramReload();
+
+    // ── Refresh UI ────────────────────────────────────────────────────────────
+    freeMemCardTextures();
+    m_cardEntries = parseMcr(path);
+    for (auto& e : m_cardEntries) {
+        for (int f = 0; f < e.frameCount; ++f) {
+            if (!e.iconFrames[f].empty())
+                e.iconTextures[f] = buildIconTexture(e.iconFrames[f]);
+        }
+    }
+    m_cardSel = std::min(m_cardSel, std::max(0, (int)m_cardEntries.size() - 1));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -724,7 +871,8 @@ void OmniSaveVault::renderConfirmOverlay() {
 
     // Border — colour-coded by action severity
     SDL_Color borderClr;
-    if (m_confirmAction == ConfirmAction::DELETE_STATE)
+    if (m_confirmAction == ConfirmAction::DELETE_STATE ||
+        m_confirmAction == ConfirmAction::DELETE_ENTRY)
         borderClr = { 220, 80,  80,  255 };  // red    — permanent destruction
     else if (m_confirmAction == ConfirmAction::OVERWRITE_STATE)
         borderClr = { 220, 160, 40,  255 };  // amber  — replaces existing data
@@ -1007,9 +1155,9 @@ void OmniSaveVault::renderFooter() {
             "");                // Y (unused)
     } else {
         m_theme->drawFooterHints(m_w, m_h,
-            "Reload",           // A
+            "Reload Card",      // A
             "Back",             // B
-            "",                 // X
+            "Delete Save",      // X/Square — delete memcard entry
             "");                // Y
     }
     // Draw L1/R1 panel-switch hint on the right side manually
