@@ -18,6 +18,7 @@ set(FRONTEND_SOURCES
     src/play_history.cpp
     src/ui/game_browser.cpp
     src/ui/controller_nav.cpp
+	src/ui/onscreen_keyboard.cpp
     src/ui/settings_screen.cpp
     src/ui/splash_screen.cpp
     src/library/game_scanner.cpp
@@ -139,6 +140,14 @@ add_custom_command(TARGET HaackStation POST_BUILD
         "${CMAKE_SOURCE_DIR}/assets"
         "$<TARGET_FILE_DIR:HaackStation>/assets"
     COMMENT "Copying assets"
+)
+
+# Copy OSK button hint assets
+add_custom_command(TARGET HaackStation POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets/osk"
+        "$<TARGET_FILE_DIR:HaackStation>/assets/osk"
+    COMMENT "Copying OSK assets"
 )
 
 # Copy SDL2 DLLs — runs after every build so clean rebuilds don't break things

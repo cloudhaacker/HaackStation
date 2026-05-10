@@ -268,8 +268,15 @@ void HaackApp::shutdown() {
     }
 
     if (m_core && m_core->isGameLoaded()) {
-        if (!m_activeCardPath.empty())
-            m_core->flushSaveRAM(m_activeCardPath);
+        if (!m_activeCardPath.empty()) {
+            m_core->loadSaveRAM(m_activeCardPath);
+            // Reset poll timer and checksum so the card load itself does not
+            // trigger a false LiveCard toast. The SRAM buffer is being freshly
+            // populated right now — any checksum we read on the next poll will
+            // be the baseline, not a change.
+            m_sramPollTimer = 0;
+            m_sramChecksum  = 0;
+        }
         m_core->unloadGame();
     }
     m_splash.reset();
@@ -490,6 +497,7 @@ void HaackApp::handleEvents() {
 
                     // ── F5: open OmniSave in SAVING mode ─────────────────────
                     if (key == SDLK_F5) {
+                        m_omniSave->setActiveCardPath(m_activeCardPath);
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                                          OmniSaveMode::SAVING);
                         setState(AppState::OMNISAVE_VAULT);
@@ -497,6 +505,7 @@ void HaackApp::handleEvents() {
                     }
                     // ── F7: open OmniSave in LOADING mode ────────────────────
                     if (key == SDLK_F7) {
+                        m_omniSave->setActiveCardPath(m_activeCardPath);
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                                          OmniSaveMode::LOADING);
                         setState(AppState::OMNISAVE_VAULT);
@@ -693,6 +702,7 @@ void HaackApp::processInGameMenuActions() {
     } else if (action == InGameMenuAction::OPEN_OMNISAVE) {
         m_inGameMenu->close();
         SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
+        m_omniSave->setActiveCardPath(m_activeCardPath);
         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                          OmniSaveMode::BROWSE, shot);
         setState(AppState::OMNISAVE_VAULT);

@@ -19,13 +19,13 @@
 
 ## What Is HaackStation?
 
-HaackStation is an open source PlayStation 1 emulator frontend built on top of Beetle PSX HW. It wraps a proven, cycle-accurate emulation core in a modern, controller-first interface with features that existing PS1 frontends simply don't have.
+HaackStation is an open source PlayStation 1 emulator frontend built on top of Beetle PSX HW. It wraps a proven, cycle-accurate emulation core in a modern, controller-first interface — not a fork of RetroArch, not a skin, but a fully hand-rolled UI and feature set built from scratch around the libretro API.
 
-**Controller-first** — the entire UI is navigable with a gamepad. No mouse required. Every screen shows context-sensitive button hints at the bottom so you're never guessing what a button does.
+**Controller-first** — the entire UI is navigable with a gamepad. No mouse required. Every screen shows context-sensitive button hints so you're never guessing.
 
-**Free forever** — GPLv2. No paywalls, no paid tiers, no exceptions. Every feature listed here is free.
+**Free forever** — GPLv2. No paywalls, no paid tiers, no exceptions.
 
-**Openly AI-assisted** — HaackStation is developed with Claude (Anthropic AI) writing code under the direction of the project author. This is disclosed openly because honesty about tooling matters. See [AI Assistance](#ai-assistance) below.
+**Openly AI-assisted** — developed with Claude (Anthropic AI) writing code under the direction of the project author. See [AI Assistance](#ai-assistance) below.
 
 ---
 
@@ -47,37 +47,63 @@ HaackStation is an open source PlayStation 1 emulator frontend built on top of B
 |---------|--------|
 | Game shelf with spring-scroll animations | ✅ Done |
 | Cover art display (scraped from ScreenScraper.fr) | ✅ Done |
-| Multi-disc game support (M3U auto-generation) | ✅ Done |
+| Multi-disc support with GhostScan deduplication | ✅ Done |
 | Controller navigation (Xbox/PS controllers) | ✅ Done |
 | Keyboard navigation (conflict-free layout) | ✅ Done |
 | Settings screen (6 tabs, all wired) | ✅ Done |
-| Game Details Panel (Y button) with screenshots | ✅ Done |
+| Game Details Panel (screenshots, L1/R1 cycle) | ✅ Done |
 | ScreenScraper.fr scraper (cover, back cover, screenshots) | ✅ Done |
 | Save states with thumbnail screenshots | ✅ Done |
 | In-game menu (Start+Y) | ✅ Done |
-| RetroAchievements infrastructure (rcheevos 12.3) | ✅ Done |
+| RetroAchievements — full rcheevos rc_client integration | ✅ Done |
+| RA — CHD file hashing via libchdr | ✅ Done |
+| RA — per-game achievement persistence across sessions | ✅ Done |
+| RA — Trophy Vault (per-game achievement grid) | ✅ Done |
+| RA — Trophy Hub (all-games overview, alphabetical) | ✅ Done |
+| RA — unlock notifications with badge images | ✅ Done |
 | Fast Boot (skip PS1 BIOS logo) | ✅ Done |
 | Fast Forward (hold R2 / F key, 2×–8×) | ✅ Done |
 | Play history (recently played tracking) | ✅ Done |
+| Rewind (hold L2) | ✅ Done |
+| Memory card manager (shared + per-game) | ✅ Done |
+| Input remapping UI | ✅ Done |
 | Mouse cursor auto-hide in fullscreen | ✅ Done |
+| OmniSave & SpriteCard (save state manager) | 🔨 In Progress |
+| ReScore (in-game audio replacement) | 🔨 In Progress |
+| chdman integration (in-app CHD conversion) | 🔨 In Progress |
 | RA achievement unlock submissions | ⏳ Pending RA approval (~July 2026) |
-| CHD file hashing for RA | ⏳ Needs MAME CHD library |
-| Shelf-flip L1/R1 (Recently Played / Favorites) | 🔨 In Progress |
-| Audio queue hitch fix | 🔨 In Progress |
-| Rewind (hold L2) | 📋 Planned |
-| Favorites system | 📋 Planned |
+| Trophy Room visual polish pass | 📋 Planned |
 | Text input dialog (on-screen keyboard) | 📋 Planned |
-| Input remapping UI | 📋 Planned |
-| Trophy Room (PS4/PS5 style) | 📋 Planned |
-| Memory Card Manager with PS1 animated save icons | 📋 Planned |
-| Spinning CD case animation | 📋 Planned |
+| Favorites system | 📋 Planned |
 | Color themes | 📋 Planned |
 | Ambient music player | 📋 Planned |
-| Dynamic shelf sizing | 📋 Planned |
 | Android / Ayn Thor APK | 📋 Phase 5 |
-| OpenGL hardware renderer (unlocks upscaling, PGXP) | 📋 Phase 5 |
+| OpenGL hardware renderer (PGXP, upscaling) | 📋 Phase 5 |
 | Netplay | 📋 Phase 5 |
-| On-the-fly Japanese translation | 📋 Phase 5 |
+
+---
+
+## Named Features
+
+### 📚 HaackStack with GhostScan
+The library manager. Scans directories for BIN/CUE and CHD files, deduplicates multi-disc sets via **GhostScan** (Disc 2 doesn't clutter the shelf as a separate entry), and presents a clean alphabetical game browser. Auto-generates M3U playlists for multi-disc games.
+
+Supported naming patterns: `(Disc N)`, `(Disk N)`, `(CD N)`, `Disc N`, `CD N`
+
+### 🏆 Trophy Vault & Trophy Hub
+Full RetroAchievements integration powered by rcheevos 12.3.
+
+**Trophy Vault** — per-game achievement browser with a badge grid, filter tabs (All / Unlocked / Locked via L1/R1), progress bar, and a detail strip showing the selected achievement's full badge, description, and point value. Greyscale/locked badge variants generated automatically if only the colour badge is cached.
+
+**Trophy Hub** — all-games overview sorted alphabetically (matches the shelf). Shows cover art, unlock progress, recent badge strip (up to 5 most recent unlocks), and a global completion bar across your entire collection. Drill into any game's Trophy Vault directly. Footer: *Powered by RetroAchievements*.
+
+Both BIN/CUE and CHD formats hash correctly for RA identification. Achievement data persists between sessions in `saves/ra_achievements_<gameId>.json` so trophies load instantly even when no game is running.
+
+### 🎮 OmniSave & SpriteCard *(in progress)*
+The save state manager. OmniSave handles the slots; SpriteCard will render animated PS1 memory card sprite previews so you can see what's in each slot at a glance.
+
+### 🎵 ReScore *(in progress)*
+Audio replacement — swap a game's original soundtrack with custom audio.
 
 ---
 
@@ -85,42 +111,50 @@ HaackStation is an open source PlayStation 1 emulator frontend built on top of B
 
 ### Requirements
 
-- Windows 10/11 (primary development platform)
-- Visual Studio 2022 or 2026 Build Tools (MSVC)
+- Windows 10/11
+- Visual Studio 2022+ Build Tools (MSVC)
 - CMake 3.20+
 - Git
 
 ### Dependencies (place in `deps/`)
-
-Download from official SDL releases:
 
 ```
 deps/
   SDL2/          — SDL2 VC development libraries
   SDL2_ttf/      — SDL2_ttf VC development libraries
   SDL2_image/    — SDL2_image VC development libraries
-  rcheevos/      — rcheevos source (clone from github.com/RetroAchievements/rcheevos)
+  rcheevos/      — clone from github.com/RetroAchievements/rcheevos
+  libchdr/       — clone from github.com/rtissera/libchdr (CHD hashing)
+  soundtouch/    — SoundTouch audio library (ReScore)
 ```
 
-**SDL2 header fix (required):** The SDL2 VC zip puts headers directly in `include/`. Create `include/SDL2/` subfolders and copy the headers in — the code uses `#include <SDL2/SDL.h>` style includes.
+**SDL2 header fix (required):** The SDL2 VC zip puts headers directly in `include/`. Create `include/SDL2/` subfolders and move the headers in — the code uses `#include <SDL2/SDL.h>` style includes.
 
 ### Build
 
-```bash
-# Fresh build
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
+```cmd
+cmake -B build -S .
+cmake --build build --config Release
+```
 
-# Incremental build
+CMake should confirm:
+```
+-- libchdr found — CHD hashing enabled
+-- rcheevos sources: ...
+```
+
+Clean rebuild:
+```cmd
+rd /s /q build
+cmake -B build -S .
 cmake --build build --config Release
 ```
 
 Output: `build/frontend/Release/HaackStation.exe`
 
-### Runtime Layout
+---
 
-Place these files next to `HaackStation.exe`:
+## Runtime Layout
 
 ```
 HaackStation.exe
@@ -134,15 +168,26 @@ bios/
 assets/
   fonts/zrnic.otf
   icons/HaackStation_Logo.png
+saves/
+  trophy_hub.json                 ← all-games trophy summary
+  ra_achievements_<id>.json       ← per-game achievement cache
+memcards/
+  shared/
+  per_game/
+media/
+  badges/                         ← RA badge images (auto-downloaded)
+  <game_title>/
+    cover.*
+    screenshots/
 ```
 
-> **BIOS files are not included** and are never distributed with this project. You must supply your own, legally dumped from PS1 hardware you own.
+> **BIOS files are not included** and are never distributed with this project. Supply your own, legally dumped from hardware you own.
 
 ---
 
 ## Configuration
 
-Config file location: `%APPDATA%\HaackStation\haackstation.cfg`
+Config file: `%APPDATA%\HaackStation\haackstation.cfg`
 
 ```ini
 [General]
@@ -179,7 +224,7 @@ ra_hardcore=false
 
 ## Keyboard Controls
 
-HaackStation works fully without a controller. The keyboard layout is carefully designed with no conflicts — WASD is reserved exclusively for in-game PS1 buttons.
+The keyboard layout has no conflicts — WASD is reserved exclusively for in-game PS1 buttons.
 
 ### On the Game Shelf
 | Key | Action |
@@ -188,7 +233,7 @@ HaackStation works fully without a controller. The keyboard layout is carefully 
 | X | Launch game |
 | Enter | Open Settings |
 | F2 | Open Game Details |
-| Escape | Quit HaackStation |
+| Escape | Quit |
 | F11 | Toggle Fullscreen |
 
 ### In-Game
@@ -205,60 +250,37 @@ HaackStation works fully without a controller. The keyboard layout is carefully 
 | R | R2 |
 | Enter | Start |
 | Space | Select |
-| F (hold 500ms) | Fast Forward |
+| F (hold) | Fast Forward |
 | F1 | In-game Menu |
 | Escape | Quit to Shelf |
 
 ### In Game Details Panel
 | Key | Action |
 |-----|--------|
-| Arrow Keys | Navigate menu |
+| Arrow Keys | Navigate |
 | Page Up / Page Down | Cycle screenshots |
-| X | Select menu item |
+| X | Select |
 | Z | Close panel |
 
 ---
 
 ## Cover Art & Screenshots
 
-HaackStation scrapes metadata and media from [ScreenScraper.fr](https://www.screenscraper.fr) — a free community database. Register a free account to get higher rate limits.
+HaackStation scrapes from [ScreenScraper.fr](https://www.screenscraper.fr) — a free community database. Register a free account for higher rate limits.
 
-**To scrape:** Open Settings → General → Scrape Game Art. Enter your ScreenScraper credentials in the Scraper section first.
+**To scrape:** Settings → General → Scrape Game Art. Enter your ScreenScraper credentials in the config first.
 
-Media is saved to:
-```
-media/
-  covers/[title].png          ← Front cover art
-  covers/[title]_back.jpg     ← Back cover art
-  screenshots/[title]/        ← Per-game screenshot folder
-    01_screenshot.jpg
-    02_titlescreen.jpg
-    03_fanart.jpg
-```
-
-**Manual screenshots:** Drop any `.jpg` or `.png` files into `media/screenshots/[game title]/` and they'll appear in the Details Panel immediately.
+**Manual screenshots:** Drop any `.jpg` or `.png` into `media/screenshots/[game title]/` and they appear in the Details Panel immediately. Cycle them with L1/R1 from any navigation state within the panel.
 
 ---
 
 ## RetroAchievements
 
-HaackStation has full rcheevos 12.3 integration using the rc_client API. Login, ROM hashing, achievement tracking, and notifications all work.
+Full rcheevos 12.3 integration using the rc_client API. Login, ROM hashing (BIN/CUE and CHD), achievement tracking, badge downloads, and unlock notifications all work. The game-load notification shows the game's RA icon; achievement unlock notifications show the badge image with title and point value.
 
-**Current limitation:** Achievement unlock submissions are blocked server-side pending official emulator recognition from RetroAchievements. We've applied and are waiting on the 6-month public availability requirement (~July 2026). The infrastructure is complete — unlocks will work automatically once we're approved.
+**Current limitation:** Unlock submissions are blocked server-side pending official RA emulator recognition. Applied and waiting on the 6-month public availability requirement (~July 2026). Infrastructure is complete — unlocks activate automatically once approved.
 
-Enter your RA credentials in Settings → RetroAchievements. After the first login, your session token is saved automatically and the password field can be cleared.
-
----
-
-## Multi-Disc Games
-
-HaackStation automatically handles multi-disc PS1 games:
-
-1. Name your disc files with the pattern: `Game Name (Disc 1).chd`, `Game Name (Disc 2).chd`, etc.
-2. HaackStation auto-generates an M3U playlist on first scan
-3. The game appears as a single entry on the shelf with a disc count badge
-
-Supported naming patterns: `(Disc N)`, `(Disk N)`, `(CD N)`, `Disc N`, `CD N`
+Enter credentials in Settings → RetroAchievements. Session token is saved after first login; the password field can then be cleared.
 
 ---
 
@@ -266,10 +288,10 @@ Supported naming patterns: `(Disc N)`, `(Disk N)`, `(CD N)`, `Disc N`, `CD N`
 
 | Format | Support |
 |--------|---------|
-| BIN/CUE | ✅ Full support |
-| CHD | ✅ Full support |
-| ISO | ✅ Full support |
-| M3U | ✅ Full support (multi-disc playlists) |
+| BIN/CUE | ✅ Full |
+| CHD | ✅ Full (including RA hashing) |
+| ISO | ✅ Full |
+| M3U | ✅ Full (multi-disc playlists) |
 | PBP | ❌ Not supported |
 
 ---
@@ -279,54 +301,49 @@ Supported naming patterns: `(Disc N)`, `(Disk N)`, `(CD N)`, `Disc N`, `CD N`
 ```
 HaackStation/
 ├── frontend/
-│   ├── include/          ← Header files
-│   │   ├── ui/           ← Game browser, settings, controller nav
-│   │   ├── library/      ← Game scanner, disc formats
-│   │   ├── renderer/     ← Theme engine
-│   │   └── core_bridge/  ← libretro bridge headers
-│   └── src/              ← Implementation files (mirrors include/)
-├── deps/                 ← Third-party libraries (not committed)
-├── assets/               ← Fonts, icons, logos
-└── docs/                 ← Documentation and dev diary
+│   ├── include/
+│   │   ├── ui/           — game browser, trophy hub/room, settings, nav
+│   │   ├── library/      — game scanner, disc formats
+│   │   ├── renderer/     — theme engine
+│   │   └── core_bridge/  — libretro bridge
+│   └── src/              — implementation (mirrors include/)
+├── deps/                 — third-party libraries (not committed)
+├── assets/               — fonts, icons, logo
+└── docs/                 — documentation and dev diary
 ```
 
 ---
 
 ## AI Assistance
 
-HaackStation is openly AI-assisted. Here is the full accounting:
+HaackStation is openly AI-assisted. Full accounting:
 
 - **Vision, design, testing:** John Haack (project author)
 - **Frontend code:** Claude (Anthropic AI), directed by the author
-- **Emulation core:** Beetle PSX HW by the libretro team (not modified)
-- **Logo/artwork:** Generated with Google Gemini AI, directed and refined by the author
+- **Emulation core:** Beetle PSX HW by the libretro team (unmodified)
+- **Logo/artwork:** Google Gemini AI, directed and refined by the author
 - **Font (Zrnic):** Apostrophic Labs — [dafont.com/zrnic.font](https://www.dafont.com/zrnic.font)
 
 Every design decision, feature request, and architectural choice came from the project author. The AI writes code under direction. This is disclosed openly because transparency about tooling is the right thing to do.
 
-The full development story — including every build battle, design decision, and honest assessment of difficulty — is documented in the [Development Diary](docs/HaackStation_DevDiary_Complete.docx).
+The full development story — build battles, design decisions, and the honest grind of getting CHD hashing working — is documented in the [Development Diary](docs/HaackStation_DevDiary_Complete.docx).
 
 ---
 
 ## Credits
 
-### Emulation Core
-**Beetle PSX HW / Mednafen** — the libretro team and all Mednafen contributors.
-Every accurate frame HaackStation renders is their achievement.
+**Beetle PSX HW / Mednafen** — the libretro team and all Mednafen contributors. Every accurate frame HaackStation renders is their achievement.
 
-### Libraries
-- SDL2, SDL2_ttf, SDL2_image — zlib licence
-- rcheevos 12.3 — RetroAchievements, MIT licence
+**Libraries:** SDL2, SDL2_ttf, SDL2_image (zlib) · rcheevos 12.3 (MIT) · libchdr (BSD) · SoundTouch (LGPL)
 
-### Community
 To the emulation community, to RetroAchievements for building something worth achieving in, and to everyone who has kept PlayStation 1 gaming alive for 30 years.
 
 ---
 
 ## Legal
 
-HaackStation is licensed under the **GNU General Public License v2.0**, inherited from Beetle PSX HW.
+Licensed under the **GNU General Public License v2.0**, inherited from Beetle PSX HW.
 
 PlayStation is a registered trademark of Sony Interactive Entertainment LLC. HaackStation is not affiliated with Sony Interactive Entertainment.
 
-BIOS files and game ROMs are never distributed with this project. Users supply their own from hardware they own.
+BIOS files and game ROMs are never distributed with this project.
