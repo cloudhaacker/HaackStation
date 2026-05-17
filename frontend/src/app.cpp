@@ -411,7 +411,8 @@ int HaackApp::run() {
             // core's SRAM buffer; a change means the game saved to the memory
             // card — flush immediately and show the toast.
             // The 30-second safety flush below is intentionally SILENT.
-            if (!m_activeCardPath.empty() && m_core->isGameLoaded()) {
+            if (!m_activeCardPath.empty() && m_core->isGameLoaded()
+                && !m_suppressSramPoll && SDL_GetTicks() >= m_sramSettleUntil) {
                 float deltaMs = (float)(elapsed * 1000.0);
                 m_sramPollTimer += (Uint32)deltaMs;
                 if (m_sramPollTimer >= SRAM_POLL_INTERVAL_MS) {
@@ -427,6 +428,7 @@ int HaackApp::run() {
                         m_core->flushSaveRAM(m_activeCardPath);
                         m_memcardFlushTimer = 0;
                         m_memcardToastUntil = SDL_GetTicks() + 2500;
+                        m_cardSwapToast     = false;   // normal save toast
                         std::cout << "[LiveCard] Save detected — snapshot + flush\n";
                     }
                     m_sramChecksum = crc;
@@ -707,6 +709,30 @@ void HaackApp::processInGameMenuActions() {
                          OmniSaveMode::BROWSE, shot);
         setState(AppState::OMNISAVE_VAULT);
 
+    // ── Soft Reset ────────────────────────────────────────────────────────────
+    } else if (action == InGameMenuAction::SOFT_RESET) {
+        m_inGameMenu->close();
+        if (!m_activeCardPath.empty() && m_core->isGameLoaded())
+            m_core->flushSaveRAM(m_activeCardPath);
+
+        SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+        if (audioDev) {
+            SDL_PauseAudioDevice(audioDev, 1);
+            SDL_ClearQueuedAudio(audioDev);
+        }
+        m_core->softReset();
+        if (audioDev)
+            SDL_PauseAudioDevice(audioDev, 0);
+
+        m_sramChecksum       = 0;
+        m_sramPollTimer      = 0;
+        if (m_rewind) {
+            m_rewind->reset();
+            m_rewind->init(m_core.get());  // re-attach to core so buffer refills
+        }
+        m_inputCooldownUntil = SDL_GetTicks() + 300;
+        std::cout << "[HaackStation] Soft reset OK\n";
+
     } else if (action == InGameMenuAction::CHANGE_DISC) {
         int disc = m_inGameMenu->pendingDiscIndex();
         m_inGameMenu->close();
@@ -749,6 +775,8 @@ void HaackApp::processInGameMenuActions() {
             // Reload core on the new disc
             std::string savedPath = m_currentGamePath;
             if (m_core->isGameLoaded()) m_core->unloadGame();
+            m_sramChecksum  = 0;   // prevent poll firing on stale checksum during reload
+            m_sramPollTimer = 0;
             if (m_core->loadGame(discPath)) {
                 m_currentGamePath = savedPath; // keep M3U path as canonical
                 m_saveStates->setCurrentGame(
@@ -758,6 +786,15 @@ void HaackApp::processInGameMenuActions() {
                 m_inGameMenu->setDiscInfo(discPaths, disc);
                 SDL_Texture* cover = m_browser->getCoverArtForGame(savedPath);
                 m_inGameMenu->setCoverTexture(cover);
+                // Suppress LiveCard poll during disc swap — loadSaveRAM itself
+                // can cause a checksum change that would trigger a false toast.
+                if (!m_activeCardPath.empty()) {
+                    m_core->loadSaveRAM(m_activeCardPath);
+                }
+                m_sramChecksum    = 0;              // force re-prime on first poll
+                m_sramPollTimer   = 0;
+                m_sramSettleUntil = SDL_GetTicks() + 3500; // skip poll for 3.5s after swap
+                m_cardSwapToast   = false;
                 std::cout << "[HaackStation] Disc " << (disc+1)
                           << " loaded OK\n";
             } else {
@@ -1053,14 +1090,48 @@ void HaackApp::update(float deltaMs) {
             m_omniSave->update(deltaMs);
             if (m_omniSave->wantsClose()) {
                 m_omniSave->resetClose();
+
+                // ── Card swap (hot-swap to a different card) ──────────────────
+                std::string swapPath = m_omniSave->consumeCardSwap();
+                if (!swapPath.empty() && !swapPath.empty()
+                        && swapPath != m_activeCardPath
+                        && m_core->isGameLoaded()) {
+                    // 1. Flush outgoing card
+                    if (!m_activeCardPath.empty())
+                        m_core->flushSaveRAM(m_activeCardPath);
+                    // 2. Switch active path
+                    m_activeCardPath    = swapPath;
+                    m_memcardFlushTimer = 0;
+                    m_sramChecksum      = 0;
+                    m_sramPollTimer     = 0;
+                    m_cardSwapToast     = true;
+                    // 3. Load new card into SRAM
+                    SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+                    if (audioDev) { SDL_PauseAudioDevice(audioDev, 1); SDL_ClearQueuedAudio(audioDev); }
+                    m_core->loadSaveRAM(m_activeCardPath);
+                    if (audioDev)   SDL_PauseAudioDevice(audioDev, 0);
+                    // 4. Reinit rewind buffer — old states are meaningless on a new card
+                    if (m_rewind) {
+                        m_rewind->reset();
+                        m_rewind->init(m_core.get());
+                    }
+                    // 5. Toast
+                    m_memcardToastUntil = SDL_GetTicks() + 4000;
+                    // 6. Keep OmniSave in sync for next open
+                    if (m_omniSave) m_omniSave->setActiveCardPath(m_activeCardPath);
+                    std::cout << "[HaackStation] Card swapped → " << m_activeCardPath << "\n";
+                }
+
+                // ── Card reload (same card, reload from disk) ─────────────────
                 if (m_omniSave->consumeCardReload() && m_core->isGameLoaded()) {
-                    // User confirmed card reload — flush current SRAM to disk first,
-                    // then reload from disk so core picks up the on-disk card state.
                     m_core->flushSaveRAM(m_activeCardPath);
                     m_core->loadSaveRAM(m_activeCardPath);
+                    m_sramChecksum  = 0;
+                    m_sramPollTimer = 0;
                     std::cout << "[HaackStation] Card reloaded from disk: "
                               << m_activeCardPath << "\n";
                 }
+
                 setState(m_core->isGameLoaded()
                     ? AppState::IN_GAME : AppState::GAME_BROWSER);
                 m_inputCooldownUntil = SDL_GetTicks() + 300;
@@ -1467,6 +1538,7 @@ void HaackApp::launchGame(const std::string& path) {
             m_playHistory->recordPlay(path, title);
             m_sessionStartTime = std::time(nullptr); // start session timer
         }
+        m_cardSwapToast = false;  // reset card-swap toast on new game launch
         if (m_ra && m_ra->isLoggedIn())
             m_ra->loadGame(path, m_core.get());
 
@@ -1476,8 +1548,13 @@ void HaackApp::launchGame(const std::string& path) {
         // the buffer so the game sees existing saves immediately.
         // Must happen AFTER loadGame() and AFTER RA loadGame() (both may call
         // retro_run internally on some cores, but Beetle doesn't — order is safe).
-        if (!m_activeCardPath.empty())
+        if (!m_activeCardPath.empty()) {
             m_core->loadSaveRAM(m_activeCardPath);
+            // Prime checksum so first poll doesn't fire a false LiveCard toast
+            m_sramChecksum  = m_core->getSramChecksum();
+            m_sramPollTimer = 0;
+        }
+
 
         // ── Apply per-game settings ───────────────────────────────────────────
         // Load and apply any per-game overrides (resolution, shader, etc.)
@@ -1518,6 +1595,12 @@ void HaackApp::launchGame(const std::string& path) {
                     }
                     // Reinit rewind for the newly loaded disc
                     if (m_rewind) m_rewind->init(m_core.get());
+                    // Prime checksum — suppress poll so resume doesn't trigger false toasts
+                    if (!m_activeCardPath.empty()) m_core->loadSaveRAM(m_activeCardPath);
+                    m_sramChecksum    = 0;
+                    m_sramPollTimer   = 0;
+                    m_sramSettleUntil = SDL_GetTicks() + 3500;
+                    m_cardSwapToast   = false;
                 }
 
                 m_inGameMenu->setDiscInfo(discPaths, lastDisc);
@@ -1550,6 +1633,7 @@ void HaackApp::launchGame(const std::string& path) {
                 m_inGameMenu->clearDiscInfo();
                 m_inGameMenu->setCoverTexture(nullptr);
             }
+
         }
 
         setState(AppState::IN_GAME);

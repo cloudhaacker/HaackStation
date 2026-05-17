@@ -150,7 +150,10 @@ private:
     // Shown separately from the manual screenshot toast so users know why
     // a screenshot happened — different message, distinct timer.
     Uint32 m_trophyShotToastUntil = 0;
-
+    bool   m_cardSwapToast        = false; // true = show swap msg in memcard toast
+    bool   m_suppressSramPoll    = false;
+    Uint32 m_sramSettleUntil     = 0;   // ignore poll results until this tick
+	
     // Async RA login result: -1=pending, 0=failed, 1=success.
     // Set by the login callback thread; polled on main thread in SETTINGS update.
     std::shared_ptr<std::atomic<int>> m_pendingLoginResult;
