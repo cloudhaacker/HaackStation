@@ -563,6 +563,29 @@ void TrophyRoom::renderGrid() {
                     lockClr, FontSize::TINY);
             }
 
+            // ── HC badge for hardcore unlocks ─────────────────────────────
+            // Small gold pill in the top-right corner of the badge.
+            // Only shown on unlocked achievements earned in hardcore mode.
+            if (unlocked && entry.info.hardcore) {
+                static constexpr int HC_W = 22;
+                static constexpr int HC_H = 14;
+                int hcX = cellX + BADGE_SIZE - HC_W - 2;
+                int hcY = cellY + 2;
+                SDL_Rect hcBg = { hcX, hcY, HC_W, HC_H };
+                // Dark background pill
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(m_renderer, 20, 18, 10, 210);
+                SDL_RenderFillRect(m_renderer, &hcBg);
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+                // Gold border
+                SDL_SetRenderDrawColor(m_renderer, 255, 210, 60, 255);
+                SDL_RenderDrawRect(m_renderer, &hcBg);
+                // "HC" label
+                m_theme->drawTextCentered("HC",
+                    hcX + HC_W / 2, hcY + 1,
+                    SDL_Color{ 255, 210, 60, 255 }, FontSize::TINY);
+            }
+
             // ── Label below badge ─────────────────────────────────────────
             int labelY  = cellY + BADGE_SIZE + 4;
             SDL_Color tc = selected ? pal.textPrimary
@@ -667,14 +690,34 @@ void TrophyRoom::renderDetailStrip() {
         std::string ptsStr = std::to_string(entry.info.points) + " pts";
         m_theme->drawTextCentered(ptsStr, ptsX + 55, badgeY + 12, gold, FontSize::BODY);
 
+        // HC badge in detail strip — shown below points for hardcore unlocks
+        if (entry.info.hardcore) {
+            static constexpr int HC_W = 28;
+            static constexpr int HC_H = 16;
+            int hcX = ptsX + 55 - HC_W / 2;
+            int hcY = badgeY + 36;
+            SDL_Rect hcBg = { hcX, hcY, HC_W, HC_H };
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(m_renderer, 20, 18, 10, 210);
+            SDL_RenderFillRect(m_renderer, &hcBg);
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(m_renderer, 255, 210, 60, 255);
+            SDL_RenderDrawRect(m_renderer, &hcBg);
+            m_theme->drawTextCentered("HC",
+                hcX + HC_W / 2, hcY + 1,
+                SDL_Color{ 255, 210, 60, 255 }, FontSize::TINY);
+        }
+
         // Show unlock timestamp if we have one, otherwise just "UNLOCKED"
+        // Y position shifts down slightly when the HC badge is present above it
+        int timeY = entry.info.hardcore ? badgeY + 56 : badgeY + 38;
         std::string timeStr = formatUnlockTime(entry.info.unlockTime);
         if (!timeStr.empty()) {
             m_theme->drawTextCentered(timeStr,
-                ptsX + 55, badgeY + 38, SDL_Color{80,200,120,255}, FontSize::TINY);
+                ptsX + 55, timeY, SDL_Color{80,200,120,255}, FontSize::TINY);
         } else {
             m_theme->drawTextCentered("UNLOCKED",
-                ptsX + 55, badgeY + 38, SDL_Color{80,200,120,255}, FontSize::TINY);
+                ptsX + 55, timeY, SDL_Color{80,200,120,255}, FontSize::TINY);
         }
     } else {
         m_theme->drawTextCentered(std::to_string(entry.info.points) + " pts",

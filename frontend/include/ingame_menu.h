@@ -22,7 +22,8 @@
 enum class InGameMenuAction {
     NONE,
     RESUME,
-    OPEN_OMNISAVE,   // replaces separate SAVE_STATE / LOAD_STATE — Vault handles both
+    OPEN_OMNISAVE,   // single entry point for all save features incl. card swap
+    SOFT_RESET,      // retro_reset() — restarts game, SRAM untouched
     CHANGE_DISC,
     QUIT_TO_SHELF,
 };
@@ -34,12 +35,12 @@ enum class InGameMenuSection {
 
 // Phases of the disc select entry animation (played in order)
 enum class DiscAnimPhase {
-    HOLD_COVER,   // Cover shown, stationary
-    SLIDE_COVER,  // Cover slides left and fades out
-    HOLD_STACK,   // Discs visible as one pile, stationary
-    FAN_OUT,      // Discs fan out to final positions
-    SETTLED,      // Interactive — player chooses a disc
-    LOAD_DISC,    // Confirmed — chosen disc spins and flies off screen top
+    HOLD_COVER,
+    SLIDE_COVER,
+    HOLD_STACK,
+    FAN_OUT,
+    SETTLED,
+    LOAD_DISC,
 };
 
 class InGameMenu {
@@ -56,11 +57,7 @@ public:
     void clearDiscInfo();
 
     // ── Media textures ────────────────────────────────────────────────────────
-    // Box art — borrowed, do NOT free
     void setCoverTexture(SDL_Texture* tex) { m_coverTexture = tex; }
-
-    // Disc art paths — one per disc in disc order. InGameMenu loads and owns
-    // these textures. Pass "" for discs with no scraped art.
     void setDiscArtPaths(const std::vector<std::string>& paths);
 
     void handleEvent(const SDL_Event& e);
@@ -74,34 +71,24 @@ public:
     void onWindowResize(int w, int h) { m_w = w; m_h = h; }
 
 private:
-    // ── Rendering ─────────────────────────────────────────────────────────────
     void renderMain();
     void renderDiscSelect();
+    void renderSoftResetConfirm();
 
-    // Draw one disc at (cx,cy) with given radius and opacity.
-    // discTexture: real art mapped onto circle; null = procedural fallback.
-    // selected / lifted control accent ring and drop shadow.
-    // spinAngle: rotation for the load animation (radians, 0 = no rotation).
     void renderDiscGraphic(int discIndex, int cx, int cy, int radius,
                            float opacity, bool selected, bool lifted,
                            SDL_Texture* discTexture = nullptr,
                            float spinAngle = 0.f);
-
-    // Render srcTex mapped onto a filled circle at (cx,cy,radius).
-    // Uses per-scanline chord rendering — no SDL_gfx required.
     void renderTextureAsDisc(SDL_Texture* srcTex, int cx, int cy,
                              int radius, Uint8 alpha, float spinAngle = 0.f);
 
-    // ── Navigation ────────────────────────────────────────────────────────────
     void rebuildMenuItems();
     void navigateMain(NavAction action);
     void navigateDiscSelect(NavAction action);
 
-    // ── Disc art textures ─────────────────────────────────────────────────────
     void loadDiscTextures();
     void freeDiscTextures();
 
-    // ── Core members ──────────────────────────────────────────────────────────
     SDL_Renderer*     m_renderer   = nullptr;
     ThemeEngine*      m_theme      = nullptr;
     ControllerNav*    m_nav        = nullptr;
@@ -118,51 +105,37 @@ private:
     std::vector<MenuItem> m_items;
     int m_selectedItem = 0;
 
-    // ── Disc select ───────────────────────────────────────────────────────────
-    std::vector<std::string>  m_discPaths;       // game file paths
-    std::vector<std::string>  m_discArtPaths;    // scraped art paths (parallel)
-    std::vector<SDL_Texture*> m_discTextures;    // loaded textures (owned here)
-    int  m_currentDisc     = 0;
-    int  m_highlightedDisc = 0;
-    int  m_pendingDiscIndex= 0;
+    bool m_confirmSoftReset = false;
+
+    std::vector<std::string>  m_discPaths;
+    std::vector<std::string>  m_discArtPaths;
+    std::vector<SDL_Texture*> m_discTextures;
+    int  m_currentDisc      = 0;
+    int  m_highlightedDisc  = 0;
+    int  m_pendingDiscIndex = 0;
 
     SDL_Texture* m_coverTexture = nullptr;  // borrowed, do NOT free
 
-    // ── Disc select animation state ───────────────────────────────────────────
-    DiscAnimPhase m_discPhase    = DiscAnimPhase::HOLD_COVER;
-    float         m_phaseTimer   = 0.f;     // ms elapsed in current phase
+    DiscAnimPhase m_discPhase     = DiscAnimPhase::HOLD_COVER;
+    float         m_phaseTimer    = 0.f;
+    float         m_coverX        = 0.f;
+    float         m_coverAlpha    = 1.f;
+    float         m_fanProgress   = 0.f;
+    float         m_fanCentre     = 0.f;
+    float         m_loadTimer     = 0.f;
+    float         m_loadSpinAngle = 0.f;
 
-    // Cover animation
-    float m_coverX      = 0.f;   // current X offset from centre (0 = centred)
-    float m_coverAlpha  = 1.f;   // 0.0 = invisible, 1.0 = fully visible
-
-    // Fan animation: 0 = all stacked, 1 = fully spread
-    float m_fanProgress = 0.f;
-
-    // Smooth selection tracking: lerps toward m_highlightedDisc
-    float m_fanCentre   = 0.f;   // fractional disc index the fan centres on
-
-    // Load (exit) animation
-    float m_loadTimer   = 0.f;   // ms into load animation
-    float m_loadSpinAngle = 0.f; // accumulated spin angle (radians)
-
-    // Phase durations (ms)
     static constexpr float DUR_HOLD_COVER  = 650.f;
     static constexpr float DUR_SLIDE_COVER = 620.f;
     static constexpr float DUR_HOLD_STACK  = 420.f;
     static constexpr float DUR_FAN_OUT     = 850.f;
-    static constexpr float DUR_LOAD        = 900.f;  // disc flies off screen
-
-    // Fan centre lerp speed (fraction per second — higher = snappier)
+    static constexpr float DUR_LOAD        = 900.f;
     static constexpr float FAN_LERP_SPEED  = 6.f;
 
-    // Cached centreY at the moment SETTLED phase begins — prevents a
-    // single-frame jump when the footer hint bar renders and affects layout.
     int m_settledCentreY = 0;
 
-    // ── General ───────────────────────────────────────────────────────────────
     float m_openAnim  = 0.f;
-    float m_spinAngle = 0.f;   // save state spinner
+    float m_spinAngle = 0.f;
 
     int m_w = 1280;
     int m_h = 720;

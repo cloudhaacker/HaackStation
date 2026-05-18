@@ -68,6 +68,7 @@ bool LibretroBridge::loadCore(const std::string& corePath) {
     LOAD_SYM(m_retro_load_game,              retro_load_game);
     LOAD_SYM(m_retro_unload_game,            retro_unload_game);
     LOAD_SYM(m_retro_run,                    retro_run);
+    LOAD_SYM(m_retro_reset,                  retro_reset);         // ← soft reset
     LOAD_SYM(m_retro_get_system_info,        retro_get_system_info);
     LOAD_SYM(m_retro_get_system_av_info,     retro_get_system_av_info);
     LOAD_SYM(m_retro_set_environment,        retro_set_environment);
@@ -118,19 +119,20 @@ void LibretroBridge::unloadCore() {
     m_coreLoaded = false;
 
     // Clear all function pointers
-    m_retro_init                   = nullptr;
-    m_retro_deinit                 = nullptr;
-    m_retro_load_game              = nullptr;
-    m_retro_unload_game            = nullptr;
-    m_retro_run                    = nullptr;
-    m_retro_get_system_info        = nullptr;
-    m_retro_get_system_av_info     = nullptr;
-    m_retro_set_environment        = nullptr;
-    m_retro_set_video_refresh      = nullptr;
-    m_retro_set_audio_sample       = nullptr;
-    m_retro_set_audio_sample_batch = nullptr;
-    m_retro_set_input_poll         = nullptr;
-    m_retro_set_input_state        = nullptr;
+    m_retro_init                       = nullptr;
+    m_retro_deinit                     = nullptr;
+    m_retro_load_game                  = nullptr;
+    m_retro_unload_game                = nullptr;
+    m_retro_run                        = nullptr;
+    m_retro_reset                      = nullptr;  // ← soft reset
+    m_retro_get_system_info            = nullptr;
+    m_retro_get_system_av_info         = nullptr;
+    m_retro_set_environment            = nullptr;
+    m_retro_set_video_refresh          = nullptr;
+    m_retro_set_audio_sample           = nullptr;
+    m_retro_set_audio_sample_batch     = nullptr;
+    m_retro_set_input_poll             = nullptr;
+    m_retro_set_input_state            = nullptr;
     m_retro_set_controller_port_device = nullptr;
 
     std::cout << "[Bridge] Core unloaded\n";
@@ -333,6 +335,20 @@ uint32_t LibretroBridge::getSramChecksum() const {
             crc = (crc >> 1) ^ (POLY & -(crc & 1u));
     }
     return crc ^ 0xFFFFFFFFu;
+}
+
+// ─── Soft Reset ───────────────────────────────────────────────────────────────
+// Calls retro_reset() on the core — equivalent to the PS1 Reset button.
+// The game restarts from its boot sequence; SRAM is untouched. The caller
+// (app.cpp) is responsible for flushing SRAM to disk BEFORE calling this, so
+// the on-disk card reflects the last in-game save before the reset.
+void LibretroBridge::softReset() {
+    if (!m_gameLoaded || !m_retro_reset) {
+        std::cout << "[Bridge] softReset: no game loaded, ignoring\n";
+        return;
+    }
+    std::cout << "[Bridge] Soft reset — calling retro_reset()\n";
+    m_retro_reset();
 }
 
 

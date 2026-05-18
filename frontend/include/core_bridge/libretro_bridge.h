@@ -64,6 +64,12 @@ public:
     // a change means the game wrote to the memory card in the interim.
     uint32_t getSramChecksum() const;
 
+    // ── Soft Reset ───────────────────────────────────────────────────────────
+    // Calls retro_reset() on the core — equivalent to pressing the Reset button
+    // on a real PS1. The game restarts from its boot sequence; SRAM is
+    // untouched. No-op if no game is loaded.
+    void softReset();
+
     void runFrame();
     void blitFramebuffer(SDL_Renderer* renderer);
     void setButtonState(int port, int buttonMask);
@@ -117,6 +123,7 @@ private:
     bool   (*m_retro_load_game)(const void*)          = nullptr;
     void   (*m_retro_unload_game)()                   = nullptr;
     void   (*m_retro_run)()                           = nullptr;
+    void   (*m_retro_reset)()                         = nullptr;  // ← soft reset
     void   (*m_retro_get_system_info)(void*)          = nullptr;
     void   (*m_retro_get_system_av_info)(void*)       = nullptr;
     void   (*m_retro_set_environment)(void*)          = nullptr;

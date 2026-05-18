@@ -148,6 +148,11 @@ private:
     std::string m_raUsernameStaging;
     std::string m_raPasswordStaging;
 
+    // Temporary staging for ScreenScraper credentials entered via OSK
+    // (copied to m_settings->ssUser / ssPassword only on Save action)
+    std::string m_ssUsernameStaging;
+    std::string m_ssPasswordStaging;
+
     std::vector<SettingTab> m_tabs;
     int  m_activeTab    = 0;
     int  m_activeItem   = 0;

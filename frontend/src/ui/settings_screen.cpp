@@ -55,6 +55,8 @@ SettingsScreen::SettingsScreen(SDL_Renderer* renderer, ThemeEngine* theme,
     // Pre-seed staging from saved settings so field shows current value on open
     m_raUsernameStaging = settings->raUser;
     m_raPasswordStaging = "";   // Never pre-populate password for security
+    m_ssUsernameStaging = settings->ssUser;
+    m_ssPasswordStaging = "";   // Never pre-populate password for security
     buildTabs();
 }
 
@@ -93,12 +95,6 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeAction("rescan", "Rescan Library",
             "Re-scan ROMs folder for new games",
             []() { std::cout << "[Settings] Rescan triggered\n"; }));
-        tab.items.push_back(makeSep());
-        tab.items.push_back(makeLabel("ss_header", "ScreenScraper Account",
-            "Register free at screenscraper.fr"));
-        tab.items.push_back(makeAction("scrape", "Scrape Game Art",
-            "Download cover art, screenshots and info",
-            [this]() { m_wantsScrape = true; }));
         tab.items.push_back(makeSep());
         tab.items.push_back(makeAction("quit", "Quit HaackStation",
             "Exit the application",
@@ -139,18 +135,73 @@ void SettingsScreen::buildTabs() {
         m_tabs.push_back(tab);
     }
 
-    // ── RetroAchievements ─────────────────────────────────────────────────────
+    // ── Services ──────────────────────────────────────────────────────────────
+    // External services HaackStation can connect to.
+    // ScreenScraper: artwork and metadata scraping.
+    // RetroAchievements: achievement tracking and leaderboards.
+    // More services (cloud sync, etc.) will be added here in future versions.
+    // Note: "Accounts" is reserved for Eden local user profiles (v0.8).
     {
         SettingTab tab;
-        tab.label = "RetroAchievements";
+        tab.label = "Services";
 
-        // ── Account section ───────────────────────────────────────────────────
-        tab.items.push_back(makeLabel("ra_acct_header", "Account",
-            m_raLoginPending   ? "Connecting..." :
+        // ── ScreenScraper ─────────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("ss_header", "ScreenScraper",
+            m_settings->ssUser.empty() ? "Register free at screenscraper.fr"
+                                       : ("Connected as: " + m_settings->ssUser)));
+
+        tab.items.push_back(makeAction("ss_username", "Username",
+            m_ssUsernameStaging.empty() ? "Tap to enter username" : m_ssUsernameStaging,
+            [this]() {
+                m_osk->setText(m_ssUsernameStaging);
+                m_osk->open("ScreenScraper Username", 64, false,
+                    [this](bool ok, const std::string& text) {
+                        if (ok) {
+                            m_ssUsernameStaging = text;
+                            buildTabs();
+                        }
+                    });
+            }));
+
+        tab.items.push_back(makeAction("ss_password", "Password",
+            m_ssPasswordStaging.empty() ? "Tap to enter password"
+                                        : std::string(m_ssPasswordStaging.size(), '*'),
+            [this]() {
+                m_osk->open("ScreenScraper Password", 64, true,
+                    [this](bool ok, const std::string& text) {
+                        if (ok) {
+                            m_ssPasswordStaging = text;
+                            buildTabs();
+                        }
+                    });
+            }));
+
+        tab.items.push_back(makeAction("ss_save", "Save Credentials",
+            "Store username and password for scraping",
+            [this]() {
+                if (!m_ssUsernameStaging.empty()) {
+                    m_settings->ssUser     = m_ssUsernameStaging;
+                    m_settings->ssPassword = m_ssPasswordStaging;
+                    m_ssPasswordStaging.clear();
+                    buildTabs();
+                    std::cout << "[Services] ScreenScraper credentials saved for: "
+                              << m_settings->ssUser << "\n";
+                }
+            }));
+
+        tab.items.push_back(makeAction("ss_scrape", "Scrape Game Art",
+            "Download cover art, screenshots and info for your library",
+            [this]() { m_wantsScrape = true; }));
+
+        tab.items.push_back(makeSep());
+
+        // ── RetroAchievements ─────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("ra_header", "RetroAchievements",
+            m_raLoginPending        ? "Connecting..." :
             m_settings->raUser.empty() ? "Not logged in"
                                        : ("Logged in as: " + m_settings->raUser)));
 
-        tab.items.push_back(makeAction("ra_username", "Set Username",
+        tab.items.push_back(makeAction("ra_username", "Username",
             m_raUsernameStaging.empty() ? "Tap to enter username" : m_raUsernameStaging,
             [this]() {
                 m_osk->setText(m_raUsernameStaging);
@@ -158,12 +209,12 @@ void SettingsScreen::buildTabs() {
                     [this](bool ok, const std::string& text) {
                         if (ok) {
                             m_raUsernameStaging = text;
-                            buildTabs(); // refresh label
+                            buildTabs();
                         }
                     });
             }));
 
-        tab.items.push_back(makeAction("ra_password", "Set Password",
+        tab.items.push_back(makeAction("ra_password", "Password",
             m_raPasswordStaging.empty() ? "Tap to enter password"
                                         : std::string(m_raPasswordStaging.size(), '*'),
             [this]() {
@@ -171,7 +222,7 @@ void SettingsScreen::buildTabs() {
                     [this](bool ok, const std::string& text) {
                         if (ok) {
                             m_raPasswordStaging = text;
-                            buildTabs(); // refresh label
+                            buildTabs();
                         }
                     });
             }));
@@ -183,10 +234,10 @@ void SettingsScreen::buildTabs() {
                     m_settings->raUser     = m_raUsernameStaging;
                     m_settings->raPassword = m_raPasswordStaging;
                     m_raPasswordStaging.clear();
-                    m_wantsRaLogin  = true;
-                    m_raLoginPending = true;   // show "Connecting..." until result arrives
-                    buildTabs(); // refresh account label
-                    std::cout << "[RA Settings] Login requested for user: "
+                    m_wantsRaLogin   = true;
+                    m_raLoginPending = true;
+                    buildTabs();
+                    std::cout << "[Services] RA login requested for user: "
                               << m_settings->raUser << "\n";
                 }
             }));
@@ -206,8 +257,8 @@ void SettingsScreen::buildTabs() {
 
         tab.items.push_back(makeSep());
 
-        // ── Options section ───────────────────────────────────────────────────
-        tab.items.push_back(makeLabel("ra_opts_header", "Options", ""));
+        // ── RetroAchievements options ─────────────────────────────────────────
+        tab.items.push_back(makeLabel("ra_opts_header", "RA Options", ""));
 
         tab.items.push_back(makeToggle("ra_hardcore", "Hardcore Mode",
             "Disables save states, rewind, and cheats — unlocks Hardcore badges",
