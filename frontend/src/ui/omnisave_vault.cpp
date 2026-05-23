@@ -36,6 +36,13 @@ OmniSaveVault::OmniSaveVault(SDL_Renderer* renderer, ThemeEngine* theme,
     , m_saves(saveStates), m_memCards(memCards)
 {
     SDL_GetRendererOutputSize(renderer, &m_w, &m_h);
+	
+    m_importScreen = std::make_unique<OmniSaveImport>(
+        m_memCards, m_renderer);
+
+    // Ensure import directories exist
+    fs::create_directories("memcards/import");
+    fs::create_directories("memcards/import/done");	
 }
 
 OmniSaveVault::~OmniSaveVault() {
@@ -539,6 +546,40 @@ void OmniSaveVault::update(float deltaMs) {
         m_iconAnimMs -= ICON_FRAME_MS;
         m_iconFrame = (m_iconFrame + 1) % 3;
     }
+	
+    // Delegate to import screen while it's open
+    if (m_importPhase == ImportPhase::IMPORTING) {
+        m_importScreen->update(deltaMs);
+        if (!m_importScreen->isOpen()) {
+            // Screen closed — check if we need a vault refresh
+            if (m_importScreen->needsVaultRefresh()) {
+                loadMemCardEntries();
+            }
+            // Move source file to import/done/
+            if (!m_importPending.empty()) {
+                moveToImportDone(m_importPending);
+                m_importPending.clear();
+            }
+            m_importPhase = ImportPhase::NONE;
+            m_importBannerVisible = false;
+            m_importBannerAlpha   = 0.f;
+        }
+        return;  // don't run normal vault update while import screen is open
+    }
+
+    // Scan for new import files (once per second)
+    m_importScanTimer += deltaMs;
+    if (m_importScanTimer >= 1000.f) {
+        m_importScanTimer = 0.f;
+        scanImportFolder();
+    }
+
+    // Banner alpha animation
+    if (m_importBannerVisible) {
+        m_importBannerAlpha = std::min(255.f, m_importBannerAlpha + deltaMs * 0.4f);
+    } else {
+        m_importBannerAlpha = std::max(0.f, m_importBannerAlpha - deltaMs * 0.4f);
+    }	
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,6 +611,16 @@ void OmniSaveVault::handleEvent(const SDL_Event& e) {
         }
         return;
     }
+	
+    // Delegate to import screen while it's open
+    if (m_importPhase == ImportPhase::IMPORTING) {
+        m_importScreen->handleInput(e);
+        return;
+    }
+
+    // Banner input: [X] / Square opens import screen
+    handleImportInput(e);	
+	
 
     // Time Machine owns its own BACK — returns to MEMCARD, does not close vault
     if (m_focus == OmniPanel::CHRONICLE) {
@@ -1108,6 +1159,16 @@ void OmniSaveVault::render() {
     renderFooter();
     if (m_confirmAction != ConfirmAction::NONE)
         renderConfirmOverlay();
+
+    // Import screen renders on top when active
+    if (m_importPhase == ImportPhase::IMPORTING) {
+        m_importScreen->render(m_renderer, m_w, m_h);
+    }
+
+    // Import banner (shows at bottom of vault when file detected)
+    if (m_importBannerAlpha > 1.f)
+        renderImportBanner(m_renderer, m_w, m_h);	
+	
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1574,4 +1635,154 @@ void OmniSaveVault::renderFooter() {
     if (m_focus == OmniPanel::SAVESTATES)
         m_theme->drawButtonHint(m_w - 390, cy, "Start",
             "Delete", m_theme->palette().textSecond);
+}
+
+// ── scanImportFolder() ───────────────────────────────────────────────────────
+
+void OmniSaveVault::scanImportFolder()
+{
+    // Don't clobber an already-pending file
+    if (m_importPhase != ImportPhase::NONE) return;
+
+    const std::string importDir = "memcards/import";
+    if (!fs::exists(importDir)) return;
+
+    for (const auto& entry : fs::directory_iterator(importDir)) {
+        if (!entry.is_regular_file()) continue;
+
+        std::string p = entry.path().string();
+        std::string ext = entry.path().extension().string();
+
+        // Normalise extension to lowercase
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+        if (ext == ".mcr" || ext == ".zip") {
+            m_importPending     = p;
+            m_importPhase       = ImportPhase::DETECTED;
+            m_importBannerVisible = true;
+            SDL_Log("[OmniSaveVault] Import file detected: %s", p.c_str());
+            return; // handle one file at a time
+        }
+    }
+}
+
+// ── openImportScreen() ───────────────────────────────────────────────────────
+
+void OmniSaveVault::openImportScreen()
+{
+    if (m_importPending.empty()) return;
+
+    bool ok = m_importScreen->open(m_importPending, m_activeCardPath);
+    if (ok) {
+        m_importPhase = ImportPhase::IMPORTING;
+    } else {
+        // Parse failed — move to done anyway so it doesn't loop forever
+        SDL_Log("[OmniSaveVault] Import screen open failed for %s",
+                m_importPending.c_str());
+        moveToImportDone(m_importPending);
+        m_importPending.clear();
+        m_importPhase         = ImportPhase::NONE;
+        m_importBannerVisible = false;
+    }
+}
+
+// ── moveToImportDone() ───────────────────────────────────────────────────────
+
+void OmniSaveVault::moveToImportDone(const std::string& srcPath)
+{
+    const std::string doneDir = "memcards/import/done";
+    fs::create_directories(doneDir);
+
+    std::string filename  = fs::path(srcPath).filename().string();
+    std::string destPath  = doneDir + "/" + filename;
+
+    // If a file with the same name already exists in done/, append a counter
+    if (fs::exists(destPath)) {
+        std::string stem = fs::path(srcPath).stem().string();
+        std::string ext  = fs::path(srcPath).extension().string();
+        int counter = 1;
+        do {
+            destPath = doneDir + "/" + stem + "_" + std::to_string(counter++) + ext;
+        } while (fs::exists(destPath) && counter < 999);
+    }
+
+    std::error_code ec;
+    fs::rename(srcPath, destPath, ec);
+    if (ec) {
+        // rename can fail across filesystems — fall back to copy + delete
+        fs::copy(srcPath, destPath, fs::copy_options::overwrite_existing, ec);
+        if (!ec) std::remove(srcPath.c_str());
+    }
+
+    SDL_Log("[OmniSaveVault] Moved import file to: %s", destPath.c_str());
+}
+
+// ── handleImportInput() ──────────────────────────────────────────────────────
+
+void OmniSaveVault::handleImportInput(const SDL_Event& e)
+{
+    if (m_importPhase != ImportPhase::DETECTED) return;
+
+    bool triggered = false;
+    if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+        // [X] / Square opens import; [B] dismisses banner without importing
+        if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X)  triggered = true;
+        if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+            // Dismiss banner (file stays in import/ until next scan would
+            // re-detect — but we move it to done so it won't loop)
+            moveToImportDone(m_importPending);
+            m_importPending.clear();
+            m_importPhase         = ImportPhase::NONE;
+            m_importBannerVisible = false;
+        }
+    } else if (e.type == SDL_KEYDOWN) {
+        if (e.key.keysym.sym == SDLK_i) triggered = true; // keyboard shortcut
+    }
+
+    if (triggered) openImportScreen();
+}
+
+// ── renderImportBanner() ─────────────────────────────────────────────────────
+
+void OmniSaveVault::renderImportBanner(SDL_Renderer* r, int screenW, int screenH)
+{
+    // A slim banner at the very bottom of the screen, same style as the
+    // "Trophy auto-screenshot" toast.
+    static constexpr int BANNER_H = 44;
+    static constexpr int BANNER_W = 560;
+
+    int bx = (screenW - BANNER_W) / 2;
+    int by = screenH - BANNER_H - 14;
+
+    uint8_t alpha = static_cast<uint8_t>(std::min(255.f, m_importBannerAlpha));
+
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+
+    // Background
+    SDL_SetRenderDrawColor(r, 15, 30, 50, static_cast<uint8_t>(alpha * 230 / 255));
+    SDL_Rect bgRect{bx, by, BANNER_W, BANNER_H};
+    SDL_RenderFillRect(r, &bgRect);
+
+    // Teal border
+    SDL_SetRenderDrawColor(r, 80, 200, 180, alpha);
+    SDL_RenderDrawRect(r, &bgRect);
+
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+
+    // Icon dot (small teal square, left side)
+    SDL_SetRenderDrawColor(r, 80, 200, 180, 255);
+    SDL_Rect dot{bx + 14, by + BANNER_H / 2 - 4, 8, 8};
+    SDL_RenderFillRect(r, &dot);
+
+    // Text
+    std::string filename = fs::path(m_importPending).filename().string();
+    std::string msg = "Import ready: " + filename;
+
+    // Main text
+    SDL_Color textCol{220, 220, 220, alpha};
+    m_theme->drawText(msg, bx + 30, by + 12, textCol, FontSize::TINY);
+
+    // Hint on right side
+    SDL_Color hintCol{120, 200, 170, alpha};
+    m_theme->drawText("[X] Import", bx + BANNER_W - 90, by + 12, hintCol, FontSize::TINY);
 }

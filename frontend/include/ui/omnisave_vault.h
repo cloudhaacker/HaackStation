@@ -5,11 +5,13 @@
 #include "memcard_manager.h"
 #include "theme_engine.h"
 #include "controller_nav.h"
+#include "ui/omnisave_import.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <string>
 #include <vector>
 #include <array>
+#include <memory>
 #include <functional>
 
 // ─── PS1 memory card save entry ───────────────────────────────────────────────
@@ -113,6 +115,31 @@ public:
     void setActiveCardPath(const std::string& path) { m_activeCardPath = path; }
 
 private:
+    // ── Import watcher ───────────────────────────────────────────────────────────
+    enum class ImportPhase {
+    NONE,       // nothing pending
+    DETECTED,   // file found, showing banner
+    IMPORTING,  // import screen is open
+};
+
+    ImportPhase              m_importPhase    = ImportPhase::NONE;
+    std::string              m_importPending; // full path to detected file
+    float                    m_importScanTimer = 0.f;
+    static constexpr float   IMPORT_SCAN_INTERVAL = 1.0f;  // seconds between scans
+
+    std::unique_ptr<OmniSaveImport> m_importScreen;
+
+    // Banner animation
+    float m_importBannerAlpha = 0.f;   // 0..255, fades in/out
+    bool  m_importBannerVisible = false;
+
+    // Private method declarations to add:
+    void  scanImportFolder();
+    void  openImportScreen();
+    void  moveToImportDone(const std::string& srcPath);
+    void  renderImportBanner(SDL_Renderer* r, int screenW, int screenH);
+    void  handleImportInput(const SDL_Event& e);
+
     // ── Data loading ──────────────────────────────────────────────────────────
     void loadMemCardEntries();
     void loadGameCardSlots();      // populate m_gameCards from memcards/per_game/

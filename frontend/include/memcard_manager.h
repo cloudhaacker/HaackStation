@@ -23,7 +23,9 @@
 // The mode can be set globally or per-game via PerGameSettings.
 
 #include <string>
+#include <vector>
 #include <filesystem>
+#include <SDL2/SDL.h>
 
 namespace fs = std::filesystem;
 
@@ -67,6 +69,50 @@ public:
     std::string activeCardPath(const std::string& gameSerial) const {
         return slotPath(1, gameSerial);
     }
+
+    // ── OmniSave Import ───────────────────────────────────────────────────────
+
+    /**
+     * A parsed, display-ready view of a single PS1 memory card directory entry.
+     * Used by the OmniSave import screen to show the user what they're importing.
+     */
+    struct ImportBlock {
+        int         slotIndex   = -1;   // 0-14, directory frame index in source MCR
+        std::string title;              // Decoded Shift-JIS title (or serial fallback)
+        std::string serial;             // e.g. "SCUS-94163"
+        int         blocksUsed  = 0;    // how many 8KB blocks this save occupies
+        bool        isEmpty     = true; // true if slot is free / deleted
+        bool        isCorrupted = false;// true if allocation chain is broken
+
+        // SpriteCard animation frames — decoded icon pixels (16x16 each frame)
+        std::vector<std::vector<SDL_Color>> frames;
+        int frameCount = 0;
+    };
+
+    /**
+     * Opens a .mcr file read-only and parses all 15 directory entries into
+     * ImportBlock structs. Does NOT set this as the active card.
+     *
+     * @param path   Full filesystem path to the source .mcr
+     * @param out    Populated on success; cleared on failure
+     * @return true on success
+     */
+    bool loadCardForImport(const std::string& path,
+                           std::vector<ImportBlock>& out);
+
+    /**
+     * Copies one save block from a source .mcr into the currently-active card.
+     * The operation is atomic: writes to a temp file then renames.
+     *
+     * @param sourcePath   Path to the source .mcr file
+     * @param slotIndex    Directory frame index (0-14) to copy
+     * @param errorOut     Human-readable error if this returns false
+     * @return true on success
+     */
+    bool importBlock(const std::string& sourcePath,
+                     int                slotIndex,
+                     const std::string& destCardPath,
+                     std::string&       errorOut);
 
 private:
     std::string slotPath(int slot, const std::string& gameSerial) const;

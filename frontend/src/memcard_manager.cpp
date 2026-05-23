@@ -13,6 +13,10 @@ void MemCardManager::ensureDirectories() const {
     fs::create_directories(m_baseDir + "per_game/");
 }
 
+static constexpr int MCR_SIZE  = 131072;  // 128 KB
+static constexpr int NUM_SLOTS = 15;
+static constexpr int BLOCK_SIZE = 8192;
+
 // ─── buildBlankCard ───────────────────────────────────────────────────────────
 // Returns a properly-formatted 128 KB PS1 memory card image that Beetle PSX
 // will accept, read into its internal SRAM buffer, and expose via
@@ -172,4 +176,251 @@ std::vector<std::string> MemCardManager::listPerGameCards() const {
 size_t MemCardManager::cardSize(const std::string& path) {
     try { return fs::file_size(path); }
     catch (...) { return 0; }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helper: read raw MCR bytes from disk
+// ─────────────────────────────────────────────────────────────────────────────
+static bool readMcrRaw(const std::string& path,
+                        std::vector<uint8_t>& data)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    data.resize(MCR_SIZE);
+    size_t read = fread(data.data(), 1, MCR_SIZE, f);
+    fclose(f);
+    return (read == MCR_SIZE);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  loadCardForImport
+// ─────────────────────────────────────────────────────────────────────────────
+bool MemCardManager::loadCardForImport(const std::string& path,
+                                        std::vector<ImportBlock>& out)
+{
+    out.clear();
+
+    std::vector<uint8_t> data;
+    if (!readMcrRaw(path, data)) {
+        SDL_Log("[MemCardManager] loadCardForImport: failed to read %s", path.c_str());
+        return false;
+    }
+
+    // PS1 MCR directory table starts at 0x0200.
+    // Each entry is 128 bytes.  Slots 0-14 are user saves (slot 0 = frame 1).
+    // Byte 0 of each frame = allocation state:
+    //   0x51 = first block of a save
+    //   0x52 = middle block
+    //   0x53 = last block
+    //   0xA0 = first block (deleted)
+    //   0xFF = free
+    static constexpr int DIR_BASE   = 0x0200;
+    static constexpr int FRAME_SIZE = 128;
+    static constexpr int DATA_BASE  = 0x2000;   // save data starts at 0x2000
+
+    for (int i = 0; i < NUM_SLOTS; ++i) {
+        ImportBlock blk;
+        blk.slotIndex = i;
+
+        const uint8_t* frame = data.data() + DIR_BASE + (i * FRAME_SIZE);
+        uint8_t state = frame[0];
+
+        // Only import "first block" entries — we follow the chain from there
+        if (state == 0xFF) {
+            // Free slot
+            blk.isEmpty = true;
+            out.push_back(blk);
+            continue;
+        }
+        if (state != 0x51 && state != 0xA1) {
+            // Middle/last block, or deleted first block — skip as standalone entry
+            // (will be picked up when we process the chain for a 0x51 slot)
+            blk.isEmpty = true;
+            out.push_back(blk);
+            continue;
+        }
+
+        blk.isEmpty = (state == 0xA1); // deleted saves shown greyed-out
+
+        // --- Serial  (bytes 0x0A–0x13, null-terminated ASCII) ---
+        char serial[16] = {};
+        memcpy(serial, frame + 0x0A, 12);
+        serial[12] = '\0';
+        blk.serial = serial;
+
+        // --- Title  (bytes 0x60–0xBF, Shift-JIS, 64 bytes max) ---
+        // Reuse the existing decodeMcrTitle helper
+        // Read raw title bytes (Shift-JIS, offset 0x60 in the directory frame)
+        const uint8_t* titleBytes = frame + 0x60;
+        std::string title;
+        for (int t = 0; t < 64 && titleBytes[t] != 0; ++t)
+            title += (char)titleBytes[t];
+        blk.title = title.empty() ? blk.serial : title;
+
+        // --- Block count: follow next-block chain ---
+        blk.blocksUsed = 1;
+        int next = (frame[0x08] | (frame[0x09] << 8)); // link pointer
+        int safety = 0;
+        while (next != 0xFFFF && safety++ < NUM_SLOTS) {
+            blk.blocksUsed++;
+            if (next < 0 || next >= NUM_SLOTS) {
+                blk.isCorrupted = true;
+                break;
+            }
+            const uint8_t* nf = data.data() + DIR_BASE + (next * FRAME_SIZE);
+            next = (nf[0x08] | (nf[0x09] << 8));
+        }
+
+        // --- Icon frames (reuse existing sprite loader) ---
+        // loadSpriteFrames reads the save-data block at DATA_BASE + slot*BLOCK_SIZE
+        // and returns up to 3 animation frames as 16x16 colour arrays.
+        // Leave frames empty for now — OmniSaveImport will render a placeholder
+        blk.frameCount = 0;
+
+        out.push_back(blk);
+    }
+
+    return true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  importBlock
+// ─────────────────────────────────────────────────────────────────────────────
+bool MemCardManager::importBlock(const std::string& sourcePath,
+                                  int                slotIndex,
+                                  const std::string& destCardPath,
+                                  std::string&       errorOut)
+{
+    // --- Load source card ---
+    std::vector<uint8_t> src;
+    if (!readMcrRaw(sourcePath, src)) {
+        errorOut = "Could not read source file.";
+        return false;
+    }
+
+    // --- Load active (destination) card ---
+    if (destCardPath.empty()) {
+        errorOut = "No active memory card.";
+        return false;
+    }
+    std::vector<uint8_t> dst;
+    if (!readMcrRaw(destCardPath, dst)) {
+        errorOut = "Could not read active card.";
+        return false;
+    }
+
+    static constexpr int DIR_BASE   = 0x0200;
+    static constexpr int FRAME_SIZE = 128;
+    static constexpr int DATA_BASE  = 0x2000;
+
+    // --- Verify source slot is a valid first-block entry ---
+    const uint8_t* srcFrame = src.data() + DIR_BASE + (slotIndex * FRAME_SIZE);
+    uint8_t srcState = srcFrame[0];
+    if (srcState != 0x51 && srcState != 0xA1) {
+        errorOut = "Source slot is not a save entry.";
+        return false;
+    }
+
+    // --- Collect all source blocks in the chain ---
+    std::vector<int> srcChain;
+    srcChain.push_back(slotIndex);
+    int next = srcFrame[0x08] | (srcFrame[0x09] << 8);
+    int safety = 0;
+    while (next != 0xFFFF && safety++ < NUM_SLOTS) {
+        if (next < 0 || next >= NUM_SLOTS) {
+            errorOut = "Source save chain is corrupted.";
+            return false;
+        }
+        srcChain.push_back(next);
+        const uint8_t* nf = src.data() + DIR_BASE + (next * FRAME_SIZE);
+        next = nf[0x08] | (nf[0x09] << 8);
+    }
+
+    // --- Find free destination slots ---
+    std::vector<int> dstFree;
+    for (int i = 0; i < NUM_SLOTS; ++i) {
+        uint8_t state = dst[DIR_BASE + i * FRAME_SIZE];
+        if (state == 0xFF) dstFree.push_back(i);
+    }
+    if ((int)dstFree.size() < (int)srcChain.size()) {
+        errorOut = "Not enough free space on active card ("
+                 + std::to_string(srcChain.size()) + " blocks needed, "
+                 + std::to_string(dstFree.size()) + " free).";
+        return false;
+    }
+
+    // --- Map source chain → destination slots ---
+    // We'll use the first N free slots, assigned in order.
+    std::vector<int> dstChain;
+    for (int i = 0; i < (int)srcChain.size(); ++i)
+        dstChain.push_back(dstFree[i]);
+
+    // --- Copy directory frames into destination ---
+    for (int ci = 0; ci < (int)srcChain.size(); ++ci) {
+        int si = srcChain[ci];
+        int di = dstChain[ci];
+
+        uint8_t* dstFrame = dst.data() + DIR_BASE + (di * FRAME_SIZE);
+        const uint8_t* srcFrameN = src.data() + DIR_BASE + (si * FRAME_SIZE);
+
+        memcpy(dstFrame, srcFrameN, FRAME_SIZE);
+
+        // Fix up allocation state: deleted saves become live on import
+        if (dstFrame[0] == 0xA1) dstFrame[0] = 0x51;
+        if (dstFrame[0] == 0xA2) dstFrame[0] = 0x52;
+        if (dstFrame[0] == 0xA3) dstFrame[0] = 0x53;
+
+        // Fix up next-block link pointer to destination slot numbering
+        if (ci < (int)dstChain.size() - 1) {
+            int dstNext = dstChain[ci + 1];
+            dstFrame[0x08] = static_cast<uint8_t>(dstNext & 0xFF);
+            dstFrame[0x09] = static_cast<uint8_t>((dstNext >> 8) & 0xFF);
+        } else {
+            // Last block — link = 0xFFFF
+            dstFrame[0x08] = 0xFF;
+            dstFrame[0x09] = 0xFF;
+        }
+
+        // Recalculate the directory-frame checksum (XOR of bytes 0x00–0x7E)
+        uint8_t xorSum = 0;
+        for (int b = 0; b < 127; ++b) xorSum ^= dstFrame[b];
+        dstFrame[127] = xorSum;
+    }
+
+    // --- Copy save data blocks ---
+    for (int ci = 0; ci < (int)srcChain.size(); ++ci) {
+        int si = srcChain[ci];
+        int di = dstChain[ci];
+        const uint8_t* srcData = src.data() + DATA_BASE + si * BLOCK_SIZE;
+        uint8_t*       dstData = dst.data() + DATA_BASE + di * BLOCK_SIZE;
+        memcpy(dstData, srcData, BLOCK_SIZE);
+    }
+
+    // --- Atomic write: temp file → rename ---
+    std::string tempPath = destCardPath + ".import_tmp";
+    FILE* f = fopen(tempPath.c_str(), "wb");
+    if (!f) {
+        errorOut = "Could not write to card (disk full?).";
+        return false;
+    }
+    size_t written = fwrite(dst.data(), 1, MCR_SIZE, f);
+    fclose(f);
+    if (written != MCR_SIZE) {
+        std::remove(tempPath.c_str());
+        errorOut = "Write error — card not modified.";
+        return false;
+    }
+    if (std::rename(tempPath.c_str(), destCardPath.c_str()) != 0) {
+        std::remove(tempPath.c_str());
+        errorOut = "Could not finalize write (rename failed).";
+        return false;
+    }
+
+
+    SDL_Log("[MemCardManager] importBlock: slot %d from %s → slot %d in %s",
+            slotIndex, sourcePath.c_str(), dstChain[0], destCardPath.c_str());
+    return true;
 }

@@ -41,6 +41,7 @@ set(FRONTEND_SOURCES
     src/ui/trophy_room.cpp
     src/ui/trophy_hub.cpp
 	src/ui/omnisave_vault.cpp
+    src/ui/omnisave_import.cpp 
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})
@@ -106,6 +107,8 @@ target_include_directories(HaackStation PRIVATE
     ${CMAKE_SOURCE_DIR}/deps/SDL2/include
     ${CMAKE_SOURCE_DIR}/deps/soundtouch/include
     ${CMAKE_SOURCE_DIR}/deps/soundtouch/src
+    ${CMAKE_SOURCE_DIR}/deps/libchdr/deps/miniz-3.1.1
+    ${CMAKE_SOURCE_DIR}/deps
     ${RCHEEVOS_DIR}/include
     ${RCHEEVOS_DIR}/src
     ${CMAKE_SOURCE_DIR}/deps/SDL2_ttf/include
