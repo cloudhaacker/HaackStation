@@ -94,6 +94,10 @@ public:
         if (m_wantsCardReload) { m_wantsCardReload = false; return true; }
         return false;
     }
+	
+	bool isImporting() const { 
+	     return m_importPhase == ImportPhase::IMPORTING; 
+	}
 
     // Returns the path of the card selected for hot-swap, then clears it.
     // Empty string means no swap is pending.

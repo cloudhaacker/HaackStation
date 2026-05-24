@@ -551,10 +551,16 @@ void OmniSaveVault::update(float deltaMs) {
     if (m_importPhase == ImportPhase::IMPORTING) {
         m_importScreen->update(deltaMs);
         if (!m_importScreen->isOpen()) {
-            // Screen closed — check if we need a vault refresh
-            if (m_importScreen->needsVaultRefresh()) {
+            bool didImport = m_importScreen->needsVaultRefresh();
+
+            if (didImport) {
                 loadMemCardEntries();
+                // Reload the core's SRAM buffer from disk so it picks up
+                // the imported save. The flush already happened in
+                // openImportScreen() before importBlock wrote the file.
+                if (m_sramReload) m_sramReload();
             }
+
             // Move source file to import/done/
             if (!m_importPending.empty()) {
                 moveToImportDone(m_importPending);
@@ -1071,24 +1077,31 @@ void OmniSaveVault::doRestoreSnapshot() {
     // Step 1: flush
     if (m_sramFlush) m_sramFlush();
 
-    // Step 2: atomic copy
-    std::string tmpPath = destPath + ".restore.tmp";
+    // Step 2: read snapshot into memory, write directly to destPath.
+    // We don't use temp+rename because the core holds the card file open
+    // on Windows and rename over an open file fails. The flush in step 1
+    // ensures the core's buffer is clean before we overwrite.
     {
         std::ifstream src(snap.mcrPath, std::ios::binary);
-        std::ofstream dst(tmpPath,      std::ios::binary | std::ios::trunc);
-        if (!src.is_open() || !dst.is_open()) {
-            std::cerr << "[TimeMachine] Restore failed — cannot open files\n";
+        if (!src.is_open()) {
+            SDL_Log("[TimeMachine] Restore failed — cannot open snapshot: %s",
+                    snap.mcrPath.c_str());
             return;
         }
-        dst << src.rdbuf();
-        dst.flush();
-    }
-    std::error_code ec;
-    fs::rename(tmpPath, destPath, ec);
-    if (ec) {
-        std::cerr << "[TimeMachine] Restore rename failed: " << ec.message() << "\n";
-        fs::remove(tmpPath, ec);
-        return;
+        std::vector<char> buf(std::istreambuf_iterator<char>(src), {});
+        src.close();
+
+        std::ofstream dst(destPath, std::ios::binary | std::ios::trunc);
+        if (!dst.is_open()) {
+            SDL_Log("[TimeMachine] Restore failed — cannot write to: %s",
+                    destPath.c_str());
+            return;
+        }
+        dst.write(buf.data(), buf.size());
+        if (!dst.good()) {
+            SDL_Log("[TimeMachine] Restore write error for: %s", destPath.c_str());
+            return;
+        }
     }
 
     std::cout << "[TimeMachine] Restored: " << snap.mcrPath
@@ -1645,6 +1658,10 @@ void OmniSaveVault::scanImportFolder()
     if (m_importPhase != ImportPhase::NONE) return;
 
     const std::string importDir = "memcards/import";
+
+    SDL_Log("[OmniSaveVault] scanImportFolder: cwd-relative path '%s', exists=%d",
+            importDir.c_str(), (int)fs::exists(importDir));
+
     if (!fs::exists(importDir)) return;
 
     for (const auto& entry : fs::directory_iterator(importDir)) {
@@ -1656,7 +1673,9 @@ void OmniSaveVault::scanImportFolder()
         // Normalise extension to lowercase
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-        if (ext == ".mcr" || ext == ".zip") {
+if (ext == ".mcr" || ext == ".mcd" || ext == ".mem" ||
+    ext == ".vgs" || ext == ".srm" || ext == ".gme" ||
+    ext == ".zip") {
             m_importPending     = p;
             m_importPhase       = ImportPhase::DETECTED;
             m_importBannerVisible = true;
@@ -1671,6 +1690,13 @@ void OmniSaveVault::scanImportFolder()
 void OmniSaveVault::openImportScreen()
 {
     if (m_importPending.empty()) return;
+
+    // Flush SRAM before opening so the core's current buffer is on disk.
+    // importBlock will read and write the card file directly while the
+    // import screen is open. The core won't autosave during this window
+    // because m_suppressSramPoll should be set by the caller — but even
+    // if it isn't, flushing first ensures we start from a clean state.
+    if (m_sramFlush) m_sramFlush();
 
     bool ok = m_importScreen->open(m_importPending, m_activeCardPath);
     if (ok) {
@@ -1728,9 +1754,8 @@ void OmniSaveVault::handleImportInput(const SDL_Event& e)
         // [X] / Square opens import; [B] dismisses banner without importing
         if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X)  triggered = true;
         if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
-            // Dismiss banner (file stays in import/ until next scan would
-            // re-detect — but we move it to done so it won't loop)
-            moveToImportDone(m_importPending);
+            // B just closes the vault normally — don't touch the import file.
+            // It will re-detect next time OmniSave opens.
             m_importPending.clear();
             m_importPhase         = ImportPhase::NONE;
             m_importBannerVisible = false;

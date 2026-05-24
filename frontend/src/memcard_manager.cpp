@@ -187,10 +187,22 @@ static bool readMcrRaw(const std::string& path,
 {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
+
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fileSize < MCR_SIZE) {
+        fclose(f);
+        SDL_Log("[MemCardManager] readMcrRaw: file too small (%ld bytes): %s",
+                fileSize, path.c_str());
+        return false;
+    }
+
     data.resize(MCR_SIZE);
     size_t read = fread(data.data(), 1, MCR_SIZE, f);
     fclose(f);
-    return (read == MCR_SIZE);
+    return (read == (size_t)MCR_SIZE);
 }
 
 
@@ -216,7 +228,7 @@ bool MemCardManager::loadCardForImport(const std::string& path,
     //   0x53 = last block
     //   0xA0 = first block (deleted)
     //   0xFF = free
-    static constexpr int DIR_BASE   = 0x0200;
+    static constexpr int DIR_BASE   = 0x0080;
     static constexpr int FRAME_SIZE = 128;
     static constexpr int DATA_BASE  = 0x2000;   // save data starts at 0x2000
 
@@ -312,7 +324,7 @@ bool MemCardManager::importBlock(const std::string& sourcePath,
         return false;
     }
 
-    static constexpr int DIR_BASE   = 0x0200;
+    static constexpr int DIR_BASE   = 0x0080;
     static constexpr int FRAME_SIZE = 128;
     static constexpr int DATA_BASE  = 0x2000;
 
@@ -343,7 +355,7 @@ bool MemCardManager::importBlock(const std::string& sourcePath,
     std::vector<int> dstFree;
     for (int i = 0; i < NUM_SLOTS; ++i) {
         uint8_t state = dst[DIR_BASE + i * FRAME_SIZE];
-        if (state == 0xFF) dstFree.push_back(i);
+        if (state == 0xFF || state == 0xA0) dstFree.push_back(i);
     }
     if ((int)dstFree.size() < (int)srcChain.size()) {
         errorOut = "Not enough free space on active card ("
@@ -399,23 +411,21 @@ bool MemCardManager::importBlock(const std::string& sourcePath,
         memcpy(dstData, srcData, BLOCK_SIZE);
     }
 
-    // --- Atomic write: temp file → rename ---
-    std::string tempPath = destCardPath + ".import_tmp";
-    FILE* f = fopen(tempPath.c_str(), "wb");
+    // --- Write directly to destination card ---
+    // We don't use a temp+rename here because the core may be holding the
+    // card file open (Windows won't rename over an open file). Instead we
+    // write directly — the caller is responsible for flushing SRAM before
+    // calling importBlock and reloading it afterward, so the core is not
+    // actively writing between those two calls.
+    FILE* f = fopen(destCardPath.c_str(), "wb");
     if (!f) {
-        errorOut = "Could not write to card (disk full?).";
+        errorOut = "Could not open card for writing (is it read-only?).";
         return false;
     }
     size_t written = fwrite(dst.data(), 1, MCR_SIZE, f);
     fclose(f);
     if (written != MCR_SIZE) {
-        std::remove(tempPath.c_str());
-        errorOut = "Write error — card not modified.";
-        return false;
-    }
-    if (std::rename(tempPath.c_str(), destCardPath.c_str()) != 0) {
-        std::remove(tempPath.c_str());
-        errorOut = "Could not finalize write (rename failed).";
+        errorOut = "Write error — card may be incomplete. Check disk space.";
         return false;
     }
 
