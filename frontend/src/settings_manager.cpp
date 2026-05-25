@@ -88,6 +88,7 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "ra_user")            s.raUser             = val;
         else if (key == "ra_api_key")         s.raApiKey           = val;
         else if (key == "ra_password")        s.raPassword         = val;
+        else if (key == "ra_enabled")         s.raEnabled          = parseBool(val);
         else if (key == "ra_hardcore")        s.raHardcore         = parseBool(val);
         else if (key == "ra_auto_screenshot")  s.raAutoScreenshot   = parseBool(val);
     }
@@ -152,6 +153,7 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "ra_user="     << s.raUser                              << "\n";
     f << "ra_api_key="  << s.raApiKey                            << "\n";
     f << "ra_password=" << s.raPassword                          << "\n";
+    f << "ra_enabled="  << (s.raEnabled  ? "true" : "false")    << "\n";
     f << "ra_hardcore=" << (s.raHardcore ? "true" : "false")    << "\n";
     f << "ra_auto_screenshot=" << (s.raAutoScreenshot ? "true" : "false") << "\n";
 

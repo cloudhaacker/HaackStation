@@ -95,6 +95,10 @@ public:
         m_playCount       = playCount;
     }
 
+    // When false, the trophy row is hidden and removed from the nav flow.
+    // Call once after construction; mirrors the raEnabled master toggle.
+    void setRaEnabled(bool enabled) { m_raEnabled = enabled; }
+
 private:
     void buildMenuItems();
     void navigateMenu(NavAction action);
@@ -156,6 +160,8 @@ private:
     // Playtime stats — populated by app.cpp from PlayHistory
     uint64_t m_playtimeSeconds = 0;
     int      m_playCount       = 0;
+
+    bool m_raEnabled = true;  // mirrors raEnabled setting; hides trophy row when false
 
     int m_w = 1280;
     int m_h = 720;

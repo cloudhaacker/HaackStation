@@ -371,11 +371,12 @@ void GameDetailsPanel::navigateMenu(NavAction action) {
                 break;
             case NavAction::UP:
                 // Move up to trophy row (which is above description visually)
+                // Only enter trophy row if RA is enabled and trophies exist.
                 m_descHighlighted = false;
-                if (m_trophiesTotal > 0) {
+                if (m_raEnabled && m_trophiesTotal > 0) {
                     m_trophyRowSelected = true;
                 } else {
-                    // No trophies — clamp at description
+                    // RA disabled or no trophies — clamp at description
                     m_descHighlighted = true;
                     m_nav->cancelHeld();
                 }
@@ -555,14 +556,12 @@ void GameDetailsPanel::renderPanel() {
         y += 8;
     }
 
-    renderTrophyRow(contentX, contentW, y);
-    // Fixed height: 20px count label + 48px badges + 4px gap = 72px.
-    // Constant regardless of whether achievements are loaded so that the
-    // description box height (and scroll state) never jumps.
-    y += 72;
-
-    m_theme->drawLine(contentX, y, contentX + contentW, y, pal.gridLine);
-    y += 8;
+    if (m_raEnabled) {
+        renderTrophyRow(contentX, contentW, y);
+        y += 72;
+        m_theme->drawLine(contentX, y, contentX + contentW, y, pal.gridLine);
+        y += 8;
+    }
 
     renderDescription(contentX, contentW, y);
 

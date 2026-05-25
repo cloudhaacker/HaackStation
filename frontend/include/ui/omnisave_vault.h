@@ -63,6 +63,7 @@ enum class ConfirmAction {
     RESTORE_SNAPSHOT,
     SWAP_CARD,          // hot-swap to a different card for this game
     COPY_STATE,         // branch / duplicate a save state slot
+    UNDO_STATE,         // restore the one-step undo snapshot
 };
 
 class OmniSaveVault {
@@ -180,6 +181,7 @@ private:
     void doRestoreSnapshot();
     void doSwapCard();
     void doBranchState();
+    void doUndoAction();     // restore one-step undo snapshot then close
 
     // ── Core members ──────────────────────────────────────────────────────────
     SDL_Renderer*     m_renderer  = nullptr;

@@ -121,6 +121,10 @@ public:
     void setHardcoreMode(bool hardcore);
     bool isHardcore() const { return m_hardcore; }
     void setAutoScreenshot(bool enabled) { m_autoScreenshot = enabled; }
+    // When true, the "Logged in as X" notification is re-armed on every
+    // game load (not just the first one after login).  Gated by the
+    // "Login Confirmation" toggle in Settings > Services.
+    void setShowLoginNotif(bool enabled) { m_showLoginNotif = enabled; }
 
     // Called by app.cpp AFTER all overlays are drawn, BEFORE SDL_RenderPresent.
     // Uses a time-based delay so the slide-in animation has time to settle
@@ -241,6 +245,7 @@ private:
     bool              m_gameLoaded  = false;
     bool              m_hardcore          = false;
     bool              m_autoScreenshot      = false;
+    bool              m_showLoginNotif      = true;  // mirrors raShowLoginNotif setting
     bool              m_screenshotFiredThisFrame = false;
     Uint32            m_trophyShotCountdown = 0;    // SDL_GetTicks() target time; 0 = inactive
     std::string       m_pendingShotTitle;

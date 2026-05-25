@@ -77,6 +77,21 @@ public:
     // Delete a save slot
     bool deleteSlot(int slot);
 
+    // ── Undo snapshot ────────────────────────────────────────────────────────
+    // Before any save state write, call saveUndoSnapshot() to capture a
+    // one-step rollback.  slotNumber -3 is the undo slot convention.
+    //
+    // saveUndoSnapshot() — serialize current core state → .undo.state + .undo.png
+    // loadUndo()         — unserialize from .undo.state, then delete both files
+    // hasUndo()          — true iff .undo.state exists for the current game
+    // deleteUndo()       — remove .undo.state + .undo.png
+    // getUndoSlot()      — returns a SaveSlot descriptor (slotNumber = -3)
+    bool saveUndoSnapshot();
+    bool loadUndo();
+    bool hasUndo() const;
+    void deleteUndo();
+    SaveSlot getUndoSlot() const;
+
     // Capture a screenshot from the current frame
     SDL_Surface* captureScreenshot() const;
     SDL_Surface* captureCleanScreenshot() const; // No UI overlay
@@ -87,6 +102,8 @@ private:
     std::string slotPath(int slot) const;
     std::string thumbPath(int slot) const;
     std::string stateDir() const;
+    std::string undoPath() const;      // stateDir() + ".undo.state"
+    std::string undoThumbPath() const; // stateDir() + ".undo.png"
     std::string formatTimestamp() const;
     bool saveThumbnail(SDL_Surface* screenshot, const std::string& path) const;
     void ensureDir() const;

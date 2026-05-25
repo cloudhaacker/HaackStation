@@ -260,6 +260,10 @@ void SettingsScreen::buildTabs() {
         // ── RetroAchievements options ─────────────────────────────────────────
         tab.items.push_back(makeLabel("ra_opts_header", "RA Options", ""));
 
+        tab.items.push_back(makeToggle("ra_enabled", "Enable RetroAchievements",
+            "When off: hides Trophy Hub and collapses trophy row in Game Details",
+            &m_settings->raEnabled));
+
         tab.items.push_back(makeToggle("ra_hardcore", "Hardcore Mode",
             "Disables save states, rewind, and cheats — unlocks Hardcore badges",
             &m_settings->raHardcore));
@@ -350,7 +354,7 @@ void SettingsScreen::buildTabs() {
     {
         SettingTab tab;
         tab.label = "About";
-        tab.items.push_back(makeLabel("ver",     "Version",        "0.5.2-dev"));
+        tab.items.push_back(makeLabel("ver",     "Version",        "0.5.3-dev"));
         tab.items.push_back(makeLabel("core",    "Emulation Core", "Beetle PSX HW / Mednafen (libretro)"));
         tab.items.push_back(makeLabel("license", "License",        "GNU General Public License v2"));
         tab.items.push_back(makeSep());

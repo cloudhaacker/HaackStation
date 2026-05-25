@@ -617,6 +617,20 @@ void RAManager::loadGame(const std::string& gamePath, LibretroBridge* core) {
     s_memDiagDone = false;
     m_loadingPath = gamePath;
 
+    // Re-arm the login notification so it fires paired with the game-load
+    // notification in queueNotification().  Only re-arms on subsequent loads
+    // (m_hasPendingLoginNotif is already true on the very first load after login
+    // and will be consumed naturally). Gated by the Settings toggle.
+    if (m_loggedIn && m_showLoginNotif && !m_hasPendingLoginNotif) {
+        AchievementInfo loginNotif;
+        loginNotif.id          = UINT32_MAX;
+        loginNotif.title       = "Logged in as " + m_username;
+        loginNotif.description = "RetroAchievements connected";
+        loginNotif.points      = 0;
+        m_pendingLoginNotif    = loginNotif;
+        m_hasPendingLoginNotif = true;
+    }
+
     rc_client_begin_identify_and_load_game(m_client,
         RC_CONSOLE_UNKNOWN,  // let rcheevos detect console from file extension
         gamePath.c_str(),

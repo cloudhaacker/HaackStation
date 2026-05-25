@@ -436,7 +436,7 @@ int HaackApp::run() {
             }
 
             // ── Periodic safety flush (silent — not user-initiated) ────────────
-            if (!m_activeCardPath.empty()) {
+            if (!m_activeCardPath.empty() && !m_omniSave->isImporting()) {
                 float deltaMs = (float)(elapsed * 1000.0);
                 m_memcardFlushTimer += (Uint32)deltaMs;
                 if (m_memcardFlushTimer >= MEMCARD_FLUSH_INTERVAL_MS) {
@@ -553,8 +553,10 @@ void HaackApp::handleEvents() {
                     // F3 or Z — open Trophy Hub (global achievements overview)
                     // Z = keyboard B equivalent; B has no function on the shelf
                     if (key == SDLK_F3 || key == SDLK_z) {
-                        m_trophyHub->resetClose();
-                        setState(AppState::TROPHY_HUB);
+                        if (m_haackSettings.raEnabled) {
+                            m_trophyHub->resetClose();
+                            setState(AppState::TROPHY_HUB);
+                        }
                         continue;
                     }
                     // F2 / X button details handled in game_browser.cpp
@@ -620,8 +622,10 @@ void HaackApp::handleEvents() {
                 if (m_state == AppState::GAME_BROWSER &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_B &&
                     !(m_details && m_details->isOpen())) {
-                    m_trophyHub->resetClose();
-                    setState(AppState::TROPHY_HUB);
+                    if (m_haackSettings.raEnabled) {
+                        m_trophyHub->resetClose();
+                        setState(AppState::TROPHY_HUB);
+                    }
                     continue;
                 }
                 if (m_state == AppState::IN_GAME &&
@@ -853,6 +857,7 @@ void HaackApp::update(float deltaMs) {
                     std::string mediaDir = m_haackSettings.romsPath.empty()
                         ? "media/" : m_haackSettings.romsPath + "/media/";
                     m_details->setMediaDir(mediaDir);
+                    m_details->setRaEnabled(m_haackSettings.raEnabled);
                     m_details->open(*game, m_saveStates.get());
                     SDL_Texture* cover = m_browser->getCoverArtForGame(game->path);
                     m_details->setCoverTexture(cover);
@@ -863,9 +868,8 @@ void HaackApp::update(float deltaMs) {
                             m_playHistory->getPlayCount(game->path));
                     }
                     // Wire in RA trophy data so trophy row is navigable.
-                    // Use per-game cache — works on cold start for any previously
-                    // played game, not just the most recently loaded one.
-                    if (m_ra && game) {
+                    // Skipped when RA is disabled — row is hidden anyway.
+                    if (m_ra && game && m_haackSettings.raEnabled) {
                         // Look up gameId from the ROM path (populated from disk cache)
                         uint32_t raGameId = m_ra->getGameIdForPath(game->path);
                         const std::vector<AchievementInfo>* achievements = nullptr;

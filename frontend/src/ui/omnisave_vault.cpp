@@ -252,6 +252,12 @@ void OmniSaveVault::loadSaveSlots() {
 
     m_slots = m_saves->listSlots();
 
+    // Undo slot — prepend so it appears first in the panel (most urgent action)
+    if (m_saves->hasUndo()) {
+        SaveSlot undoSlot = m_saves->getUndoSlot();
+        m_slots.insert(m_slots.begin(), undoSlot);
+    }
+
     SaveSlot newSlot;
     newSlot.slotNumber = -2;
     newSlot.exists     = false;
@@ -605,6 +611,7 @@ void OmniSaveVault::handleEvent(const SDL_Event& e) {
             else if (action == ConfirmAction::DELETE_ENTRY)     doDeleteEntry();
             else if (action == ConfirmAction::RESTORE_SNAPSHOT) doRestoreSnapshot();
             else if (action == ConfirmAction::COPY_STATE)       doBranchState();
+            else if (action == ConfirmAction::UNDO_STATE)       doUndoAction();
             else if (action == ConfirmAction::RELOAD_CARD) {
                 m_wantsCardReload = true;
                 m_wantsClose      = true;
@@ -724,6 +731,12 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
         const SaveSlot& sel = m_slots[m_stateSel];
         if (sel.slotNumber == -2 || !sel.exists) {
             doSaveAction();
+        } else if (sel.slotNumber == -3) {
+            // Undo slot — confirm before restoring
+            m_confirmAction  = ConfirmAction::UNDO_STATE;
+            m_confirmMessage = "Undo last save?";
+            m_confirmDetail  = "Restores the state from just before your last save.  "
+                               "This cannot be undone.";
         } else {
             std::string label = (sel.slotNumber == -1) ? "Auto-save"
                 : "Slot " + std::to_string(sel.slotNumber + 1);
@@ -737,6 +750,7 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
     }
     if (a == NavAction::OPTIONS) {
         const SaveSlot& sel = m_slots[m_stateSel];
+        if (sel.slotNumber == -3) return; // undo slot is not overwritable
         if (sel.exists && sel.slotNumber != -2) {
             std::string label = (sel.slotNumber == -1) ? "Auto-save"
                 : "Slot " + std::to_string(sel.slotNumber + 1);
@@ -750,7 +764,7 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
     }
     if (a == NavAction::MENU) {
         const SaveSlot& sel = m_slots[m_stateSel];
-        if (!sel.exists || sel.slotNumber == -2) return;
+        if (!sel.exists || sel.slotNumber == -2 || sel.slotNumber == -3) return;
         std::string label = (sel.slotNumber == -1) ? "Auto-save"
             : "Slot " + std::to_string(sel.slotNumber + 1);
         m_confirmAction  = ConfirmAction::DELETE_STATE;
@@ -762,7 +776,7 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
     // Y / Triangle → branch (copy slot to a new slot)
     if (a == NavAction::FAVORITE) {
         const SaveSlot& sel = m_slots[m_stateSel];
-        if (!sel.exists || sel.slotNumber == -2) return;
+        if (!sel.exists || sel.slotNumber == -2 || sel.slotNumber == -3) return;
         std::string label = (sel.slotNumber == -1) ? "Auto-save"
             : "Slot " + std::to_string(sel.slotNumber + 1);
         m_branchSourceSlot = sel.slotNumber;
@@ -810,6 +824,8 @@ void OmniSaveVault::doSaveAction() {
     } else {
         targetSlot = sel.slotNumber;
     }
+    // Snapshot current state before writing so the player can undo
+    m_saves->saveUndoSnapshot();
     if (m_saves->saveState(targetSlot, m_gameScreenshot)) {
         std::cout << "[OmniSave] Saved to slot " << targetSlot << "\n";
         m_saveWritten = true;
@@ -962,7 +978,30 @@ void OmniSaveVault::doBranchState() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  doDeleteEntry
+//  doUndoAction
+//  Restores the one-step undo snapshot then closes OmniSave so the player
+//  is immediately back in the game at the pre-save state.
+//
+//  The snapshot is consumed (deleted) by SaveStateManager::loadUndo() so
+//  the undo slot vanishes from the panel on next open — exactly one use.
+// ─────────────────────────────────────────────────────────────────────────────
+void OmniSaveVault::doUndoAction() {
+    if (!m_saves) return;
+    if (!m_saves->hasUndo()) {
+        std::cerr << "[OmniSave] Undo requested but no snapshot found\n";
+        return;
+    }
+    // loadUndo() unserializes and then deletes both .undo.state + .undo.png
+    if (m_saves->loadUndo()) {
+        std::cout << "[OmniSave] Undo complete — closing vault\n";
+        if (m_sramReload) m_sramReload();
+        loadSaveSlots();      // panel refreshes: undo card is gone
+        m_wantsClose = true;
+    } else {
+        std::cerr << "[OmniSave] Undo failed — state unchanged\n";
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 void OmniSaveVault::doDeleteEntry() {
     if (m_cardSel < 0 || m_cardSel >= (int)m_cardEntries.size()) return;
@@ -1212,6 +1251,8 @@ void OmniSaveVault::renderConfirmOverlay() {
         borderClr = { 160, 80,  220, 255 };
     else if (m_confirmAction == ConfirmAction::COPY_STATE)
         borderClr = { 80,  200, 160, 255 };  // teal-green for branch
+    else if (m_confirmAction == ConfirmAction::UNDO_STATE)
+        borderClr = { 255, 160, 30,  255 };  // amber for undo
     else
         borderClr = { 60,  160, 220, 255 };
 
@@ -1444,6 +1485,50 @@ void OmniSaveVault::renderSaveStatePanel(int x, int y, int w, int h) {
                 sel ? pal.accent : pal.textDisable, FontSize::HEADER);
             m_theme->drawTextCentered("New Save", cx+cardW/2, cy+cardH-26,
                 pal.textDisable, FontSize::TINY);
+        } else if (slot.slotNumber == -3) {
+            // ── Undo slot — amber-tinted card with rewind indicator ──────────
+            // Draw thumbnail if we have one, with an amber overlay wash
+            if (i < (int)m_thumbTex.size() && m_thumbTex[i]) {
+                SDL_Rect thumbDst = { cx, cy, cardW, cardH-36 };
+                SDL_RenderCopy(m_renderer, m_thumbTex[i], nullptr, &thumbDst);
+                // Amber wash over the thumbnail
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(m_renderer, 200, 120, 20, 80);
+                SDL_RenderFillRect(m_renderer, &thumbDst);
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+            } else {
+                // No thumbnail — fill with a muted amber
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(m_renderer, 80, 50, 10, 200);
+                SDL_Rect thumbArea = { cx, cy, cardW, cardH-36 };
+                SDL_RenderFillRect(m_renderer, &thumbArea);
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+                // Rewind symbol (⟲ approximated with text)
+                SDL_Color symCol = sel
+                    ? SDL_Color{ 255, 180,  50, 255 }
+                    : SDL_Color{ 200, 130,  30, 255 };
+                m_theme->drawTextCentered("\xe2\x9f\xb2",
+                    cx+cardW/2, cy+cardH/2-36, symCol, FontSize::HEADER);
+            }
+            // Label strip
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(m_renderer, 60, 35, 5, 220);
+            SDL_Rect strip = { cx, cy+cardH-36, cardW, 36 };
+            SDL_RenderFillRect(m_renderer, &strip);
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+            SDL_Color undoCol = sel
+                ? SDL_Color{ 255, 180, 50, 255 }
+                : SDL_Color{ 200, 130, 30, 255 };
+            m_theme->drawText("Undo",  cx+6, cy+cardH-32, undoCol, FontSize::TINY);
+            m_theme->drawText("Last Save", cx+6, cy+cardH-16, pal.textDisable, FontSize::TINY);
+            // Amber selection border (slightly different shade than default accent)
+            if (sel) {
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(m_renderer, 255, 160, 30, 255);
+                SDL_Rect border = { cx-2, cy-2, cardW+4, cardH+4 };
+                SDL_RenderDrawRect(m_renderer, &border);
+                SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+            }
         } else if (slot.exists && i < (int)m_thumbTex.size() && m_thumbTex[i]) {
             SDL_Rect thumbDst = { cx, cy, cardW, cardH-36 };
             SDL_RenderCopy(m_renderer, m_thumbTex[i], nullptr, &thumbDst);

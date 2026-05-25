@@ -302,3 +302,117 @@ bool SaveStateManager::deleteSlot(int slot) {
     if (fs::exists(tp)) { fs::remove(tp); }
     return deleted;
 }
+
+// ─── Undo snapshot path helpers ───────────────────────────────────────────────
+std::string SaveStateManager::undoPath() const {
+    return stateDir() + ".undo.state";
+}
+
+std::string SaveStateManager::undoThumbPath() const {
+    return stateDir() + ".undo.png";
+}
+
+// ─── Undo snapshot ────────────────────────────────────────────────────────────
+// Captures the current core state to .undo.state + .undo.png.
+// Called by OmniSaveVault immediately before any save state write so the
+// player can roll back exactly one step.
+bool SaveStateManager::saveUndoSnapshot() {
+    if (!m_bridge || !m_bridge->isGameLoaded()) {
+        std::cerr << "[SaveState] saveUndoSnapshot: no game loaded\n";
+        return false;
+    }
+
+    ensureDir();
+
+    size_t size = m_bridge->getSerializeSize();
+    if (size == 0) {
+        std::cerr << "[SaveState] saveUndoSnapshot: core returned 0 serialize size\n";
+        return false;
+    }
+
+    std::vector<uint8_t> buffer(size);
+    if (!m_bridge->serialize(buffer.data(), size)) {
+        std::cerr << "[SaveState] saveUndoSnapshot: core serialize failed\n";
+        return false;
+    }
+
+    std::ofstream f(undoPath(), std::ios::binary | std::ios::trunc);
+    if (!f.is_open()) {
+        std::cerr << "[SaveState] saveUndoSnapshot: cannot write " << undoPath() << "\n";
+        return false;
+    }
+    f.write((char*)buffer.data(), size);
+    f.close();
+
+    // Capture a clean thumbnail (no UI overlay) for the undo card preview
+    SDL_Surface* thumb = captureCleanScreenshot();
+    if (thumb) {
+        saveThumbnail(thumb, undoThumbPath());
+        SDL_FreeSurface(thumb);
+    }
+
+    std::cout << "[SaveState] Undo snapshot saved (" << size << " bytes)\n";
+    return true;
+}
+
+bool SaveStateManager::loadUndo() {
+    if (!m_bridge || !m_bridge->isGameLoaded()) {
+        std::cerr << "[SaveState] loadUndo: no game loaded\n";
+        return false;
+    }
+
+    std::string path = undoPath();
+    if (!fs::exists(path)) {
+        std::cerr << "[SaveState] loadUndo: no undo snapshot\n";
+        return false;
+    }
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) {
+        std::cerr << "[SaveState] loadUndo: cannot open " << path << "\n";
+        return false;
+    }
+    std::vector<uint8_t> buffer(
+        (std::istreambuf_iterator<char>(f)),
+        std::istreambuf_iterator<char>());
+    f.close();
+
+    if (buffer.empty()) {
+        std::cerr << "[SaveState] loadUndo: empty file\n";
+        return false;
+    }
+
+    if (!m_bridge->unserialize(buffer.data(), buffer.size())) {
+        std::cerr << "[SaveState] loadUndo: core unserialize failed\n";
+        return false;
+    }
+
+    // Undo is one-shot — consume the snapshot immediately
+    deleteUndo();
+
+    std::cout << "[SaveState] Undo snapshot loaded and cleared\n";
+    return true;
+}
+
+bool SaveStateManager::hasUndo() const {
+    return fs::exists(undoPath());
+}
+
+void SaveStateManager::deleteUndo() {
+    std::error_code ec;
+    if (fs::exists(undoPath()))      fs::remove(undoPath(), ec);
+    if (fs::exists(undoThumbPath())) fs::remove(undoThumbPath(), ec);
+}
+
+SaveSlot SaveStateManager::getUndoSlot() const {
+    SaveSlot s;
+    s.slotNumber = -3;
+    s.statePath  = undoPath();
+    s.thumbPath  = undoThumbPath();
+    s.exists     = fs::exists(undoPath());
+    if (s.exists) {
+        s.fileSize  = fs::file_size(undoPath());
+        s.timestamp = "Undo Last Save";
+    }
+    return s;
+}

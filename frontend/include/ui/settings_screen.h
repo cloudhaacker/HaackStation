@@ -95,6 +95,12 @@ struct HaackSettings {
     std::string raUser;
     std::string raApiKey;      // Session token (stored after login)
     std::string raPassword;    // Used for initial login only
+
+    // Master RA feature toggle.  When false: Trophy Hub is hidden from the
+    // HaackStation Hub, the trophy row is collapsed in the Game Details panel,
+    // and RA login/tracking is skipped entirely.  Default on.
+    bool        raEnabled          = true;
+
     bool        raHardcore         = false;
 
     // Auto-capture a screenshot when an achievement unlocks.
