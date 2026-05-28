@@ -23,6 +23,7 @@
 #include "trophy_hub.h"
 #include "omnisave_vault.h"
 #include "memcard_manager.h"
+#include "ui/haack_hub.h"
 #include <ctime>
 
 class GameBrowser;
@@ -36,6 +37,7 @@ class SplashScreen;
 enum class AppState {
     STARTUP,
     GAME_BROWSER,
+	HAACK_HUB,
     IN_GAME,
     SETTINGS,
     REMAPPING,
@@ -120,6 +122,7 @@ private:
     std::unique_ptr<RemapScreen>      m_remapScreen;
     std::unique_ptr<TrophyRoom>       m_trophyRoom;
     std::unique_ptr<TrophyHub>        m_trophyHub;
+    std::unique_ptr<HaackHub>         m_haackHub;
 	std::unique_ptr<OmniSaveVault>    m_omniSave;
 	std::unique_ptr<MemCardManager>   m_memCards;
 	std::string m_currentGameTitle;   // clean display title for current game

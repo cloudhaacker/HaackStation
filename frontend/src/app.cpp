@@ -161,6 +161,11 @@ void HaackApp::init() {
         m_renderer, m_theme.get(), m_nav.get(), m_ra.get());
     m_trophyHub   = std::make_unique<TrophyHub>(
         m_renderer, m_theme.get(), m_nav.get());
+    m_trophyHub  = std::make_unique<TrophyHub>(
+        m_renderer, m_theme.get(), m_nav.get());
+    m_haackHub   = std::make_unique<HaackHub>(
+        m_renderer, m_theme.get(), m_nav.get());
+		
     m_trophyHub->setOnViewGame([this](uint32_t gameId, const std::string& title) {
         m_trophyRoom->setGameTitle(title);
         // getCachedAchievementsForGame() works for any game that has been played
@@ -486,6 +491,7 @@ void HaackApp::handleEvents() {
                     if (m_trophyRoom)     m_trophyRoom->onWindowResize(w, h);
                     if (m_details)        m_details->onWindowResize(w, h);
                     if (m_omniSave)       m_omniSave->onWindowResize(w, h);  // ← OmniSave
+					if (m_haackHub)   m_haackHub->onWindowResize(w, h);
                 }
                 break;
 
@@ -550,15 +556,12 @@ void HaackApp::handleEvents() {
                         setState(AppState::SETTINGS);
                         continue;
                     }
-                    // F3 or Z — open Trophy Hub (global achievements overview)
-                    // Z = keyboard B equivalent; B has no function on the shelf
+                    // F3 or Z — open HaackStation Hub
                     if (key == SDLK_F3 || key == SDLK_z) {
-                        if (m_haackSettings.raEnabled) {
-                            m_trophyHub->resetClose();
-                            setState(AppState::TROPHY_HUB);
-                        }
+                        m_haackHub->open(m_haackSettings);
+                        setState(AppState::HAACK_HUB);
                         continue;
-                    }
+                }
                     // F2 / X button details handled in game_browser.cpp
                     break;
                 }
@@ -617,15 +620,12 @@ void HaackApp::handleEvents() {
                     setState(AppState::SETTINGS);
                     continue;
                 }
-                // B on the browser shelf (no details panel open) → Trophy Hub
-                // B has no other function here so it's a natural fit.
+                // B on the browser shelf (no details panel open) → HaackStation Hub
                 if (m_state == AppState::GAME_BROWSER &&
                     e.cbutton.button == SDL_CONTROLLER_BUTTON_B &&
                     !(m_details && m_details->isOpen())) {
-                    if (m_haackSettings.raEnabled) {
-                        m_trophyHub->resetClose();
-                        setState(AppState::TROPHY_HUB);
-                    }
+                    m_haackHub->open(m_haackSettings);
+                    setState(AppState::HAACK_HUB);
                     continue;
                 }
                 if (m_state == AppState::IN_GAME &&
@@ -671,18 +671,19 @@ void HaackApp::handleEvents() {
                 m_details->handleEvent(e);
         } else if (m_state == AppState::IN_GAME && m_inGameMenu->isOpen()) {
             m_inGameMenu->handleEvent(e);
-        } else {
-            switch (m_state) {
-                case AppState::GAME_BROWSER:   m_browser->handleEvent(e);     break;
-                case AppState::SETTINGS:       m_settings->handleEvent(e);    break;
-                case AppState::REMAPPING:      m_remapScreen->handleEvent(e); break;
-                case AppState::TROPHY_ROOM:    m_trophyRoom->handleEvent(e);  break;
-                case AppState::TROPHY_HUB:     m_trophyHub->handleEvent(e);   break;
-                case AppState::SCRAPING:       m_scraper->handleEvent(e);     break;
-                case AppState::OMNISAVE_VAULT: m_omniSave->handleEvent(e);    break;  // ← OmniSave
-                default: break;
-            }
+    } else {
+        switch (m_state) {
+            case AppState::GAME_BROWSER:   m_browser->handleEvent(e);     break;
+            case AppState::SETTINGS:       m_settings->handleEvent(e);    break;
+            case AppState::REMAPPING:      m_remapScreen->handleEvent(e); break;
+            case AppState::TROPHY_ROOM:    m_trophyRoom->handleEvent(e);  break;
+            case AppState::TROPHY_HUB:     m_trophyHub->handleEvent(e);   break;
+            case AppState::HAACK_HUB:      m_haackHub->handleEvent(e);    break;  // ← Hub
+            case AppState::SCRAPING:       m_scraper->handleEvent(e);     break;
+            case AppState::OMNISAVE_VAULT: m_omniSave->handleEvent(e);    break;  // ← OmniSave
+            default: break;
         }
+    }
     }
 
     if (m_state == AppState::IN_GAME) {
@@ -1076,9 +1077,51 @@ void HaackApp::update(float deltaMs) {
             m_trophyHub->update(deltaMs);
             if (m_trophyHub->wantsClose()) {
                 m_trophyHub->resetClose();
-                setState(AppState::GAME_BROWSER);
+                // Return to Hub if it was open, otherwise game browser
+                setState(m_haackHub->isOpen()
+                    ? AppState::HAACK_HUB : AppState::GAME_BROWSER);
             }
             break;
+
+        case AppState::HAACK_HUB:
+            m_haackHub->update(deltaMs);
+            if (!m_haackHub->isOpen()) {
+                setState(AppState::GAME_BROWSER);
+                break;
+            }
+            // Handle tile launch actions
+            switch (m_haackHub->pendingAction()) {
+                case HubTileID::TROPHY_HUB:
+                    if (m_haackSettings.raEnabled) {
+                        m_haackHub->clearPendingAction();
+                        m_trophyHub->resetClose();
+                        setState(AppState::TROPHY_HUB);
+                    }
+                    break;
+                case HubTileID::OMNISAVE:
+                    m_haackHub->clearPendingAction();
+                    if (m_core && m_core->isGameLoaded()) {
+                        // In-game: open the Vault directly for the current game
+                        m_omniSave->setActiveCardPath(m_activeCardPath);
+                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
+                                         OmniSaveMode::BROWSE, nullptr);
+                        setState(AppState::OMNISAVE_VAULT);
+                    }
+                    // When OmniSave Card Shelf is built (next session) this will
+                    // route to AppState::OMNISAVE_CARD_SHELF instead.
+                    break;
+                case HubTileID::COLLECTIONS:
+                case HubTileID::PLAY_HISTORY:
+                case HubTileID::PROFILE:
+                    // Stubs — tiles are disabled so this should never be reached.
+                    // Guard defensively.
+                    m_haackHub->clearPendingAction();
+                    break;
+                default:
+                    break;
+            }
+            break;
+
         case AppState::SCRAPING:
             m_scraper->update(deltaMs);
             if (m_scraper->isDone() || m_scraper->wasCancelled()) {
@@ -1175,6 +1218,7 @@ void HaackApp::render() {
         case AppState::REMAPPING:      m_remapScreen->render();   break;
         case AppState::TROPHY_ROOM:    m_trophyRoom->render();    break;
         case AppState::TROPHY_HUB:     m_trophyHub->render();     break;
+        case AppState::HAACK_HUB:      m_haackHub->render();      break;  // ← Hub
         case AppState::SCRAPING:       m_scraper->render();       break;
         case AppState::OMNISAVE_VAULT: m_omniSave->render();      break;  // ← OmniSave
         default: break;
