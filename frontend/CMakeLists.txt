@@ -21,6 +21,7 @@ set(FRONTEND_SOURCES
 	src/ui/onscreen_keyboard.cpp
     src/ui/settings_screen.cpp
     src/ui/splash_screen.cpp
+	src/ui/haack_hub.cpp
     src/library/game_scanner.cpp
     src/library/disc_formats.cpp
     src/renderer/theme_engine.cpp
@@ -42,6 +43,7 @@ set(FRONTEND_SOURCES
     src/ui/trophy_hub.cpp
 	src/ui/omnisave_vault.cpp
     src/ui/omnisave_import.cpp 
+	src/ui/omnisave_card_shelf.cpp 
 )
 
 add_executable(HaackStation ${FRONTEND_SOURCES})

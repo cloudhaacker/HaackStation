@@ -195,6 +195,12 @@ void HaackApp::init() {
     m_omniSave = std::make_unique<OmniSaveVault>(
         m_renderer, m_theme.get(), m_nav.get(),
         m_saveStates.get(), m_memCards.get());
+		
+	m_cardShelf = std::make_unique<OmniSaveCardShelf>(
+        m_renderer, m_theme.get(), m_nav.get());
+    m_cardShelf->setCoverArtDir("media/covers/");	
+    m_cardShelf->setLibrary(&m_scanner->getLibrary());
+	
     m_omniSave->setSramCallbacks(
         [this]() { if (m_core->isGameLoaded()) m_core->flushSaveRAM(m_activeCardPath); },
         [this]() { if (m_core->isGameLoaded()) m_core->loadSaveRAM(m_activeCardPath); }
@@ -491,7 +497,8 @@ void HaackApp::handleEvents() {
                     if (m_trophyRoom)     m_trophyRoom->onWindowResize(w, h);
                     if (m_details)        m_details->onWindowResize(w, h);
                     if (m_omniSave)       m_omniSave->onWindowResize(w, h);  // ← OmniSave
-					if (m_haackHub)   m_haackHub->onWindowResize(w, h);
+					if (m_haackHub)       m_haackHub->onWindowResize(w, h);
+					if (m_cardShelf)      m_cardShelf->onWindowResize(w, h);
                 }
                 break;
 
@@ -681,6 +688,7 @@ void HaackApp::handleEvents() {
             case AppState::HAACK_HUB:      m_haackHub->handleEvent(e);    break;  // ← Hub
             case AppState::SCRAPING:       m_scraper->handleEvent(e);     break;
             case AppState::OMNISAVE_VAULT: m_omniSave->handleEvent(e);    break;  // ← OmniSave
+			case AppState::OMNISAVE_CARD_SHELF: m_cardShelf->handleEvent(e); break;
             default: break;
         }
     }
@@ -1098,18 +1106,13 @@ void HaackApp::update(float deltaMs) {
                         setState(AppState::TROPHY_HUB);
                     }
                     break;
-                case HubTileID::OMNISAVE:
-                    m_haackHub->clearPendingAction();
-                    if (m_core && m_core->isGameLoaded()) {
-                        // In-game: open the Vault directly for the current game
-                        m_omniSave->setActiveCardPath(m_activeCardPath);
-                        m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
-                                         OmniSaveMode::BROWSE, nullptr);
-                        setState(AppState::OMNISAVE_VAULT);
-                    }
-                    // When OmniSave Card Shelf is built (next session) this will
-                    // route to AppState::OMNISAVE_CARD_SHELF instead.
-                    break;
+					
+	    case HubTileID::OMNISAVE:               // ← ADD THIS CASE
+            m_haackHub->clearPendingAction();
+            m_cardShelf->open();
+            setState(AppState::OMNISAVE_CARD_SHELF);
+                    break;				
+					
                 case HubTileID::COLLECTIONS:
                 case HubTileID::PLAY_HISTORY:
                 case HubTileID::PROFILE:
@@ -1179,9 +1182,35 @@ void HaackApp::update(float deltaMs) {
                               << m_activeCardPath << "\n";
                 }
 
-                setState(m_core->isGameLoaded()
-                    ? AppState::IN_GAME : AppState::GAME_BROWSER);
+                if (m_prevState == AppState::OMNISAVE_CARD_SHELF)
+                    setState(AppState::OMNISAVE_CARD_SHELF);
+                else
+                    setState(m_core->isGameLoaded()
+                       ? AppState::IN_GAME : AppState::GAME_BROWSER);
                 m_inputCooldownUntil = SDL_GetTicks() + 300;
+            }
+            break;
+			
+		case AppState::OMNISAVE_CARD_SHELF:
+            m_cardShelf->update(deltaMs);
+            if (m_cardShelf->wantsClose()) {
+                m_cardShelf->resetClose();
+                setState(AppState::HAACK_HUB);
+            }
+            if (m_cardShelf->hasPendingOpen()) {
+                auto pending = m_cardShelf->consumePendingOpen();
+
+                // Configure SaveStateManager for this game before opening the Vault.
+                // folderName is the raw ROM stem (e.g. "Alundra (USA)") — exactly
+                // what launchGame() passes to setCurrentGame(), so state lookup works.
+                // Second arg is gamePath; empty string is fine for browse-only mode
+                // since SaveStateManager only needs the title to find the folder.
+                m_saveStates->setCurrentGame(pending.folderName, "");
+
+                m_omniSave->setActiveCardPath("");
+                m_omniSave->open(pending.title, pending.serial,
+                                 OmniSaveMode::BROWSE, nullptr);
+                setState(AppState::OMNISAVE_VAULT);
             }
             break;
 
@@ -1221,6 +1250,7 @@ void HaackApp::render() {
         case AppState::HAACK_HUB:      m_haackHub->render();      break;  // ← Hub
         case AppState::SCRAPING:       m_scraper->render();       break;
         case AppState::OMNISAVE_VAULT: m_omniSave->render();      break;  // ← OmniSave
+		case AppState::OMNISAVE_CARD_SHELF: m_cardShelf->render(); break;
         default: break;
     }
     // Screenshot notification renders on top of any state

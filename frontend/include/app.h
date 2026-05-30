@@ -16,12 +16,13 @@
 #include "per_game_settings_screen.h"
 #include "disc_memory.h"
 #include "favorites.h"
-#include "rewind_manager.h"   // ← NEW
+#include "rewind_manager.h"
 #include "input_map.h"
 #include "remap_screen.h"
 #include "trophy_room.h"
 #include "trophy_hub.h"
 #include "omnisave_vault.h"
+#include "omnisave_card_shelf.h"    // ← NEW
 #include "memcard_manager.h"
 #include "ui/haack_hub.h"
 #include <ctime>
@@ -37,13 +38,14 @@ class SplashScreen;
 enum class AppState {
     STARTUP,
     GAME_BROWSER,
-	HAACK_HUB,
+    HAACK_HUB,
     IN_GAME,
     SETTINGS,
     REMAPPING,
     TROPHY_ROOM,
     TROPHY_HUB,
-	OMNISAVE_VAULT,
+    OMNISAVE_VAULT,
+    OMNISAVE_CARD_SHELF,    // ← NEW: global save browser, launched from Hub
     SCRAPING,
     SHUTDOWN
 };
@@ -61,16 +63,14 @@ public:
     void toggleFullscreen();
     void applySettings();
     void applyPerGameSettings(const std::string& gamePath, const std::string& serial);
-    void revertPerGameSettings(); // restore global settings after game exits
+    void revertPerGameSettings();
     void saveRaToken(const std::string& token);
     void processInGameMenuActions();
-    void takeScreenshot();          // Save game framebuffer to screenshots/
-    void takeUIScreenshot();        // F10 — capture any screen to screenshots/HaackStation/
-    void snapshotCardHistory();       // Time Machine: copy current .mcr to history folder
-    void captureCardScreenshot();     // Capture game frame alongside card history entry
+    void takeScreenshot();
+    void takeUIScreenshot();
+    void snapshotCardHistory();
+    void captureCardScreenshot();
 
-    // Maximum per-game card history snapshots to retain before pruning oldest.
-    // 128KB × 20 = 2.5 MB per card — negligible.
     static constexpr int CARD_HISTORY_MAX = 20;
 
 private:
@@ -82,16 +82,12 @@ private:
     void updateGameInput();
     void renderFastForwardIndicator();
     void renderRewindIndicator();
-    void renderTurboIndicator();                     // ← NEW
-    void renderTurboDiagnostic();                    // TEMP: remove once turbo confirmed working
+    void renderTurboIndicator();
+    void renderTurboDiagnostic();
     void renderScreenshotNotification();
-    void renderMemcardToast();           // LiveCard: "Game saved to memory card"
-    void renderTrophyShotToast();        // RA auto-screenshot: "Trophy screenshot saved"
+    void renderMemcardToast();
+    void renderTrophyShotToast();
 
-    // ── Rewind helpers ────────────────────────────────────────────────────────
-    // stripRomRegion() removes parenthetical / bracketed region & revision tags
-    // from a ROM filename stem so screenshot folders match ScreenScraper names.
-    // e.g. "Crash Bandicoot (USA)" → "Crash Bandicoot"
     static std::string stripRomRegion(const std::string& stem);
     static std::vector<std::string> parseM3uDiscs(const std::string& path);
 
@@ -115,89 +111,59 @@ private:
     std::unique_ptr<GameDetailsPanel>        m_details;
     std::unique_ptr<PerGameSettingsScreen>   m_perGameScreen;
     std::unique_ptr<PlayHistory>      m_playHistory;
-    DiscMemory                         m_discMemory;  // persists last disc per game
-    PerGameSettings                    m_perGameSettings; // per-game overrides
-    FavoriteManager                    m_favorites;   // persists favorited games
-    std::unique_ptr<RewindManager>    m_rewind;      // ← NEW
+    DiscMemory                         m_discMemory;
+    PerGameSettings                    m_perGameSettings;
+    FavoriteManager                    m_favorites;
+    std::unique_ptr<RewindManager>    m_rewind;
     std::unique_ptr<RemapScreen>      m_remapScreen;
     std::unique_ptr<TrophyRoom>       m_trophyRoom;
     std::unique_ptr<TrophyHub>        m_trophyHub;
     std::unique_ptr<HaackHub>         m_haackHub;
-	std::unique_ptr<OmniSaveVault>    m_omniSave;
-	std::unique_ptr<MemCardManager>   m_memCards;
-	std::string m_currentGameTitle;   // clean display title for current game
-	std::string m_currentGameSerial;  // serial (e.g. SCUS-94900) for memcard lookup
-    InputMap                           m_inputMap;    // global button map, loaded from saves/input_map.json
+    std::unique_ptr<OmniSaveVault>    m_omniSave;
+    std::unique_ptr<OmniSaveCardShelf> m_cardShelf;   // ← NEW
+    std::unique_ptr<MemCardManager>   m_memCards;
+    std::string m_currentGameTitle;
+    std::string m_currentGameSerial;
+    InputMap                           m_inputMap;
 
     Uint32 m_inputCooldownUntil = 0;
 
-    // ── Memory card flush ─────────────────────────────────────────────────────
-    // Path of the .mcr file currently active for the running game.
-    // Set in launchGame(), cleared in the quit-to-browser path.
-    // flushSaveRAM() writes to this path; empty string = no game running.
     std::string m_activeCardPath;
-    Uint32      m_memcardFlushTimer = 0;          // ms accumulator
+    Uint32      m_memcardFlushTimer = 0;
 
-    // ── LiveCard detection ────────────────────────────────────────────────────
-    // Poll SRAM checksum every SRAM_POLL_INTERVAL_MS. When it changes, the game
-    // wrote to the memory card — flush immediately and show the memcard toast.
-    // The periodic safety flush (30 s) is SILENT — no toast — because it is not
-    // triggered by a user save; it is just a crash-safety backstop.
-    uint32_t m_sramChecksum      = 0;             // last known checksum (0 = uninitialised)
-    Uint32   m_sramPollTimer     = 0;             // ms since last poll
-    Uint32   m_memcardToastUntil = 0;             // show memcard toast until this tick
-    static constexpr Uint32 SRAM_POLL_INTERVAL_MS = 2000; // poll every 2 s
+    uint32_t m_sramChecksum      = 0;
+    Uint32   m_sramPollTimer     = 0;
+    Uint32   m_memcardToastUntil = 0;
+    static constexpr Uint32 SRAM_POLL_INTERVAL_MS = 2000;
 
-    // ── Trophy auto-screenshot toast ──────────────────────────────────────────
-    // Set to SDL_GetTicks() + DURATION when RAManager fires a trophy screenshot.
-    // Shown separately from the manual screenshot toast so users know why
-    // a screenshot happened — different message, distinct timer.
     Uint32 m_trophyShotToastUntil = 0;
-    bool   m_cardSwapToast        = false; // true = show swap msg in memcard toast
+    bool   m_cardSwapToast        = false;
     bool   m_suppressSramPoll    = false;
-    Uint32 m_sramSettleUntil     = 0;   // ignore poll results until this tick
-	
-    // Async RA login result: -1=pending, 0=failed, 1=success.
-    // Set by the login callback thread; polled on main thread in SETTINGS update.
-    std::shared_ptr<std::atomic<int>> m_pendingLoginResult;
-    static constexpr Uint32 MEMCARD_FLUSH_INTERVAL_MS = 30000; // flush every 30s
+    Uint32 m_sramSettleUntil     = 0;
 
-    // Session playtime tracking — set when a game launches, used on stopGame()
-    // to compute elapsed seconds and pass to PlayHistory::recordStop().
+    std::shared_ptr<std::atomic<int>> m_pendingLoginResult;
+    static constexpr Uint32 MEMCARD_FLUSH_INTERVAL_MS = 30000;
+
     time_t m_sessionStartTime = 0;
 
-    // Fast forward: true while R2 (controller) or F (keyboard) is held.
-    // m_ffHeldSince tracks when the button was first pressed so we can
-    // require a short hold before activating (prevents accidental triggers).
     bool   m_fastForward  = false;
     Uint32 m_ffHeldSince  = 0;
     static constexpr Uint32 FF_HOLD_DELAY_MS = 500;
 
-    // Rewind: true while L2 (controller) or R (keyboard) is held.
-    // Same hold-delay pattern as fast-forward to prevent accidental triggers.
-    // m_rewindFired tracks whether at least one stepBack succeeded this session
-    // (used to decide whether to show the "empty buffer" indicator).
     bool   m_rewinding       = false;
     Uint32 m_rewindHeldSince = 0;
     static constexpr Uint32 REWIND_HOLD_DELAY_MS = 300;
 
-    // Rumble pulse for FF / rewind: fire a short rumble every N ms while active.
     Uint32 m_rumbleNextAt    = 0;
     static constexpr Uint32 RUMBLE_PULSE_INTERVAL_MS = 600;
 
-    std::string m_currentGamePath;           // Set on launch, used for screenshot naming
-    Uint32      m_screenshotNotifyUntil = 0; // Show screenshot toast until this tick
+    std::string m_currentGamePath;
+    Uint32      m_screenshotNotifyUntil = 0;
 
-    // ── Turbo mode ────────────────────────────────────────────────────────────
-    // Persistent speed multiplier — toggled ON/OFF by holding R1+R2 (or T key)
-    // for TURBO_HOLD_DELAY_MS. Unlike fast-forward it stays active until toggled
-    // again. No rumble while active. Green badge indicator top-right.
     bool   m_turboActive      = false;
     Uint32 m_turboHeldSince   = 0;
     static constexpr Uint32 TURBO_HOLD_DELAY_MS = 600;
     static constexpr int    TURBO_TABLE_SIZE    = 5;
-    // NOTE: Multiplier table lives in app.cpp as TURBO_MULTS[] to avoid
-    // MSVC ODR issues with static constexpr arrays in class definitions.
 
     HaackSettings m_haackSettings;
 };
