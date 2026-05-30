@@ -211,7 +211,9 @@ private:
     std::vector<SaveSlot>       m_slots;
     std::vector<SDL_Texture*>   m_thumbTex;
     int  m_stateSel    = 0;
-    int  m_stateScroll = 0;
+    int  m_stateScroll  = 0;
+    int  m_stateCols    = STATE_COLS;  // actual column count from last render pass
+                                       // navigation reads this instead of STATE_COLS
     int  m_branchSourceSlot = -1;  // slotNumber of the slot being branched
 
     // ── Card Chronicle (formerly Time Machine) ────────────────────────────────

@@ -722,8 +722,8 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
     int count = (int)m_slots.size();
     if (count == 0) return;
 
-    if (a == NavAction::UP)    { m_stateSel = std::max(0, m_stateSel - STATE_COLS);         return; }
-    if (a == NavAction::DOWN)  { m_stateSel = std::min(count-1, m_stateSel + STATE_COLS);   return; }
+    if (a == NavAction::UP)    { m_stateSel = std::max(0, m_stateSel - m_stateCols);        return; }
+    if (a == NavAction::DOWN)  { m_stateSel = std::min(count-1, m_stateSel + m_stateCols);  return; }
     if (a == NavAction::LEFT)  { m_stateSel = std::max(0, m_stateSel - 1);                  return; }
     if (a == NavAction::RIGHT) { m_stateSel = std::min(count-1, m_stateSel + 1);            return; }
 
@@ -748,9 +748,29 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
         }
         return;
     }
+    // X / Square — always Delete on a filled slot, always Save Here on an empty one.
+    // No more dual-purpose confusion: X = destructive action, A = primary action.
     if (a == NavAction::OPTIONS) {
         const SaveSlot& sel = m_slots[m_stateSel];
-        if (sel.slotNumber == -3) return; // undo slot is not overwritable
+        if (sel.slotNumber == -3) return;  // undo slot: not deletable via X
+        if (!sel.exists || sel.slotNumber == -2) {
+            // Empty / "New Save" tile — X here means Save Here (same as A)
+            doSaveAction();
+        } else {
+            std::string label = (sel.slotNumber == -1) ? "Auto-save"
+                : "Slot " + std::to_string(sel.slotNumber + 1);
+            m_confirmAction  = ConfirmAction::DELETE_STATE;
+            m_confirmMessage = "Delete this save?";
+            m_confirmDetail  = label + "  \xe2\x80\x94  This cannot be undone.";
+        }
+        return;
+    }
+
+    // Start / Menu — Overwrite (keeping this around for users who want
+    // explicit overwrite rather than the A-load / X-delete flow).
+    if (a == NavAction::MENU) {
+        const SaveSlot& sel = m_slots[m_stateSel];
+        if (sel.slotNumber == -3) return;
         if (sel.exists && sel.slotNumber != -2) {
             std::string label = (sel.slotNumber == -1) ? "Auto-save"
                 : "Slot " + std::to_string(sel.slotNumber + 1);
@@ -762,21 +782,17 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
         }
         return;
     }
-    if (a == NavAction::MENU) {
-        const SaveSlot& sel = m_slots[m_stateSel];
-        if (!sel.exists || sel.slotNumber == -2 || sel.slotNumber == -3) return;
-        std::string label = (sel.slotNumber == -1) ? "Auto-save"
-            : "Slot " + std::to_string(sel.slotNumber + 1);
-        m_confirmAction  = ConfirmAction::DELETE_STATE;
-        m_confirmMessage = "Delete this save?";
-        m_confirmDetail  = label + "  \xe2\x80\x94  This cannot be undone.";
-        return;
-    }
 
-    // Y / Triangle → branch (copy slot to a new slot)
+    // Y / Triangle — Branch if slot is filled, Save Here if slot is empty.
+    // This makes Y the "do something creative with this slot" button in both cases.
     if (a == NavAction::FAVORITE) {
         const SaveSlot& sel = m_slots[m_stateSel];
-        if (!sel.exists || sel.slotNumber == -2 || sel.slotNumber == -3) return;
+        if (sel.slotNumber == -3) return;  // undo slot: not branchable
+        if (!sel.exists || sel.slotNumber == -2) {
+            // Empty tile — Y = Save Here (same as A on empty)
+            doSaveAction();
+            return;
+        }
         std::string label = (sel.slotNumber == -1) ? "Auto-save"
             : "Slot " + std::to_string(sel.slotNumber + 1);
         m_branchSourceSlot = sel.slotNumber;
@@ -785,6 +801,7 @@ void OmniSaveVault::handleSaveStateNav(NavAction a) {
         m_confirmDetail  = "Creates a copy of " + label + " as a new slot.";
         return;
     }
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1452,6 +1469,7 @@ void OmniSaveVault::renderSaveStatePanel(int x, int y, int w, int h) {
     int gridX = x + MARGIN, gridY = y + 54;
     int cols    = std::max(1, (w - MARGIN*2 + padX) / (cardW + padX));
     int visRows = std::max(1, (h - 54) / (cardH + padY));
+    m_stateCols = cols;  // keep nav in sync with the actual rendered column count
 
     if (m_stateSel < m_stateScroll * cols) m_stateScroll = m_stateSel / cols;
     if (m_stateSel >= (m_stateScroll + visRows) * cols)
@@ -1720,9 +1738,9 @@ void OmniSaveVault::renderFooter() {
         return;
     }
     if (m_focus == OmniPanel::SAVESTATES) {
-        m_theme->drawFooterHints(m_w, m_h, "Load / New Save", "Back", "Save Here", "Branch");
+        // A = Load (filled) / Save (empty)   X = Delete   Y = Branch (filled) / Save (empty)
+        m_theme->drawFooterHints(m_w, m_h, "Load / Save", "Back", "Delete", "Branch / Save");
     } else {
-        // If multiple cards exist, show the swap hint; otherwise reload hint
         const char* confirmHint = (m_gameCards.size() > 1) ? "Swap / Reload Card" : "Reload Card";
         m_theme->drawFooterHints(m_w, m_h, confirmHint, "Back", "Delete Save", "Chronicle");
     }
@@ -1732,7 +1750,7 @@ void OmniSaveVault::renderFooter() {
         "Switch Panel", m_theme->palette().textSecond);
     if (m_focus == OmniPanel::SAVESTATES)
         m_theme->drawButtonHint(m_w - 390, cy, "Start",
-            "Delete", m_theme->palette().textSecond);
+            "Overwrite", m_theme->palette().textSecond);
 }
 
 // ── scanImportFolder() ───────────────────────────────────────────────────────

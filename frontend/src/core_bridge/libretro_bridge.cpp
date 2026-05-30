@@ -365,8 +365,9 @@ void LibretroBridge::blitFramebuffer(SDL_Renderer* renderer) {
     int winW, winH;
     SDL_GetRendererOutputSize(renderer, &winW, &winH);
 
-    // Letterbox: maintain PS1 aspect ratio (4:3)
-    float aspect    = 4.f / 3.f;
+    // Letterbox: use the aspect ratio set by per-game settings (default 4:3).
+    // setAspectRatio() is called by applyPerGameSettings before the first frame.
+    float aspect = m_aspectRatio;
     int   destW     = winW;
     int   destH     = (int)(winW / aspect);
 

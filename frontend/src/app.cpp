@@ -84,11 +84,15 @@ void HaackApp::init() {
 
     IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
 
+    Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    if (m_haackSettings.fullscreen)
+        windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+
     m_window = SDL_CreateWindow(
         "HaackStation",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         DEFAULT_W, DEFAULT_H,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+        windowFlags
     );
     if (!m_window)
         throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
@@ -1558,6 +1562,59 @@ void HaackApp::launchGame(const std::string& path) {
     m_core->setCoreOption("beetle_psx_hw_skip_bios",
         m_haackSettings.fastBoot ? "enabled" : "disabled");
 
+    // ── Pre-load per-game core options ────────────────────────────────────────
+    // Beetle reads RETRO_ENVIRONMENT_GET_VARIABLE during retro_load_game().
+    // Options set after loadGame() are ignored for settings that require a
+    // full core restart (widescreen, aspect ratio, filter, run-ahead).
+    // We load the config here and push options into the map BEFORE loadGame().
+    // applyPerGameSettings() still runs after loadGame() for its log output,
+    // but the actual setCoreOption calls below are what Beetle actually sees.
+    {
+        const GameEntry* ge = m_browser->selectedGameEntry();
+        std::string serial  = (ge && !ge->serial.empty()) ? ge->serial : "";
+        PerGameSettings preLoad;
+        if (preLoad.load(serial, path)) {
+            const GameOverrides& ov = preLoad.overrides();
+            if (ov.overrideResolution) {
+                const char* v[] = { "1x(native)", "2x", "4x", "8x", "16x" };
+                m_core->setCoreOption("beetle_psx_hw_internal_resolution",
+                    v[std::max(0, std::min(ov.internalRes, 4))]);
+            }
+            if (ov.overrideWidescreen)
+                m_core->setCoreOption("beetle_psx_hw_widescreen_hack",
+                    ov.widescreenHack ? "enabled" : "disabled");
+            if (ov.overrideAspectRatio) {
+                const char* v[] = { "4:3", "16:9", "8:7" };
+                m_core->setCoreOption("beetle_psx_hw_aspect_ratio",
+                    v[std::max(0, std::min(ov.aspectRatioChoice, 2))]);
+                // Also update the blit aspect so the SDL letterbox matches.
+                // 0=4:3  1=16:9  2=8:7 (pixel-perfect NTSC square pixels)
+                const float arFloats[] = { 4.f/3.f, 16.f/9.f, 8.f/7.f };
+                m_core->setAspectRatio(arFloats[std::max(0,
+                    std::min(ov.aspectRatioChoice, 2))]);
+            }
+            if (ov.overrideBilinear) {
+                const char* v[] = { "nearest", "bilinear", "3-point" };
+                m_core->setCoreOption("beetle_psx_hw_filter",
+                    v[std::max(0, std::min(ov.filterChoice, 2))]);
+            }
+            if (ov.overrideRunAhead) {
+                const char* v[] = { "disabled", "1", "2", "3", "4" };
+                m_core->setCoreOption("beetle_psx_hw_runahead",
+                    v[std::max(0, std::min(ov.runAheadFrames, 4))]);
+            }
+            if (ov.overrideCpuOverclock) {
+                const char* v[] = { "1x", "2x", "4x", "8x" };
+                m_core->setCoreOption("beetle_psx_hw_cpu_overclock",
+                    v[std::max(0, std::min(ov.cpuOverclock, 3))]);
+            }
+            if (ov.overrideOverscan)
+                m_core->setCoreOption("beetle_psx_hw_crop_overscan",
+                    ov.cropOverscan ? "enabled" : "disabled");
+            std::cout << "[PerGame] Pre-load options applied for: " << serial << "\n";
+        }
+    }
+
     // ── Memory card setup — must happen before loadGame() ─────────────────────
     // The core reads RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY during retro_load_game.
     // We point it at the MemCardManager's directory so the .srm file the core
@@ -1760,9 +1817,56 @@ void HaackApp::applyPerGameSettings(const std::string& gamePath,
         std::cout << "[PerGame] Texture replacement override: "
                   << (ov.textureReplacement ? "on" : "off") << "\n";
 
+    // ── Item 26: Run-Ahead ────────────────────────────────────────────────────
+    if (ov.overrideRunAhead) {
+        const char* raValues[] = { "disabled", "1", "2", "3", "4" };
+        int idx = std::max(0, std::min(ov.runAheadFrames, 4));
+        m_core->setCoreOption("beetle_psx_hw_runahead", raValues[idx]);
+        std::cout << "[PerGame] Run-ahead override: " << raValues[idx] << " frames\n";
+    }
+
+    // ── Item 27: Widescreen hack ──────────────────────────────────────────────
+    if (ov.overrideWidescreen) {
+        m_core->setCoreOption("beetle_psx_hw_widescreen_hack",
+            ov.widescreenHack ? "enabled" : "disabled");
+        std::cout << "[PerGame] Widescreen hack override: "
+                  << (ov.widescreenHack ? "on" : "off") << "\n";
+    }
+
+    // ── Item 27: CPU overclock ────────────────────────────────────────────────
+    if (ov.overrideCpuOverclock) {
+        const char* clockValues[] = { "1x", "2x", "4x", "8x" };
+        int idx = std::max(0, std::min(ov.cpuOverclock, 3));
+        m_core->setCoreOption("beetle_psx_hw_cpu_overclock", clockValues[idx]);
+        std::cout << "[PerGame] CPU overclock override: " << clockValues[idx] << "\n";
+    }
+
+    // ── Item 28: Overscan crop ────────────────────────────────────────────────
+    if (ov.overrideOverscan) {
+        m_core->setCoreOption("beetle_psx_hw_crop_overscan",
+            ov.cropOverscan ? "enabled" : "disabled");
+        std::cout << "[PerGame] Overscan crop override: "
+                  << (ov.cropOverscan ? "on" : "off") << "\n";
+    }
+
+    // ── Item 29: Texture filter ───────────────────────────────────────────────
+    if (ov.overrideBilinear) {
+        const char* filterValues[] = { "nearest", "bilinear", "3-point" };
+        int idx = std::max(0, std::min(ov.filterChoice, 2));
+        m_core->setCoreOption("beetle_psx_hw_filter", filterValues[idx]);
+        std::cout << "[PerGame] Filter override: " << filterValues[idx] << "\n";
+    }
+
+    // ── Item 30: Aspect ratio ─────────────────────────────────────────────────
+    if (ov.overrideAspectRatio) {
+        const char* arValues[] = { "4:3", "16:9", "8:7" };
+        int idx = std::max(0, std::min(ov.aspectRatioChoice, 2));
+        m_core->setCoreOption("beetle_psx_hw_aspect_ratio", arValues[idx]);
+        std::cout << "[PerGame] Aspect ratio override: " << arValues[idx] << "\n";
+    }
+
     // Memory card mode is applied earlier in launchGame() (before prepareSlot1),
     // so we just log the state here for confirmation.
-
 
     std::cout << "[PerGame] Applied overrides for: " << gamePath << "\n";
 }
@@ -1782,6 +1886,11 @@ void HaackApp::revertPerGameSettings() {
     if (m_memCards)
         m_memCards->setMode(MemCardMode::PER_GAME);
 	
+    // Restore default 4:3 aspect ratio for the blit so the next game
+    // doesn't inherit this game's aspect ratio override.
+    if (m_core)
+        m_core->setAspectRatio(4.f / 3.f);
+
     m_perGameSettings.clear();
     std::cout << "[PerGame] Reverted to global settings\n";
 }

@@ -16,30 +16,62 @@
 #include <unordered_map>
 
 struct GameOverrides {
-    // Video
+    // ── Video ──────────────────────────────────────────────────────────────────
     bool  overrideRenderer      = false;
-    int   rendererChoice        = 0;
+    int   rendererChoice        = 0;    // 0=Software, 1=Hardware (OpenGL)
+
     bool  overrideResolution    = false;
-    int   internalRes           = 1;
+    int   internalRes           = 0;    // index into resolution choices (see screen)
+
     bool  overrideShader        = false;
     int   shaderChoice          = 0;
 
-    // Enhancements
+    // ── Enhancements (existing) ────────────────────────────────────────────────
     bool  overrideTextures      = false;
     bool  textureReplacement    = false;
+
     bool  overrideAiUpscaling   = false;
     bool  aiUpscaling           = false;
 
-    // Audio
+    // ── Audio ──────────────────────────────────────────────────────────────────
     bool  overrideAudioReplace  = false;
     bool  audioReplacement      = false;
 
-    // Memory card
+    // ── Run-Ahead (item 26) ────────────────────────────────────────────────────
+    // Reduces perceived input lag by running the core N extra frames ahead
+    // and rolling back. 1–2 frames is typical; 4 is the Beetle maximum.
+    bool  overrideRunAhead      = false;
+    int   runAheadFrames        = 0;    // 0=disabled, 1/2/3/4 = frame count
+
+    // ── Widescreen hack + CPU overclock (item 27) ─────────────────────────────
+    // Widescreen stretches the 3D projection to 16:9 without letterboxing.
+    // Not all games look good with it — hence per-game.
+    bool  overrideWidescreen    = false;
+    bool  widescreenHack        = false;
+
+    // CPU overclock helps games that have slowdown (e.g. Spyro water levels).
+    bool  overrideCpuOverclock  = false;
+    int   cpuOverclock          = 0;    // 0=1x, 1=2x, 2=4x, 3=8x
+
+    // ── Overscan crop (item 28) ────────────────────────────────────────────────
+    // Crops the ~8px black border present on many PS1 games.
+    bool  overrideOverscan      = false;
+    bool  cropOverscan          = false;
+
+    // ── Bilinear filter (item 29) ─────────────────────────────────────────────
+    // Smooths the 320×240 output. Some people love it, some hate it.
+    bool  overrideBilinear      = false;
+    int   filterChoice          = 0;    // 0=Nearest (sharp), 1=Bilinear, 2=3-point
+
+    // ── Aspect ratio (item 30) ────────────────────────────────────────────────
+    bool  overrideAspectRatio   = false;
+    int   aspectRatioChoice     = 0;    // 0=4:3, 1=16:9, 2=8:7 (pixel-perfect)
 
     bool hasAnyOverride() const {
-        return overrideRenderer || overrideResolution || overrideShader ||
-               overrideTextures || overrideAiUpscaling ||
-               overrideAudioReplace;
+        return overrideRenderer    || overrideResolution  || overrideShader      ||
+               overrideTextures    || overrideAiUpscaling || overrideAudioReplace||
+               overrideRunAhead    || overrideWidescreen  || overrideCpuOverclock||
+               overrideOverscan    || overrideBilinear    || overrideAspectRatio;
     }
 };
 

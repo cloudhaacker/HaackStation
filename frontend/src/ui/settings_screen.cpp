@@ -354,7 +354,7 @@ void SettingsScreen::buildTabs() {
     {
         SettingTab tab;
         tab.label = "About";
-        tab.items.push_back(makeLabel("ver",     "Version",        "0.5.3-dev"));
+        tab.items.push_back(makeLabel("ver",     "Version",        "0.5.5-dev"));
         tab.items.push_back(makeLabel("core",    "Emulation Core", "Beetle PSX HW / Mednafen (libretro)"));
         tab.items.push_back(makeLabel("license", "License",        "GNU General Public License v2"));
         tab.items.push_back(makeSep());

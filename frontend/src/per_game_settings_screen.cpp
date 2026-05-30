@@ -18,7 +18,6 @@ void PerGameSettingsScreen::open(const std::string& gameTitle,
     m_gameTitle   = gameTitle;
     m_gamePath    = gamePath;
     m_serial      = serial.empty() ? [&]() {
-        // Derive serial-like key from filename stem
         auto sl = gamePath.find_last_of("/\\");
         std::string stem = (sl != std::string::npos)
             ? gamePath.substr(sl + 1) : gamePath;
@@ -42,12 +41,11 @@ void PerGameSettingsScreen::close() {
 void PerGameSettingsScreen::buildRows() {
     m_rows.clear();
 
-    // Each row: label, description, pointer to override-enable flag,
-    //           pointer to int value (or nullptr), choices, pointer to bool value (or nullptr)
+    // ── Video ──────────────────────────────────────────────────────────────────
 
     m_rows.push_back({
-        "Override Resolution",
-        "Use a different internal resolution for this game",
+        "Internal Resolution",
+        "Render at a higher resolution (requires hardware renderer in v0.7)",
         &m_overrides.overrideResolution,
         &m_overrides.internalRes,
         { "1x Native (320x240)", "2x (640x480)", "4x (1280x960)", "8x", "16x" },
@@ -55,7 +53,7 @@ void PerGameSettingsScreen::buildRows() {
     });
 
     m_rows.push_back({
-        "Override Renderer",
+        "Renderer",
         "Force software or hardware renderer for this game",
         &m_overrides.overrideRenderer,
         &m_overrides.rendererChoice,
@@ -64,8 +62,8 @@ void PerGameSettingsScreen::buildRows() {
     });
 
     m_rows.push_back({
-        "Override Shader",
-        "Use a specific shader for this game",
+        "Shader",
+        "Apply a post-process shader to this game's output",
         &m_overrides.overrideShader,
         &m_overrides.shaderChoice,
         { "None (sharp)", "CRT Lottes", "CRT Royale",
@@ -73,9 +71,70 @@ void PerGameSettingsScreen::buildRows() {
         nullptr
     });
 
+    // ── Item 29: Bilinear filter ───────────────────────────────────────────────
     m_rows.push_back({
-        "Override Texture Replacement",
-        "Enable or disable HD textures for this game",
+        "Texture Filter",
+        "Nearest = crisp pixels. Bilinear = softer look. 3-point = compromise.",
+        &m_overrides.overrideBilinear,
+        &m_overrides.filterChoice,
+        { "Nearest (sharp pixels)", "Bilinear (smooth)", "3-Point" },
+        nullptr
+    });
+
+    // ── Item 30: Aspect ratio ──────────────────────────────────────────────────
+    m_rows.push_back({
+        "Aspect Ratio",
+        "4:3 is authentic. 16:9 stretches to fill widescreen. 8:7 is pixel-perfect.",
+        &m_overrides.overrideAspectRatio,
+        &m_overrides.aspectRatioChoice,
+        { "4:3 (authentic)", "16:9 (stretched)", "8:7 (pixel-perfect)" },
+        nullptr
+    });
+
+    // ── Item 28: Overscan crop ─────────────────────────────────────────────────
+    m_rows.push_back({
+        "Crop Overscan",
+        "Remove the ~8px black border most PS1 games have around the edges",
+        &m_overrides.overrideOverscan,
+        nullptr,
+        { "Off", "On" },
+        &m_overrides.cropOverscan
+    });
+
+    // ── Item 27: Widescreen hack ───────────────────────────────────────────────
+    m_rows.push_back({
+        "Widescreen Hack",
+        "Stretch 3D rendering to 16:9. Looks great in some games, wrong in others.",
+        &m_overrides.overrideWidescreen,
+        nullptr,
+        { "Off", "On" },
+        &m_overrides.widescreenHack
+    });
+
+    // ── Item 27: CPU overclock ─────────────────────────────────────────────────
+    m_rows.push_back({
+        "CPU Overclock",
+        "Run the PS1 CPU faster to reduce slowdown. May cause glitches in some games.",
+        &m_overrides.overrideCpuOverclock,
+        &m_overrides.cpuOverclock,
+        { "1x (stock)", "2x", "4x", "8x" },
+        nullptr
+    });
+
+    // ── Item 26: Run-Ahead ─────────────────────────────────────────────────────
+    m_rows.push_back({
+        "Run-Ahead Frames",
+        "Reduces input lag by pre-computing frames. 1-2 is ideal. Higher = more CPU.",
+        &m_overrides.overrideRunAhead,
+        &m_overrides.runAheadFrames,
+        { "Disabled", "1 Frame", "2 Frames", "3 Frames", "4 Frames" },
+        nullptr
+    });
+
+    // ── Enhancements (future features — shown greyed out until v0.7) ───────────
+    m_rows.push_back({
+        "Texture Replacement",
+        "Enable HD texture packs for this game (v0.7+)",
         &m_overrides.overrideTextures,
         nullptr,
         { "Off", "On" },
@@ -83,18 +142,19 @@ void PerGameSettingsScreen::buildRows() {
     });
 
     m_rows.push_back({
-        "Override Audio Replacement",
-        "Enable or disable audio tracks for this game",
+        "Audio Replacement",
+        "Enable high-quality audio tracks for this game (v0.7+)",
         &m_overrides.overrideAudioReplace,
         nullptr,
         { "Off", "On" },
         &m_overrides.audioReplacement
     });
 
+    // ── Reset all ──────────────────────────────────────────────────────────────
     m_rows.push_back({
         "Reset All Overrides",
         "Remove all per-game settings and use global defaults",
-        nullptr, nullptr, {}, nullptr // special action row
+        nullptr, nullptr, {}, nullptr
     });
 }
 
@@ -126,11 +186,10 @@ void PerGameSettingsScreen::navigateAction(NavAction action) {
         case NavAction::RIGHT: {
             if (m_selectedRow >= numRows) break;
             Row& row = m_rows[m_selectedRow];
-            if (!row.enabled) break; // action row — no left/right
+            if (!row.enabled) break;
 
-            // LEFT/RIGHT on a choice/bool setting changes the value
             if (row.value != nullptr && !row.choices.empty()) {
-                if (!*row.enabled) { *row.enabled = true; } // auto-enable override
+                if (!*row.enabled) { *row.enabled = true; }
                 int sz = (int)row.choices.size();
                 if (action == NavAction::RIGHT)
                     *row.value = (*row.value + 1) % sz;
@@ -152,13 +211,12 @@ void PerGameSettingsScreen::navigateAction(NavAction action) {
             if (!row.enabled) {
                 // "Reset All Overrides" action row
                 m_overrides = GameOverrides{};
-                buildRows(); // rebuild since pointers need refresh
+                buildRows();
                 m_nav->rumbleConfirm();
                 std::cout << "[PerGameScreen] All overrides cleared\n";
                 break;
             }
 
-            // Toggle the override-enabled flag
             *row.enabled = !*row.enabled;
             m_nav->rumbleConfirm();
             break;
@@ -166,7 +224,6 @@ void PerGameSettingsScreen::navigateAction(NavAction action) {
 
         case NavAction::BACK:
         case NavAction::MENU: {
-            // Save and close
             PerGameSettings pgs;
             pgs.save(m_serial, m_overrides);
             m_wantsClose = true;
@@ -189,13 +246,18 @@ void PerGameSettingsScreen::render() {
     SDL_RenderFillRect(m_renderer, &full);
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-    // Panel
-    int panelW = std::min(PANEL_W, m_w - PANEL_X_MARGIN * 2);
+    // Panel — grow height to fit all rows
+    int panelW  = std::min(PANEL_W, m_w - PANEL_X_MARGIN * 2);
     int numRows = (int)m_rows.size();
-    int panelH = 80 + numRows * ITEM_H + 60;
-    int panelX = (m_w - panelW) / 2;
-    int panelY = (m_h - panelH) / 2;
-    panelY = std::max(20, panelY);
+    int panelH  = 80 + numRows * ITEM_H + 60;
+    int panelX  = (m_w - panelW) / 2;
+    int panelY  = (m_h - panelH) / 2;
+    panelY      = std::max(20, panelY);
+
+    // If the panel is taller than the screen, clamp and let rows scroll.
+    // For now with 12 rows at 64px each that's 848 + 140 = ~988px. On 1080p
+    // that fits fine. On 720p we'd need scrolling — add that in the polish pass.
+    panelH = std::min(panelH, m_h - 40);
 
     SDL_Rect panel = { panelX, panelY, panelW, panelH };
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
@@ -219,12 +281,15 @@ void PerGameSettingsScreen::render() {
     int contentW = panelW - 32;
     int y = panelY + 78;
     for (int i = 0; i < numRows; i++) {
+        // Simple clipping — don't draw rows that fall outside the panel
+        if (y + ITEM_H > panelY + panelH - 8) break;
         renderRow(m_rows[i], panelX + 16, y, contentW, i == m_selectedRow);
         y += ITEM_H;
     }
 
     // Footer
-    m_theme->drawFooterHints(m_w, m_h, "Toggle Override", "Save & Back", "< / > Value", "");
+    m_theme->drawFooterHints(m_w, m_h,
+        "Toggle Override", "Save & Back", "< / > Change Value", "");
 }
 
 void PerGameSettingsScreen::renderRow(const Row& row, int x, int y,
@@ -249,18 +314,16 @@ void PerGameSettingsScreen::renderRow(const Row& row, int x, int y,
         return;
     }
 
-    // Override enabled/disabled indicator
-    bool active = *row.enabled;
-    SDL_Color labelCol  = active ? pal.textPrimary : pal.textDisable;
-    SDL_Color valueCol  = active ? pal.accent      : pal.textDisable;
+    bool active     = *row.enabled;
+    SDL_Color labelCol = active ? pal.textPrimary : pal.textDisable;
+    SDL_Color valueCol = active ? pal.accent      : pal.textDisable;
 
-    // Checkbox style toggle indicator
+    // Checkbox
     SDL_Rect checkBox = { x + 8, y + 10, 18, 18 };
     m_theme->drawRect(checkBox, active ? pal.accent : pal.bgCard);
     SDL_SetRenderDrawColor(m_renderer, pal.gridLine.r, pal.gridLine.g, pal.gridLine.b, 255);
     SDL_RenderDrawRect(m_renderer, &checkBox);
     if (active) {
-        // Checkmark lines
         SDL_SetRenderDrawColor(m_renderer, 255, 255, 255, 255);
         SDL_RenderDrawLine(m_renderer, x+11, y+19, x+14, y+23);
         SDL_RenderDrawLine(m_renderer, x+14, y+23, x+22, y+13);

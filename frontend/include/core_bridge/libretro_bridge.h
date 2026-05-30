@@ -90,6 +90,12 @@ public:
     // sounds fast but not chipmunked. Call once when turbo is enabled/disabled.
     void setTurboRatio(double ratio);
 
+    // Called by applyPerGameSettings (and revertPerGameSettings) so
+    // blitFramebuffer always uses the correct aspect ratio for the active game.
+    // ratio: 4.0f/3.0f = authentic, 16.0f/9.0f = stretched, 8.0f/7.0f = pixel-perfect
+    void setAspectRatio(float ratio) { m_aspectRatio = ratio; }
+
+
     // System memory access for RetroAchievements
     const uint8_t* getSystemMemory() const;
     size_t         getSystemMemorySize() const;
@@ -157,7 +163,8 @@ private:
     retro_system_timing      m_timing         = {};
     int                      m_audioCoreRate  = 44100;
     int                      m_audioOutputRate= 44100;
-    double                   m_turboRatio     = 1.0;  // 1.0=normal, >1.0=turbo active
+    double m_turboRatio  = 1.0;
+    float  m_aspectRatio = 4.f / 3.f;  // default PS1 aspect ratio
     soundtouch::SoundTouch   m_soundTouch;             // time-stretcher for turbo audio
     bool                     m_soundTouchActive = false;
 

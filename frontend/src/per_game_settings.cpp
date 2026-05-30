@@ -38,7 +38,7 @@ bool PerGameSettings::load(const std::string& gameSerial,
             std::string key = line.substr(0, eq);
             std::string val = line.substr(eq + 1);
 
-            // Trim whitespace
+            // Trim trailing whitespace from key, leading from val
             while (!key.empty() && key.back() == ' ') key.pop_back();
             while (!val.empty() && val.front() == ' ') val = val.substr(1);
 
@@ -51,12 +51,41 @@ bool PerGameSettings::load(const std::string& gameSerial,
                 try { field = std::stoi(val); } catch (...) {}
             };
 
-            if      (key == "renderer")         intVal(m_overrides.rendererChoice,     m_overrides.overrideRenderer);
-            else if (key == "internal_res")      intVal(m_overrides.internalRes,        m_overrides.overrideResolution);
-            else if (key == "shader")            intVal(m_overrides.shaderChoice,       m_overrides.overrideShader);
-            else if (key == "texture_replace")   boolVal(m_overrides.textureReplacement, m_overrides.overrideTextures);
-            else if (key == "ai_upscaling")      boolVal(m_overrides.aiUpscaling,       m_overrides.overrideAiUpscaling);
-            else if (key == "audio_replace")     boolVal(m_overrides.audioReplacement,  m_overrides.overrideAudioReplace);
+            // ── Existing fields ────────────────────────────────────────────────
+            if      (key == "renderer")
+                intVal(m_overrides.rendererChoice,      m_overrides.overrideRenderer);
+            else if (key == "internal_res")
+                intVal(m_overrides.internalRes,         m_overrides.overrideResolution);
+            else if (key == "shader")
+                intVal(m_overrides.shaderChoice,        m_overrides.overrideShader);
+            else if (key == "texture_replace")
+                boolVal(m_overrides.textureReplacement, m_overrides.overrideTextures);
+            else if (key == "ai_upscaling")
+                boolVal(m_overrides.aiUpscaling,        m_overrides.overrideAiUpscaling);
+            else if (key == "audio_replace")
+                boolVal(m_overrides.audioReplacement,   m_overrides.overrideAudioReplace);
+
+            // ── Item 26: Run-Ahead ─────────────────────────────────────────────
+            else if (key == "run_ahead")
+                intVal(m_overrides.runAheadFrames,      m_overrides.overrideRunAhead);
+
+            // ── Item 27: Widescreen hack + CPU overclock ───────────────────────
+            else if (key == "widescreen_hack")
+                boolVal(m_overrides.widescreenHack,     m_overrides.overrideWidescreen);
+            else if (key == "cpu_overclock")
+                intVal(m_overrides.cpuOverclock,        m_overrides.overrideCpuOverclock);
+
+            // ── Item 28: Overscan crop ─────────────────────────────────────────
+            else if (key == "crop_overscan")
+                boolVal(m_overrides.cropOverscan,       m_overrides.overrideOverscan);
+
+            // ── Item 29: Bilinear filter ───────────────────────────────────────
+            else if (key == "filter")
+                intVal(m_overrides.filterChoice,        m_overrides.overrideBilinear);
+
+            // ── Item 30: Aspect ratio ──────────────────────────────────────────
+            else if (key == "aspect_ratio")
+                intVal(m_overrides.aspectRatioChoice,   m_overrides.overrideAspectRatio);
         }
 
         m_loaded = true;
@@ -83,18 +112,41 @@ void PerGameSettings::save(const std::string& gameSerial,
     f << "# HaackStation per-game settings for " << gameSerial << "\n";
     f << "# Delete this file to revert to global settings\n\n";
 
+    // ── Existing fields ────────────────────────────────────────────────────────
     if (overrides.overrideRenderer)
-        f << "renderer=" << overrides.rendererChoice << "\n";
+        f << "renderer="       << overrides.rendererChoice   << "\n";
     if (overrides.overrideResolution)
-        f << "internal_res=" << overrides.internalRes << "\n";
+        f << "internal_res="   << overrides.internalRes      << "\n";
     if (overrides.overrideShader)
-        f << "shader=" << overrides.shaderChoice << "\n";
+        f << "shader="         << overrides.shaderChoice     << "\n";
     if (overrides.overrideTextures)
         f << "texture_replace=" << (overrides.textureReplacement ? "true" : "false") << "\n";
     if (overrides.overrideAiUpscaling)
-        f << "ai_upscaling=" << (overrides.aiUpscaling ? "true" : "false") << "\n";
+        f << "ai_upscaling="   << (overrides.aiUpscaling     ? "true" : "false") << "\n";
     if (overrides.overrideAudioReplace)
-        f << "audio_replace=" << (overrides.audioReplacement ? "true" : "false") << "\n";
+        f << "audio_replace="  << (overrides.audioReplacement? "true" : "false") << "\n";
+
+    // ── Item 26: Run-Ahead ─────────────────────────────────────────────────────
+    if (overrides.overrideRunAhead)
+        f << "run_ahead="      << overrides.runAheadFrames   << "\n";
+
+    // ── Item 27: Widescreen + CPU overclock ────────────────────────────────────
+    if (overrides.overrideWidescreen)
+        f << "widescreen_hack=" << (overrides.widescreenHack ? "true" : "false") << "\n";
+    if (overrides.overrideCpuOverclock)
+        f << "cpu_overclock="  << overrides.cpuOverclock     << "\n";
+
+    // ── Item 28: Overscan ──────────────────────────────────────────────────────
+    if (overrides.overrideOverscan)
+        f << "crop_overscan="  << (overrides.cropOverscan    ? "true" : "false") << "\n";
+
+    // ── Item 29: Bilinear filter ───────────────────────────────────────────────
+    if (overrides.overrideBilinear)
+        f << "filter="         << overrides.filterChoice     << "\n";
+
+    // ── Item 30: Aspect ratio ──────────────────────────────────────────────────
+    if (overrides.overrideAspectRatio)
+        f << "aspect_ratio="   << overrides.aspectRatioChoice << "\n";
 
     std::cout << "[PerGame] Saved config: " << path << "\n";
 }
