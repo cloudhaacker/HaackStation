@@ -186,6 +186,12 @@ private:
                                        const std::string& name);
     static void        deleteSidecar(const std::string& mcrPath);
 
+    // ── Per-serial card preference (last-used card, persisted across restarts) ─
+    static std::string cardPrefsPath(const std::string& serial);
+    void               saveCardPref(const std::string& serial,
+                                    const std::string& cardPath);
+    std::string        loadCardPref(const std::string& serial);
+
     // ── Card deletion ─────────────────────────────────────────────────────────
     void doDeleteCard(); // deletes selected card's .mcr + sidecar, reloads slots
 

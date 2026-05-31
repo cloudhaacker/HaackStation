@@ -1145,39 +1145,40 @@ void HaackApp::update(float deltaMs) {
         // ── OmniSave Vault ────────────────────────────────────────────────────
         case AppState::OMNISAVE_VAULT:
             m_omniSave->update(deltaMs);
-            if (m_omniSave->wantsClose()) {
-                m_omniSave->resetClose();
 
-                // ── Card swap (hot-swap to a different card) ──────────────────
+            // ── Card swap — checked every tick (vault stays open after swap) ──
+            {
                 std::string swapPath = m_omniSave->consumeCardSwap();
-                if (!swapPath.empty() && !swapPath.empty()
-                        && swapPath != m_activeCardPath
-                        && m_core->isGameLoaded()) {
-                    // 1. Flush outgoing card
-                    if (!m_activeCardPath.empty())
-                        m_core->flushSaveRAM(m_activeCardPath);
-                    // 2. Switch active path
+                if (!swapPath.empty()
+                        && swapPath != m_activeCardPath) {
+                    // Vault flushed the outgoing card; now load the new card
+                    // into the core's SRAM buffer and sync all bookkeeping.
                     m_activeCardPath    = swapPath;
                     m_memcardFlushTimer = 0;
                     m_sramChecksum      = 0;
                     m_sramPollTimer     = 0;
                     m_cardSwapToast     = true;
-                    // 3. Load new card into SRAM
-                    SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
-                    if (audioDev) { SDL_PauseAudioDevice(audioDev, 1); SDL_ClearQueuedAudio(audioDev); }
-                    m_core->loadSaveRAM(m_activeCardPath);
-                    if (audioDev)   SDL_PauseAudioDevice(audioDev, 0);
-                    // 4. Reinit rewind buffer — old states are meaningless on a new card
-                    if (m_rewind) {
-                        m_rewind->reset();
-                        m_rewind->init(m_core.get());
+                    if (m_core->isGameLoaded()) {
+                        // Load the new card's data into the core
+                        SDL_AudioDeviceID audioDev = m_core->getAudioDevice();
+                        if (audioDev) { SDL_PauseAudioDevice(audioDev, 1); SDL_ClearQueuedAudio(audioDev); }
+                        m_core->loadSaveRAM(m_activeCardPath);
+                        if (audioDev) SDL_PauseAudioDevice(audioDev, 0);
+                        // Reinit rewind buffer — old states are stale on a new card
+                        if (m_rewind) {
+                            m_rewind->reset();
+                            m_rewind->init(m_core.get());
+                        }
                     }
-                    // 5. Toast
                     m_memcardToastUntil = SDL_GetTicks() + 4000;
-                    // 6. Keep OmniSave in sync for next open
                     if (m_omniSave) m_omniSave->setActiveCardPath(m_activeCardPath);
-                    std::cout << "[HaackStation] Card swapped → " << m_activeCardPath << "\n";
+                    std::cout << "[HaackStation] Card swap synced → "
+                              << m_activeCardPath << "\n";
                 }
+            }
+
+            if (m_omniSave->wantsClose()) {
+                m_omniSave->resetClose();
 
                 // ── Card reload (same card, reload from disk) ─────────────────
                 if (m_omniSave->consumeCardReload() && m_core->isGameLoaded()) {
@@ -1646,8 +1647,31 @@ void HaackApp::launchGame(const std::string& path) {
         m_core->setSavePath(absSaveDir);
         // Store the exact .mcr path so the flush timer and quit path know
         // where to write the SRAM buffer.
-        m_activeCardPath = fs::absolute(
-            m_memCards->activeCardPath(serial)).string();
+        // Check for a saved card preference first — if the user previously
+        // swapped to a different card for this game, restore that selection.
+        {
+            std::string defaultCard = fs::absolute(
+                m_memCards->activeCardPath(serial)).string();
+            std::string prefPath = "memcards/per_game/" + serial + "_prefs.json";
+            std::string savedCard;
+            if (fs::exists(prefPath)) {
+                std::ifstream pf(prefPath);
+                std::string j((std::istreambuf_iterator<char>(pf)),
+                               std::istreambuf_iterator<char>());
+                auto pos = j.find("\"lastCard\"");
+                if (pos != std::string::npos) {
+                    auto c = j.find(':', pos);
+                    auto q1 = c != std::string::npos ? j.find('"', c+1) : std::string::npos;
+                    auto q2 = q1 != std::string::npos ? j.find('"', q1+1) : std::string::npos;
+                    if (q2 != std::string::npos)
+                        savedCard = j.substr(q1+1, q2-q1-1);
+                }
+            }
+            if (!savedCard.empty() && fs::exists(savedCard))
+                m_activeCardPath = savedCard;
+            else
+                m_activeCardPath = defaultCard;
+        }
         m_memcardFlushTimer = 0;
         std::cout << "[HaackStation] Memory card: " << m_activeCardPath << "\n";
     }
