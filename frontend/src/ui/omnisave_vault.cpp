@@ -9,6 +9,11 @@
 #include <iomanip>
 #include <ctime>
 
+// nlohmann/json is header-only — if it's not in your tree yet, the sidecar
+// helpers fall back to a minimal hand-rolled read/write (see below).
+// To use the real thing: #include <nlohmann/json.hpp>
+// For now we use a minimal hand-rolled JSON to avoid a new dependency.
+
 namespace fs = std::filesystem;
 
 static constexpr int MCR_BLOCK_SIZE    = 8192;
@@ -36,13 +41,15 @@ OmniSaveVault::OmniSaveVault(SDL_Renderer* renderer, ThemeEngine* theme,
     , m_saves(saveStates), m_memCards(memCards)
 {
     SDL_GetRendererOutputSize(renderer, &m_w, &m_h);
-	
+
     m_importScreen = std::make_unique<OmniSaveImport>(
         m_memCards, m_renderer);
 
+    m_osk = std::make_unique<OnScreenKeyboard>(renderer, theme, nav);
+
     // Ensure import directories exist
     fs::create_directories("memcards/import");
-    fs::create_directories("memcards/import/done");	
+    fs::create_directories("memcards/import/done");
 }
 
 OmniSaveVault::~OmniSaveVault() {
@@ -83,6 +90,13 @@ void OmniSaveVault::open(const std::string& gameTitle,
     m_cardSlotSel    = 0;
     m_cardSlotFocus  = false;
     m_pendingSwapPath.clear();
+
+    // Reset card options / OSK state
+    m_cardOptionsOpen = false;
+    m_cardOptions.clear();
+    m_cardOptionsSel  = 0;
+    m_oskActive       = false;
+    if (m_osk && m_osk->isOpen()) m_osk->close();
 
     loadGameCardSlots();
     loadMemCardEntries();
@@ -173,13 +187,17 @@ void OmniSaveVault::loadGameCardSlots() {
         int slotNum = std::stoi(suffix);
         std::string absPath = fs::absolute(entry.path()).string();
 
-        GameCardSlot slot;
-        slot.path        = absPath;
-        slot.slotNumber  = slotNum;
-        slot.isActive    = (!absActive.empty() && absPath == absActive);
-        slot.displayName = m_gameTitle.empty()
+        std::string customName = loadSidecarName(absPath);
+        std::string defaultName = m_gameTitle.empty()
             ? (m_gameSerial + " — Card " + suffix)
             : (m_gameTitle  + " — Card " + suffix);
+
+        GameCardSlot slot;
+        slot.path          = absPath;
+        slot.slotNumber    = slotNum;
+        slot.isActive      = (!absActive.empty() && absPath == absActive);
+        slot.hasCustomName = !customName.empty();
+        slot.displayName   = slot.hasCustomName ? customName : defaultName;
         slots.push_back(slot);
     }
 
@@ -396,6 +414,96 @@ std::string OmniSaveVault::formatRelativeAge(const std::string& stem) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Sidecar JSON helpers
+//
+//  Each .mcr file can have a sibling JSON file storing a custom display name:
+//    memcards/per_game/SLUS-00553_1.mcr  →  memcards/per_game/SLUS-00553_1.json
+//    { "name": "New Game+" }
+//
+//  We use a minimal hand-rolled read/write to avoid a new dependency.
+//  The format is intentionally simple — one key, one string value.
+// ─────────────────────────────────────────────────────────────────────────────
+/*static*/ std::string OmniSaveVault::sidecarPath(const std::string& mcrPath) {
+    fs::path p(mcrPath);
+    p.replace_extension(".json");
+    return p.string();
+}
+
+/*static*/ std::string OmniSaveVault::loadSidecarName(const std::string& mcrPath) {
+    std::string jPath = sidecarPath(mcrPath);
+    std::ifstream f(jPath);
+    if (!f.is_open()) return "";
+
+    // Minimal parse: find  "name"  :  "VALUE"
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+
+    // Find the value of "name"
+    auto namePos = content.find("\"name\"");
+    if (namePos == std::string::npos) return "";
+
+    auto colon = content.find(':', namePos);
+    if (colon == std::string::npos) return "";
+
+    auto q1 = content.find('"', colon + 1);
+    if (q1 == std::string::npos) return "";
+
+    auto q2 = content.find('"', q1 + 1);
+    if (q2 == std::string::npos) return "";
+
+    std::string name = content.substr(q1 + 1, q2 - q1 - 1);
+
+    // Basic JSON unescape for the characters users are likely to type
+    std::string out;
+    out.reserve(name.size());
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (name[i] == '\\' && i + 1 < name.size()) {
+            switch (name[i+1]) {
+                case '"':  out += '"';  ++i; break;
+                case '\\': out += '\\'; ++i; break;
+                case 'n':  out += '\n'; ++i; break;
+                default:   out += name[i]; break;
+            }
+        } else {
+            out += name[i];
+        }
+    }
+    return out;
+}
+
+/*static*/ void OmniSaveVault::saveSidecarName(const std::string& mcrPath,
+                                               const std::string& name) {
+    std::string jPath = sidecarPath(mcrPath);
+
+    // Minimal JSON escape: only characters that would break our parser
+    std::string escaped;
+    escaped.reserve(name.size());
+    for (char c : name) {
+        if      (c == '"')  escaped += "\\\"";
+        else if (c == '\\') escaped += "\\\\";
+        else                escaped += c;
+    }
+
+    std::ofstream f(jPath, std::ios::trunc);
+    if (!f.is_open()) {
+        std::cerr << "[OmniSave] Could not write sidecar: " << jPath << "\n";
+        return;
+    }
+    f << "{ \"name\": \"" << escaped << "\" }\n";
+    std::cout << "[OmniSave] Saved card name: " << name
+              << "  →  " << jPath << "\n";
+}
+
+/*static*/ void OmniSaveVault::deleteSidecar(const std::string& mcrPath) {
+    std::string jPath = sidecarPath(mcrPath);
+    std::error_code ec;
+    if (fs::exists(jPath, ec)) {
+        fs::remove(jPath, ec);
+        std::cout << "[OmniSave] Deleted sidecar: " << jPath << "\n";
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  parseMcr
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
@@ -552,7 +660,13 @@ void OmniSaveVault::update(float deltaMs) {
         m_iconAnimMs -= ICON_FRAME_MS;
         m_iconFrame = (m_iconFrame + 1) % 3;
     }
-	
+
+    // OSK update while rename is active
+    if (m_oskActive && m_osk && m_osk->isOpen()) {
+        m_osk->update(deltaMs);
+        return;
+    }
+
     // Delegate to import screen while it's open
     if (m_importPhase == ImportPhase::IMPORTING) {
         m_importScreen->update(deltaMs);
@@ -600,6 +714,21 @@ void OmniSaveVault::update(float deltaMs) {
 void OmniSaveVault::handleEvent(const SDL_Event& e) {
     NavAction a = m_nav->processEvent(e);
     if (a == NavAction::NONE) a = m_nav->updateHeld(SDL_GetTicks());
+
+    // ── OSK (rename) takes priority over everything ───────────────────────────
+    if (m_oskActive && m_osk && m_osk->isOpen()) {
+        m_osk->handleEvent(e);
+        if (!m_osk->isOpen()) {
+            m_oskActive = false;
+        }
+        return;
+    }
+
+    // ── Card Options overlay ──────────────────────────────────────────────────
+    if (m_cardOptionsOpen) {
+        handleCardOptionsNav(a);
+        return;
+    }
 
     if (m_confirmAction != ConfirmAction::NONE) {
         if (a == NavAction::CONFIRM) {
@@ -702,7 +831,7 @@ void OmniSaveVault::handleMemCardNav(NavAction a) {
         return;
     }
 
-    // Options → delete entry from active card
+    // X / Square → delete highlighted save entry from active card
     if (a == NavAction::OPTIONS && entryCount > 0) {
         const std::string& title = m_cardEntries[m_cardSel].title;
         int blocks = m_cardEntries[m_cardSel].blocksUsed;
@@ -712,6 +841,13 @@ void OmniSaveVault::handleMemCardNav(NavAction a) {
                          + std::to_string(blocks)
                          + (blocks == 1 ? " block" : " blocks")
                          + "  \xe2\x80\x94  This cannot be undone.";
+        return;
+    }
+
+    // Start / Menu → Card Options (power-user actions: Rename, Reset Name, …)
+    if (a == NavAction::MENU && !m_gameCards.empty()) {
+        openCardOptionsMenu();
+        return;
     }
 }
 
@@ -1228,6 +1364,14 @@ void OmniSaveVault::render() {
     renderFooter();
     if (m_confirmAction != ConfirmAction::NONE)
         renderConfirmOverlay();
+
+    // Card Options overlay (above confirm, below OSK)
+    if (m_cardOptionsOpen)
+        renderCardOptionsOverlay();
+
+    // OSK renders on top of everything
+    if (m_oskActive && m_osk && m_osk->isOpen())
+        m_osk->render();
 
     // Import screen renders on top when active
     if (m_importPhase == ImportPhase::IMPORTING) {
@@ -1748,9 +1892,197 @@ void OmniSaveVault::renderFooter() {
     int cy    = footY + (m_theme->layout().footerH - 34) / 2;
     m_theme->drawButtonHint(m_w - 220, cy, "L1/R1",
         "Switch Panel", m_theme->palette().textSecond);
-    if (m_focus == OmniPanel::SAVESTATES)
+    if (m_focus == OmniPanel::SAVESTATES) {
         m_theme->drawButtonHint(m_w - 390, cy, "Start",
             "Overwrite", m_theme->palette().textSecond);
+    } else {
+        // MemCard panel — [Start] opens the Card Options menu
+        if (!m_gameCards.empty()) {
+            m_theme->drawButtonHint(m_w - 390, cy, "Start",
+                "Options", m_theme->palette().textSecond);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Card Options menu — opened with [Start] on the MemCard panel
+//
+//  Items are built dynamically each time so "Reset Name" only appears when
+//  the selected card actually has a custom sidecar name.
+//
+//  Menu is anchored to the bottom-left of the MemCard panel so it feels
+//  contextual rather than floating in the middle of the screen.
+// ─────────────────────────────────────────────────────────────────────────────
+void OmniSaveVault::openCardOptionsMenu() {
+    if (m_gameCards.empty()) return;
+
+    m_cardOptions.clear();
+    m_cardOptions.push_back(CardOption::RENAME);
+
+    // Only offer "Reset Name" when a custom name actually exists
+    const GameCardSlot& current = m_gameCards[m_cardSlotSel];
+    if (current.hasCustomName)
+        m_cardOptions.push_back(CardOption::RESET_NAME);
+
+    m_cardOptionsSel  = 0;
+    m_cardOptionsOpen = true;
+}
+
+void OmniSaveVault::closeCardOptionsMenu() {
+    m_cardOptionsOpen = false;
+    m_cardOptions.clear();
+    m_cardOptionsSel  = 0;
+}
+
+std::string OmniSaveVault::cardOptionLabel(CardOption opt) const {
+    switch (opt) {
+        case CardOption::RENAME:     return "Rename Card";
+        case CardOption::RESET_NAME: return "Reset to Default Name";
+    }
+    return "";
+}
+
+void OmniSaveVault::handleCardOptionsNav(NavAction a) {
+    int count = (int)m_cardOptions.size();
+
+    if (a == NavAction::UP) {
+        m_cardOptionsSel = std::max(0, m_cardOptionsSel - 1);
+        m_nav->cancelHeld();
+        return;
+    }
+    if (a == NavAction::DOWN) {
+        m_cardOptionsSel = std::min(count - 1, m_cardOptionsSel + 1);
+        m_nav->cancelHeld();
+        return;
+    }
+    if (a == NavAction::BACK) {
+        closeCardOptionsMenu();
+        return;
+    }
+    if (a == NavAction::CONFIRM) {
+        CardOption chosen = m_cardOptions[m_cardOptionsSel];
+        closeCardOptionsMenu();
+
+        if (chosen == CardOption::RENAME) {
+            openRenameOsk();
+        } else if (chosen == CardOption::RESET_NAME) {
+            // Delete the sidecar and reload the display name back to default
+            if (m_cardSlotSel < (int)m_gameCards.size()) {
+                GameCardSlot& slot = m_gameCards[m_cardSlotSel];
+                deleteSidecar(slot.path);
+                slot.hasCustomName = false;
+                // Rebuild the default display name
+                std::string suffix = std::to_string(slot.slotNumber);
+                slot.displayName = m_gameTitle.empty()
+                    ? (m_gameSerial + " — Card " + suffix)
+                    : (m_gameTitle  + " — Card " + suffix);
+                std::cout << "[OmniSave] Card name reset to default: "
+                          << slot.displayName << "\n";
+            }
+        }
+        return;
+    }
+}
+
+void OmniSaveVault::renderCardOptionsOverlay() {
+    const auto& pal = m_theme->palette();
+    int count = (int)m_cardOptions.size();
+    if (count == 0) return;
+
+    int menuH  = count * CARD_OPT_ITEM_H + 16;  // +16 top/bottom padding
+    int menuW  = CARD_OPT_W;
+
+    // Anchor: bottom-left corner of the MemCard panel, just above the footer
+    int divX  = (m_w * DIVIDER_X_PC) / 100;
+    int menuX = MARGIN;
+    int menuY = m_h - FOOTER_H - menuH - 8;
+
+    // Dim overlay (only over the left panel, not the full screen)
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 120);
+    SDL_Rect dimLeft = { 0, HEADER_H, divX, m_h - HEADER_H - FOOTER_H };
+    SDL_RenderFillRect(m_renderer, &dimLeft);
+
+    // Menu background
+    SDL_SetRenderDrawColor(m_renderer,
+        pal.bgPanel.r, pal.bgPanel.g, pal.bgPanel.b, 248);
+    SDL_Rect menuRect = { menuX, menuY, menuW, menuH };
+    SDL_RenderFillRect(m_renderer, &menuRect);
+
+    // Accent border
+    SDL_SetRenderDrawColor(m_renderer,
+        pal.accent.r, pal.accent.g, pal.accent.b, 200);
+    SDL_RenderDrawRect(m_renderer, &menuRect);
+    SDL_Rect inner = { menuX+1, menuY+1, menuW-2, menuH-2 };
+    SDL_RenderDrawRect(m_renderer, &inner);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+
+    // Items
+    int itemY = menuY + 8;
+    for (int i = 0; i < count; ++i) {
+        bool sel = (i == m_cardOptionsSel);
+        SDL_Rect itemRect = { menuX + 2, itemY, menuW - 4, CARD_OPT_ITEM_H };
+
+        if (sel) {
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(m_renderer,
+                pal.bgCardHover.r, pal.bgCardHover.g, pal.bgCardHover.b, 200);
+            SDL_RenderFillRect(m_renderer, &itemRect);
+            // Accent left bar
+            SDL_SetRenderDrawColor(m_renderer,
+                pal.accent.r, pal.accent.g, pal.accent.b, 255);
+            SDL_Rect bar = { menuX + 2, itemY, 3, CARD_OPT_ITEM_H };
+            SDL_RenderFillRect(m_renderer, &bar);
+            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
+        }
+
+        SDL_Color textCol = sel ? pal.textPrimary : pal.textSecond;
+        m_theme->drawText(cardOptionLabel(m_cardOptions[i]),
+            menuX + 14, itemY + (CARD_OPT_ITEM_H - 18) / 2,
+            textCol, FontSize::BODY);
+
+        itemY += CARD_OPT_ITEM_H;
+    }
+
+    // Footer hint inside the box
+    int hintY = menuY + menuH - 20;
+    m_theme->drawButtonHint(menuX + 14, hintY, "A",
+        "Select", pal.textDisable);
+    m_theme->drawButtonHint(menuX + 90, hintY, "B",
+        "Close", pal.textDisable);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  openRenameOsk
+//  Opens the OSK pre-filled with the currently selected card's display name.
+//  On confirm: write the sidecar JSON and update GameCardSlot in-place.
+//  On cancel:  no-op, existing name unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+void OmniSaveVault::openRenameOsk() {
+    if (!m_osk || m_cardSlotSel >= (int)m_gameCards.size()) return;
+
+    GameCardSlot& slot = m_gameCards[m_cardSlotSel];
+
+    m_osk->open(
+        "Rename Memory Card",
+        48,     // max 48 characters — plenty for a card label
+        false,  // not masked
+        [this, &slot](bool ok, const std::string& text) {
+            if (!ok || text.empty()) {
+                std::cout << "[OmniSave] Rename cancelled\n";
+                return;
+            }
+            // Write sidecar and update live slot
+            saveSidecarName(slot.path, text);
+            slot.displayName   = text;
+            slot.hasCustomName = true;
+            std::cout << "[OmniSave] Card renamed: " << text << "\n";
+        }
+    );
+
+    // Pre-fill with the current name so users can edit rather than retype
+    m_osk->setText(slot.displayName);
+    m_oskActive = true;
 }
 
 // ── scanImportFolder() ───────────────────────────────────────────────────────
