@@ -46,10 +46,10 @@ struct TimeMachineEntry {
 // Sorted by slot number (_1, _2, _3 …).
 struct GameCardSlot {
     std::string path;        // absolute path to the .mcr file
-    std::string displayName; // e.g. "Alundra — Card 1"  (may be from sidecar JSON)
+    std::string displayName; // e.g. "Alundra — Card 1"
     int         slotNumber;  // 1-based slot suffix from filename
     bool        isActive;    // true = currently loaded in the core
-    bool        hasCustomName; // true = displayName came from sidecar JSON
+    bool        hasCustomName;  // ← ADD THIS LINE
 };
 
 enum class OmniSaveMode { BROWSE, SAVING, LOADING };
@@ -66,15 +66,17 @@ enum class ConfirmAction {
     SWAP_CARD,          // hot-swap to a different card for this game
     COPY_STATE,         // branch / duplicate a save state slot
     UNDO_STATE,         // restore the one-step undo snapshot
+    DELETE_CARD,        // permanently delete a .mcr file
 };
 
 // ─── Card Options menu ────────────────────────────────────────────────────────
 // Small contextual menu opened with [Start] on the MemCard panel.
-// Start = "power user" actions, mirroring the save state side.
-// Items are built dynamically — Reset Name only shows when a custom name exists.
+// Items are built dynamically each time.
 enum class CardOption {
     RENAME,       // Always present
     RESET_NAME,   // Only present when a custom sidecar name exists
+    IMPORT,       // Always present — teal dot indicator when file is waiting
+    DELETE_CARD,  // Always present — deletes the .mcr + sidecar
 };
 
 class OmniSaveVault {
@@ -106,10 +108,10 @@ public:
         if (m_wantsCardReload) { m_wantsCardReload = false; return true; }
         return false;
     }
-
-    bool isImporting() const {
-        return m_importPhase == ImportPhase::IMPORTING;
-    }
+	
+	bool isImporting() const { 
+	     return m_importPhase == ImportPhase::IMPORTING; 
+	}
 
     // Returns the path of the card selected for hot-swap, then clears it.
     // Empty string means no swap is pending.
@@ -130,35 +132,38 @@ public:
     // the multi-card list.
     void setActiveCardPath(const std::string& path) { m_activeCardPath = path; }
 
+    // Let app.cpp tell the vault whether a game is currently running.
+    // Import uses this to decide whether SRAM flush/reload callbacks are safe.
+    void setGameRunning(bool running) { m_gameIsRunning = running; }
+
 private:
-    // ── Import watcher ───────────────────────────────────────────────────────────
+    // ── Import watcher ────────────────────────────────────────────────────────
     enum class ImportPhase {
-        NONE,       // nothing pending
-        DETECTED,   // file found, showing banner
+        NONE,       // nothing pending / file detected silently
+        DETECTED,   // file found — no banner, dot shows in Options menu
         IMPORTING,  // import screen is open
     };
 
     ImportPhase              m_importPhase     = ImportPhase::NONE;
     std::string              m_importPending;  // full path to detected file
     float                    m_importScanTimer = 0.f;
-    static constexpr float   IMPORT_SCAN_INTERVAL = 1.0f;  // seconds between scans
+    static constexpr float   IMPORT_SCAN_INTERVAL = 1.0f;
 
     std::unique_ptr<OmniSaveImport> m_importScreen;
 
-    // Banner animation
-    float m_importBannerAlpha   = 0.f;   // 0..255, fades in/out
+    // Banner members kept for compilation but no longer used actively
+    float m_importBannerAlpha   = 0.f;
     bool  m_importBannerVisible = false;
 
     void  scanImportFolder();
     void  openImportScreen();
     void  moveToImportDone(const std::string& srcPath);
-    void  renderImportBanner(SDL_Renderer* r, int screenW, int screenH);
-    void  handleImportInput(const SDL_Event& e);
+    void  renderImportBanner(SDL_Renderer* r, int screenW, int screenH); // unused, kept for link
+    void  handleImportInput(const SDL_Event& e);                         // unused, kept for link
 
     // ── Card Options menu ─────────────────────────────────────────────────────
-    // Small [Start]-triggered menu on the MemCard panel.
     bool                    m_cardOptionsOpen = false;
-    std::vector<CardOption> m_cardOptions;     // dynamically built items
+    std::vector<CardOption> m_cardOptions;
     int                     m_cardOptionsSel  = 0;
 
     void  openCardOptionsMenu();
@@ -166,20 +171,23 @@ private:
     void  handleCardOptionsNav(NavAction a);
     void  renderCardOptionsOverlay();
     std::string cardOptionLabel(CardOption opt) const;
+    bool  cardOptionHasDot(CardOption opt) const; // teal dot indicator
 
     // ── OSK (rename) ──────────────────────────────────────────────────────────
     std::unique_ptr<OnScreenKeyboard> m_osk;
-    bool m_oskActive = false;   // true while OSK is open for a rename
+    bool m_oskActive = false;
 
     void openRenameOsk();
 
     // ── Sidecar JSON helpers ──────────────────────────────────────────────────
-    // Path: memcards/per_game/<SERIAL>_<N>.json  (alongside the .mcr)
     static std::string sidecarPath(const std::string& mcrPath);
     static std::string loadSidecarName(const std::string& mcrPath);
     static void        saveSidecarName(const std::string& mcrPath,
                                        const std::string& name);
     static void        deleteSidecar(const std::string& mcrPath);
+
+    // ── Card deletion ─────────────────────────────────────────────────────────
+    void doDeleteCard(); // deletes selected card's .mcr + sidecar, reloads slots
 
     // ── Data loading ──────────────────────────────────────────────────────────
     void loadMemCardEntries();
@@ -246,7 +254,7 @@ private:
     // ── Save states ───────────────────────────────────────────────────────────
     std::vector<SaveSlot>       m_slots;
     std::vector<SDL_Texture*>   m_thumbTex;
-    int  m_stateSel     = 0;
+    int  m_stateSel    = 0;
     int  m_stateScroll  = 0;
     int  m_stateCols    = STATE_COLS;  // actual column count from last render pass
                                        // navigation reads this instead of STATE_COLS
@@ -274,6 +282,7 @@ private:
     bool m_wantsClose      = false;
     bool m_saveWritten     = false;
     bool m_wantsCardReload = false;
+    bool m_gameIsRunning   = false;   // set by app.cpp; gates SRAM flush/reload in import
 
     std::function<void()> m_sramFlush;
     std::function<void()> m_sramReload;
@@ -304,5 +313,5 @@ private:
 
     // Card Options overlay
     static constexpr int CARD_OPT_ITEM_H = 44;
-    static constexpr int CARD_OPT_W      = 260;
+    static constexpr int CARD_OPT_W      = 280;
 };
