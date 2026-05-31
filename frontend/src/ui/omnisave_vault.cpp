@@ -521,16 +521,63 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
     f.read((char*)data.data(), fileSize);
     f.close();
 
-    if (data[0] != 'M' || data[1] != 'C') {
+    // ── Format detection ──────────────────────────────────────────────────────
+    // Several common memory card formats prepend a header before the standard
+    // 131072-byte PS1 card data. Detect and skip those headers so the rest of
+    // the parser always sees raw PS1 data starting at offset `dataStart`.
+    //
+    // Formats handled:
+    //   GME  (DexDrive)   — 3904-byte header, magic "123-456-STD" at byte 0
+    //   VGS / MCD         — 64-byte header, magic "VgsM" at byte 0
+    //   PSX (Bleem/other) — same 64-byte header, magic "PSX" at byte 0
+    //   Raw MCR / SRM     — no header, "MC" magic at byte 0 (standard)
+    //
+    size_t dataStart = 0;
+
+    auto startsWith = [&](size_t off, const char* magic, size_t magicLen) {
+        if (off + magicLen > fileSize) return false;
+        return std::memcmp(data.data() + off, magic, magicLen) == 0;
+    };
+
+    if (startsWith(0, "123-456-STD", 11)) {
+        // GME / DexDrive format
+        dataStart = 3904;
+        std::cout << "[OmniSave] Detected GME/DexDrive format, skipping "
+                  << dataStart << "-byte header\n";
+    } else if (startsWith(0, "VgsM", 4)) {
+        // VGS format
+        dataStart = 64;
+        std::cout << "[OmniSave] Detected VGS format, skipping "
+                  << dataStart << "-byte header\n";
+    } else if (startsWith(0, "PSX", 3)) {
+        // PSX (Bleem) format
+        dataStart = 64;
+        std::cout << "[OmniSave] Detected PSX/Bleem format, skipping "
+                  << dataStart << "-byte header\n";
+    }
+    // else: assume raw PS1 / MCR / SRM — dataStart stays 0
+
+    // Validate we have enough data after the header
+    if (dataStart + 131072 > fileSize) {
+        std::cerr << "[OmniSave] File too small after header strip ("
+                  << (fileSize - dataStart) << " bytes): " << path << "\n";
+        return results;
+    }
+
+    // Work with a pointer to the PS1 data region
+    const uint8_t* ps1Data   = data.data() + dataStart;
+    size_t         ps1Size   = fileSize - dataStart;
+
+    if (ps1Data[0] != 'M' || ps1Data[1] != 'C') {
         std::cerr << "[OmniSave] Not a valid PS1 memory card: " << path << "\n";
         return results;
     }
 
     for (int block = 0; block < MCR_MAX_BLOCKS; ++block) {
         size_t frameOff = MCR_HEADER_OFFSET + (size_t)block * MCR_DIR_FRAME_SZ;
-        if (frameOff + MCR_DIR_FRAME_SZ > fileSize) break;
+        if (frameOff + MCR_DIR_FRAME_SZ > ps1Size) break;
 
-        const uint8_t* frame = data.data() + frameOff;
+        const uint8_t* frame = ps1Data + frameOff;
         if (frame[0] != ALLOC_FIRST) continue;
 
         uint32_t fileBytes = (uint32_t)frame[4] | ((uint32_t)frame[5] << 8)
@@ -542,9 +589,9 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
         std::string title = decodeShiftJis(frame + 64, 64);
 
         size_t dataBlockOff = (size_t)(block + 1) * MCR_BLOCK_SIZE;
-        if (dataBlockOff + 512 > fileSize) continue;
+        if (dataBlockOff + 512 > ps1Size) continue;
 
-        const uint8_t* blk = data.data() + dataBlockOff;
+        const uint8_t* blk = ps1Data + dataBlockOff;
         if (blk[0] != 'S' || blk[1] != 'C') continue;
 
         uint8_t iconFlag   = blk[2];
@@ -589,7 +636,7 @@ std::vector<MemCardEntry> OmniSaveVault::parseMcr(const std::string& path) {
 
         for (int frm = 0; frm < frameCount; ++frm) {
             size_t pixOff = MCR_ICON_PIX_OFF + (size_t)frm * MCR_ICON_BYTES;
-            if (dataBlockOff + pixOff + MCR_ICON_BYTES > fileSize) break;
+            if (dataBlockOff + pixOff + MCR_ICON_BYTES > ps1Size) break;
             const uint8_t* pixData = blk + pixOff;
             std::vector<uint32_t> rgba(MCR_ICON_W * MCR_ICON_H);
             for (int px = 0; px < MCR_ICON_W * MCR_ICON_H; px += 2) {
@@ -675,29 +722,22 @@ void OmniSaveVault::update(float deltaMs) {
 
             if (didImport) {
                 loadMemCardEntries();
-                if (m_gameIsRunning && m_sramReload) m_sramReload();
-
-                // Only move the source file to done/ after a confirmed import.
-                // If the user cancelled or got an error, leave it in place so
-                // it shows up again next time they open the Options menu.
-                if (!m_importPending.empty()) {
-                    moveToImportDone(m_importPending);
-                    m_importPending.clear();
-                    m_importPhase = ImportPhase::NONE;
-                }
-            } else {
-                // No import happened (user cancelled or all attempts errored).
-                // Leave m_importPending intact so the dot indicator stays on
-                // and the file is still available for the next attempt.
-                std::cout << "[OmniSaveVault] Import screen closed without "
-                             "importing — file kept in import folder\n";
-                m_importPhase = ImportPhase::DETECTED;
+                // Reload the core's SRAM buffer from disk so it picks up
+                // the imported save. The flush already happened in
+                // openImportScreen() before importBlock wrote the file.
+                if (m_sramReload) m_sramReload();
             }
 
+            // Move source file to import/done/
+            if (!m_importPending.empty()) {
+                moveToImportDone(m_importPending);
+                m_importPending.clear();
+            }
+            m_importPhase = ImportPhase::NONE;
             m_importBannerVisible = false;
             m_importBannerAlpha   = 0.f;
         }
-        return;
+        return;  // don't run normal vault update while import screen is open
     }
 
     // Scan for new import files (once per second)
@@ -748,7 +788,6 @@ void OmniSaveVault::handleEvent(const SDL_Event& e) {
             else if (action == ConfirmAction::RESTORE_SNAPSHOT) doRestoreSnapshot();
             else if (action == ConfirmAction::COPY_STATE)       doBranchState();
             else if (action == ConfirmAction::UNDO_STATE)       doUndoAction();
-            else if (action == ConfirmAction::DELETE_CARD)      doDeleteCard();
             else if (action == ConfirmAction::RELOAD_CARD) {
                 m_wantsCardReload = true;
                 m_wantsClose      = true;
@@ -1160,54 +1199,6 @@ void OmniSaveVault::doUndoAction() {
         m_wantsClose = true;
     } else {
         std::cerr << "[OmniSave] Undo failed — state unchanged\n";
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  doDeleteCard
-//  Deletes the .mcr + sidecar JSON for the currently selected card slot.
-//  Refuses to delete the only active card. If the deleted card was active,
-//  closes the vault so app.cpp can reinitialise the card manager cleanly.
-// ─────────────────────────────────────────────────────────────────────────────
-void OmniSaveVault::doDeleteCard() {
-    if (m_cardSlotSel < 0 || m_cardSlotSel >= (int)m_gameCards.size()) return;
-
-    GameCardSlot slot    = m_gameCards[m_cardSlotSel]; // copy — we'll erase it
-    bool         wasActive = slot.isActive;
-
-    // Refuse to delete the only active card
-    if (wasActive && m_gameCards.size() == 1) {
-        std::cerr << "[OmniSave] Cannot delete the only active memory card\n";
-        return;
-    }
-
-    std::error_code ec;
-
-    // Delete the .mcr
-    if (fs::exists(slot.path, ec)) {
-        fs::remove(slot.path, ec);
-        if (ec) {
-            std::cerr << "[OmniSave] Card delete failed: " << ec.message() << "\n";
-            return;
-        }
-        std::cout << "[OmniSave] Deleted card: " << slot.path << "\n";
-    }
-
-    // Delete the sidecar JSON if present
-    deleteSidecar(slot.path);
-
-    // Reload the slot list and clamp selection
-    loadGameCardSlots();
-    m_cardSlotSel = std::min(m_cardSlotSel,
-                             std::max(0, (int)m_gameCards.size() - 1));
-
-    if (wasActive) {
-        // Active card gone — clear path and close so app.cpp reinitialises
-        m_activeCardPath.clear();
-        m_wantsClose = true;
-        std::cout << "[OmniSave] Active card deleted — closing vault for reinit\n";
-    } else {
-        loadMemCardEntries();
     }
 }
 
@@ -1975,16 +1966,10 @@ void OmniSaveVault::openCardOptionsMenu() {
     m_cardOptions.clear();
     m_cardOptions.push_back(CardOption::RENAME);
 
-    // Reset Name only when a custom sidecar name exists
+    // Only offer "Reset Name" when a custom name actually exists
     const GameCardSlot& current = m_gameCards[m_cardSlotSel];
     if (current.hasCustomName)
         m_cardOptions.push_back(CardOption::RESET_NAME);
-
-    // Import always present — teal dot indicator when file is waiting
-    m_cardOptions.push_back(CardOption::IMPORT);
-
-    // Delete Card always present (with confirmation)
-    m_cardOptions.push_back(CardOption::DELETE_CARD);
 
     m_cardOptionsSel  = 0;
     m_cardOptionsOpen = true;
@@ -1998,18 +1983,10 @@ void OmniSaveVault::closeCardOptionsMenu() {
 
 std::string OmniSaveVault::cardOptionLabel(CardOption opt) const {
     switch (opt) {
-        case CardOption::RENAME:      return "Rename Card";
-        case CardOption::RESET_NAME:  return "Reset to Default Name";
-        case CardOption::IMPORT:      return "Import Save File";
-        case CardOption::DELETE_CARD: return "Delete This Card";
+        case CardOption::RENAME:     return "Rename Card";
+        case CardOption::RESET_NAME: return "Reset to Default Name";
     }
     return "";
-}
-
-bool OmniSaveVault::cardOptionHasDot(CardOption opt) const {
-    if (opt == CardOption::IMPORT && m_importPhase == ImportPhase::DETECTED)
-        return true;
-    return false;
 }
 
 void OmniSaveVault::handleCardOptionsNav(NavAction a) {
@@ -2036,26 +2013,18 @@ void OmniSaveVault::handleCardOptionsNav(NavAction a) {
         if (chosen == CardOption::RENAME) {
             openRenameOsk();
         } else if (chosen == CardOption::RESET_NAME) {
+            // Delete the sidecar and reload the display name back to default
             if (m_cardSlotSel < (int)m_gameCards.size()) {
                 GameCardSlot& slot = m_gameCards[m_cardSlotSel];
                 deleteSidecar(slot.path);
                 slot.hasCustomName = false;
+                // Rebuild the default display name
                 std::string suffix = std::to_string(slot.slotNumber);
                 slot.displayName = m_gameTitle.empty()
                     ? (m_gameSerial + " — Card " + suffix)
                     : (m_gameTitle  + " — Card " + suffix);
                 std::cout << "[OmniSave] Card name reset to default: "
                           << slot.displayName << "\n";
-            }
-        } else if (chosen == CardOption::IMPORT) {
-            openImportScreen();
-        } else if (chosen == CardOption::DELETE_CARD) {
-            if (m_cardSlotSel < (int)m_gameCards.size()) {
-                const GameCardSlot& slot = m_gameCards[m_cardSlotSel];
-                m_confirmAction  = ConfirmAction::DELETE_CARD;
-                m_confirmMessage = "Delete \"" + slot.displayName + "\"?";
-                m_confirmDetail  = "The .mcr file will be permanently removed.  "
-                                   "This cannot be undone.";
             }
         }
         return;
@@ -2115,20 +2084,6 @@ void OmniSaveVault::renderCardOptionsOverlay() {
         }
 
         SDL_Color textCol = sel ? pal.textPrimary : pal.textSecond;
-
-        // Teal dot indicator (e.g. Import when file is waiting)
-        if (cardOptionHasDot(m_cardOptions[i])) {
-            SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(m_renderer, 80, 200, 180, 255);
-            SDL_Rect dot = { menuX + menuW - 20,
-                             itemY + (CARD_OPT_ITEM_H - 8) / 2, 8, 8 };
-            SDL_RenderFillRect(m_renderer, &dot);
-        }
-
-        // Delete Card draws in warning red when selected
-        if (m_cardOptions[i] == CardOption::DELETE_CARD && sel)
-            textCol = { 255, 100, 100, 255 };
-
         m_theme->drawText(cardOptionLabel(m_cardOptions[i]),
             menuX + 14, itemY + (CARD_OPT_ITEM_H - 18) / 2,
             textCol, FontSize::BODY);
@@ -2203,12 +2158,11 @@ void OmniSaveVault::scanImportFolder()
 if (ext == ".mcr" || ext == ".mcd" || ext == ".mem" ||
     ext == ".vgs" || ext == ".srm" || ext == ".gme" ||
     ext == ".zip") {
-            m_importPending       = p;
-            m_importPhase         = ImportPhase::DETECTED;
-            // No banner — user opens import via [Start] Options menu.
-            // The dot indicator on the Import option tells them a file is ready.
-            SDL_Log("[OmniSaveVault] Import file detected (silent): %s", p.c_str());
-            return;
+            m_importPending     = p;
+            m_importPhase       = ImportPhase::DETECTED;
+            m_importBannerVisible = true;
+            SDL_Log("[OmniSaveVault] Import file detected: %s", p.c_str());
+            return; // handle one file at a time
         }
     }
 }
@@ -2217,43 +2171,23 @@ if (ext == ".mcr" || ext == ".mcd" || ext == ".mem" ||
 
 void OmniSaveVault::openImportScreen()
 {
-    if (m_importPending.empty()) {
-        std::cout << "[OmniSaveVault] Import triggered but no file in import folder\n";
-        return;
-    }
+    if (m_importPending.empty()) return;
 
-    // Flush SRAM only when a game is actually running.
-    if (m_gameIsRunning && m_sramFlush) m_sramFlush();
+    // Flush SRAM before opening so the core's current buffer is on disk.
+    // importBlock will read and write the card file directly while the
+    // import screen is open. The core won't autosave during this window
+    // because m_suppressSramPoll should be set by the caller — but even
+    // if it isn't, flushing first ensures we start from a clean state.
+    if (m_sramFlush) m_sramFlush();
 
-    // When opened from the Hub, m_activeCardPath is empty because no game is
-    // loaded. We resolve the destination card from the import file itself:
-    // parse the first non-empty block's serial and use prepareSlot1() to get
-    // (or create) the standard per-game card path for that serial.
-    std::string destCardPath = m_activeCardPath;
-    if (destCardPath.empty() && m_memCards) {
-        // Do a quick pre-parse to get the serial from the import file
-        std::vector<MemCardEntry> preview = parseMcr(m_importPending);
-        std::string serial;
-        for (const auto& e : preview) {
-            if (!e.productCode.empty()) { serial = e.productCode; break; }
-        }
-        if (!serial.empty()) {
-            destCardPath = m_memCards->prepareSlot1(serial);
-            std::cout << "[OmniSaveVault] Hub import — resolved card path: "
-                      << destCardPath << " (serial: " << serial << ")\n";
-        } else {
-            std::cout << "[OmniSaveVault] Hub import — no serial found in file, "
-                      << "import screen will open but destination may be empty\n";
-        }
-    }
-
-    bool ok = m_importScreen->open(m_importPending, destCardPath);
+    bool ok = m_importScreen->open(m_importPending, m_activeCardPath);
     if (ok) {
         m_importPhase = ImportPhase::IMPORTING;
     } else {
-        // Parse failed — do NOT move the file, leave it for next attempt
+        // Parse failed — move to done anyway so it doesn't loop forever
         SDL_Log("[OmniSaveVault] Import screen open failed for %s",
                 m_importPending.c_str());
+        moveToImportDone(m_importPending);
         m_importPending.clear();
         m_importPhase         = ImportPhase::NONE;
         m_importBannerVisible = false;

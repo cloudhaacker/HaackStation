@@ -517,6 +517,7 @@ void HaackApp::handleEvents() {
                     // ── F5: open OmniSave in SAVING mode ─────────────────────
                     if (key == SDLK_F5) {
                         m_omniSave->setActiveCardPath(m_activeCardPath);
+                        m_omniSave->setGameRunning(true);
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                                          OmniSaveMode::SAVING);
                         setState(AppState::OMNISAVE_VAULT);
@@ -525,6 +526,7 @@ void HaackApp::handleEvents() {
                     // ── F7: open OmniSave in LOADING mode ────────────────────
                     if (key == SDLK_F7) {
                         m_omniSave->setActiveCardPath(m_activeCardPath);
+                        m_omniSave->setGameRunning(true);
                         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                                          OmniSaveMode::LOADING);
                         setState(AppState::OMNISAVE_VAULT);
@@ -722,6 +724,7 @@ void HaackApp::processInGameMenuActions() {
         m_inGameMenu->close();
         SDL_Surface* shot = m_saveStates->captureCleanScreenshot();
         m_omniSave->setActiveCardPath(m_activeCardPath);
+        m_omniSave->setGameRunning(true);
         m_omniSave->open(m_currentGameTitle, m_currentGameSerial,
                          OmniSaveMode::BROWSE, shot);
         setState(AppState::OMNISAVE_VAULT);
@@ -1212,6 +1215,7 @@ void HaackApp::update(float deltaMs) {
                 m_saveStates->setCurrentGame(pending.folderName, "");
 
                 m_omniSave->setActiveCardPath("");
+                m_omniSave->setGameRunning(false);
                 m_omniSave->open(pending.title, pending.serial,
                                  OmniSaveMode::BROWSE, nullptr);
                 setState(AppState::OMNISAVE_VAULT);
