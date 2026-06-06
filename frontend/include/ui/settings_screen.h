@@ -42,6 +42,7 @@ struct HaackSettings {
     bool fullscreen         = false;
     bool vsync              = true;
     bool showFps            = false;
+	bool shelfEnabled[3] = { true, true, true };
 
     // ── Emulation ─────────────────────────────────────────────────────────────
     // Fast Boot: skips the PS1 BIOS logo/animation on startup.

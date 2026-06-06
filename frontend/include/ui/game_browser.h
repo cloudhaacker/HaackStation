@@ -60,6 +60,13 @@ public:
     // Legacy compat — settings still uses setTopRowMode name
     void setTopRowMode(int mode) { setShelfMode(mode); }
 
+    // Item 17 — shelf show/hide
+    // ALL_GAMES can never be hidden (enforced inside setShelfEnabled).
+    void setShelfEnabled(ShelfMode shelf, bool enabled);
+    bool isShelfEnabled(ShelfMode shelf) const {
+        return m_shelfEnabled[(int)shelf];
+    }
+
     void handleEvent(const SDL_Event& e);
     void update(float deltaMs);
     void render();
@@ -114,6 +121,12 @@ private:
 
     BrowserState m_state     = BrowserState::EMPTY;
     ShelfMode    m_shelfMode = ShelfMode::ALL_GAMES;
+
+    // Item 17 — per-shelf visibility flags.
+    // Index matches ShelfMode enum. ALL_GAMES (0) is always true.
+    // Using literal 3 here — NUM_SHELVES is a private constexpr defined below,
+    // which MSVC cannot see at this point in the class body.
+    bool m_shelfEnabled[3] = { true, true, true };
 
     const PlayHistory*  m_playHistory         = nullptr;
     FavoriteManager*   m_favorites            = nullptr;

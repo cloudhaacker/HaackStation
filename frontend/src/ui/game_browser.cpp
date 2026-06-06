@@ -102,12 +102,50 @@ void GameBrowser::rebuildActiveList() {
 
 // ─── Shelf cycling ────────────────────────────────────────────────────────────
 void GameBrowser::cycleShelf(int direction) {
-    int next = ((int)m_shelfMode + direction + NUM_SHELVES) % NUM_SHELVES;
+    // Skip shelves that are hidden — always find the next visible one.
+    // Caps iteration at NUM_SHELVES to avoid an infinite loop if (somehow)
+    // all shelves were disabled, which Settings should prevent.
+    int current = (int)m_shelfMode;
+    int next = current;
+    for (int i = 0; i < NUM_SHELVES; ++i) {
+        next = (next + direction + NUM_SHELVES) % NUM_SHELVES;
+        if (m_shelfEnabled[next]) break;
+    }
+    if (next == current) return;  // nowhere to go
     m_shelfMode = static_cast<ShelfMode>(next);
     m_nav->rumbleConfirm();
     rebuildActiveList();
     std::cout << "[GameBrowser] Switched to shelf: "
               << SHELF_NAMES[(int)m_shelfMode] << "\n";
+}
+
+void GameBrowser::setShelfEnabled(ShelfMode shelf, bool enabled) {
+    int idx = (int)shelf;
+    if (idx < 0 || idx >= NUM_SHELVES) return;
+
+    // ALL_GAMES can never be hidden — it's the fallback baseline
+    if (shelf == ShelfMode::ALL_GAMES) return;
+
+    m_shelfEnabled[idx] = enabled;
+
+    // If we just hid the currently active shelf, jump to the nearest visible one
+    if (!enabled && m_shelfMode == shelf) {
+        // Try forward first, then backward
+        bool found = false;
+        for (int dir : {1, -1}) {
+            int next = idx;
+            for (int i = 0; i < NUM_SHELVES; ++i) {
+                next = (next + dir + NUM_SHELVES) % NUM_SHELVES;
+                if (m_shelfEnabled[next]) {
+                    m_shelfMode = static_cast<ShelfMode>(next);
+                    rebuildActiveList();
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+    }
 }
 
 void GameBrowser::onWindowResize(int w, int h) {
@@ -399,16 +437,23 @@ void GameBrowser::renderShelfIndicator() {
     const char* name = SHELF_NAMES[(int)m_shelfMode];
     m_theme->drawTextCentered(name, cx, barY, pal.accent, FontSize::SMALL);
 
-    // Dot indicators
+    // Dot indicators — only shown for visible (enabled) shelves
     int dotSize    = 8;
     int dotPad     = 12;
-    int totalDotW  = NUM_SHELVES * dotSize + (NUM_SHELVES - 1) * dotPad;
+
+    // Count visible shelves to size the dot row correctly
+    int visibleShelfCount = 0;
+    for (int i = 0; i < NUM_SHELVES; i++)
+        if (m_shelfEnabled[i]) visibleShelfCount++;
+
+    int totalDotW  = visibleShelfCount * dotSize + (visibleShelfCount - 1) * dotPad;
     int dotStartX  = cx - totalDotW / 2;
     int dotY       = barY + (int)FontSize::SMALL + 6;
 
+    int dotX = dotStartX;
     for (int i = 0; i < NUM_SHELVES; i++) {
-        int dx = dotStartX + i * (dotSize + dotPad);
-        SDL_Rect dot = { dx, dotY, dotSize, dotSize };
+        if (!m_shelfEnabled[i]) continue;
+        SDL_Rect dot = { dotX, dotY, dotSize, dotSize };
         if (i == (int)m_shelfMode) {
             // Active dot — filled accent
             SDL_SetRenderDrawColor(m_renderer,
@@ -420,6 +465,7 @@ void GameBrowser::renderShelfIndicator() {
                 pal.textDisable.r, pal.textDisable.g, pal.textDisable.b, 180);
             SDL_RenderDrawRect(m_renderer, &dot);
         }
+        dotX += dotSize + dotPad;
     }
 
     // L1 / R1 arrows — vertically centred with the shelf name

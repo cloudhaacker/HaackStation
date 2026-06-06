@@ -63,6 +63,8 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "turbo_speed")        s.turboSpeed         = parseInt(val, 0);
         else if (key == "turbo_mute_audio")   s.turboMuteAudio     = parseBool(val);
         else if (key == "top_row_mode")       s.topRowMode         = parseInt(val, 0);
+        else if (key == "shelf_recently_played") s.shelfEnabled[1]  = parseBool(val);
+        else if (key == "shelf_favorites")       s.shelfEnabled[2]  = parseBool(val);
 
         // ── Video ─────────────────────────────────────────────────────────────
         else if (key == "renderer")           s.rendererChoice     = parseInt(val, 0);
@@ -123,6 +125,8 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "turbo_speed="        << s.turboSpeed                     << "\n";
     f << "turbo_mute_audio="   << (s.turboMuteAudio ? "true" : "false") << "\n";
     f << "top_row_mode="       << s.topRowMode                     << "\n";
+    f << "shelf_recently_played=" << (s.shelfEnabled[1] ? "true" : "false") << "\n";
+    f << "shelf_favorites="       << (s.shelfEnabled[2] ? "true" : "false") << "\n";
     f << "\n";
 
     f << "[Video]\n";

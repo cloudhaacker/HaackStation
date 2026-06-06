@@ -92,6 +92,15 @@ void SettingsScreen::buildTabs() {
             { "All Games", "Recently Played", "Favorites" },
             &m_settings->topRowMode));
         tab.items.push_back(makeSep());
+        tab.items.push_back(makeLabel("shelves_header", "Visible Shelves",
+            "All Games is always shown"));
+        tab.items.push_back(makeToggle("shelf_recent", "Recently Played",
+            "Show the Recently Played shelf in the game browser",
+            &m_settings->shelfEnabled[1]));
+        tab.items.push_back(makeToggle("shelf_favs", "Favorites",
+            "Show the Favorites shelf in the game browser",
+            &m_settings->shelfEnabled[2]));
+        tab.items.push_back(makeSep());
         tab.items.push_back(makeAction("rescan", "Rescan Library",
             "Re-scan ROMs folder for new games",
             []() { std::cout << "[Settings] Rescan triggered\n"; }));
