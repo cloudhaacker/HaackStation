@@ -10,6 +10,7 @@
 //   - Texture Replacement on/off
 //   - Audio Replacement on/off
 //   - Fast Boot on/off
+//   - Convert to CHD (file management — single-game conversion)
 //
 // Each setting has a checkbox "Override" toggle. If override is OFF,
 // the global setting applies. If ON, the per-game value is used.
@@ -42,13 +43,19 @@ public:
     void render();
 
     // Returns true when user pressed Back/Save — caller should re-apply settings
-    bool wantsClose() const { return m_wantsClose; }
-    void clearClose()        { m_wantsClose = false; }
+    bool wantsClose()       const { return m_wantsClose; }
+    void clearClose()             { m_wantsClose = false; }
+
+    // Set to true when user activates "Convert to CHD" — cleared by app.cpp
+    // after it builds the ConversionJob and launches the converter.
+    bool wantsConvertChd()  const { return m_wantsConvertChd; }
+    void clearConvertChd()        { m_wantsConvertChd = false; }
 
     // Get the overrides as edited by the user
     const GameOverrides& overrides()   const { return m_overrides; }
     const std::string&   gameSerial()  const { return m_serial; }
     const std::string&   gamePath()    const { return m_gamePath; }
+    const std::string&   gameTitle()   const { return m_gameTitle; }
 
     void onWindowResize(int w, int h) { m_w = w; m_h = h; }
 
@@ -58,10 +65,12 @@ private:
         std::string description;
         bool*       enabled;     // points into m_overrides — is this override active?
         // For choice/int settings:
-        int*        value;       // nullptr for toggles
+        int*        value;       // nullptr for toggles and action rows
         std::vector<std::string> choices;
         // For bool settings when enabled:
         bool*       boolValue;   // nullptr for choice settings
+        // For action rows (enabled == nullptr):
+        bool        isAction = false;
     };
 
     void buildRows();
@@ -72,8 +81,9 @@ private:
     ThemeEngine*   m_theme    = nullptr;
     ControllerNav* m_nav      = nullptr;
 
-    bool        m_open       = false;
-    bool        m_wantsClose = false;
+    bool        m_open          = false;
+    bool        m_wantsClose    = false;
+    bool        m_wantsConvertChd = false;   // NEW: single-game CHD conversion requested
     std::string m_gameTitle;
     std::string m_gamePath;
     std::string m_serial;

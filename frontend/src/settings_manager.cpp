@@ -41,7 +41,6 @@ bool SettingsManager::load(HaackSettings& s) {
     while (std::getline(f, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
-        // Skip section headers like [General]
         if (line[0] == '[') continue;
 
         auto eq = line.find('=');
@@ -63,8 +62,8 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "turbo_speed")        s.turboSpeed         = parseInt(val, 0);
         else if (key == "turbo_mute_audio")   s.turboMuteAudio     = parseBool(val);
         else if (key == "top_row_mode")       s.topRowMode         = parseInt(val, 0);
-        else if (key == "shelf_recently_played") s.shelfEnabled[1]  = parseBool(val);
-        else if (key == "shelf_favorites")       s.shelfEnabled[2]  = parseBool(val);
+        else if (key == "shelf_recently_played") s.shelfEnabled[1] = parseBool(val);
+        else if (key == "shelf_favorites")       s.shelfEnabled[2] = parseBool(val);
 
         // ── Video ─────────────────────────────────────────────────────────────
         else if (key == "renderer")           s.rendererChoice     = parseInt(val, 0);
@@ -74,6 +73,11 @@ bool SettingsManager::load(HaackSettings& s) {
         // ── Audio ─────────────────────────────────────────────────────────────
         else if (key == "audio_volume")       s.audioVolume        = parseInt(val, 100);
         else if (key == "audio_replacement")  s.audioReplacement   = parseBool(val);
+
+        // ── Ambient Music ──────────────────────────────────────────────────────
+        else if (key == "music_enabled")      s.musicEnabled       = parseBool(val);
+        else if (key == "music_volume")       s.musicVolume        = parseInt(val, 50);
+        else if (key == "music_folder")       s.musicFolder        = val;
 
         // ── Textures ──────────────────────────────────────────────────────────
         else if (key == "texture_replace")    s.textureReplacement = parseBool(val);
@@ -92,7 +96,7 @@ bool SettingsManager::load(HaackSettings& s) {
         else if (key == "ra_password")        s.raPassword         = val;
         else if (key == "ra_enabled")         s.raEnabled          = parseBool(val);
         else if (key == "ra_hardcore")        s.raHardcore         = parseBool(val);
-        else if (key == "ra_auto_screenshot")  s.raAutoScreenshot   = parseBool(val);
+        else if (key == "ra_auto_screenshot") s.raAutoScreenshot   = parseBool(val);
     }
 
     std::cout << "[Settings] Loaded from " << m_configPath << "\n";
@@ -120,11 +124,11 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "\n";
 
     f << "[Emulation]\n";
-    f << "fast_boot="          << (s.fastBoot ? "true" : "false") << "\n";
-    f << "fast_forward_speed=" << s.fastForwardSpeed               << "\n";
-    f << "turbo_speed="        << s.turboSpeed                     << "\n";
-    f << "turbo_mute_audio="   << (s.turboMuteAudio ? "true" : "false") << "\n";
-    f << "top_row_mode="       << s.topRowMode                     << "\n";
+    f << "fast_boot="             << (s.fastBoot        ? "true" : "false") << "\n";
+    f << "fast_forward_speed="    << s.fastForwardSpeed                      << "\n";
+    f << "turbo_speed="           << s.turboSpeed                            << "\n";
+    f << "turbo_mute_audio="      << (s.turboMuteAudio  ? "true" : "false") << "\n";
+    f << "top_row_mode="          << s.topRowMode                            << "\n";
     f << "shelf_recently_played=" << (s.shelfEnabled[1] ? "true" : "false") << "\n";
     f << "shelf_favorites="       << (s.shelfEnabled[2] ? "true" : "false") << "\n";
     f << "\n";
@@ -138,6 +142,12 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "[Audio]\n";
     f << "audio_volume="      << s.audioVolume                            << "\n";
     f << "audio_replacement=" << (s.audioReplacement ? "true" : "false") << "\n";
+    f << "\n";
+
+    f << "[AmbientMusic]\n";
+    f << "music_enabled=" << (s.musicEnabled ? "true" : "false") << "\n";
+    f << "music_volume="  << s.musicVolume                        << "\n";
+    f << "music_folder="  << s.musicFolder                        << "\n";
     f << "\n";
 
     f << "[Textures]\n";
@@ -154,12 +164,12 @@ bool SettingsManager::save(const HaackSettings& s) {
     f << "\n";
 
     f << "[RetroAchievements]\n";
-    f << "ra_user="     << s.raUser                              << "\n";
-    f << "ra_api_key="  << s.raApiKey                            << "\n";
-    f << "ra_password=" << s.raPassword                          << "\n";
-    f << "ra_enabled="  << (s.raEnabled  ? "true" : "false")    << "\n";
-    f << "ra_hardcore=" << (s.raHardcore ? "true" : "false")    << "\n";
-    f << "ra_auto_screenshot=" << (s.raAutoScreenshot ? "true" : "false") << "\n";
+    f << "ra_user="            << s.raUser                                   << "\n";
+    f << "ra_api_key="         << s.raApiKey                                 << "\n";
+    f << "ra_password="        << s.raPassword                               << "\n";
+    f << "ra_enabled="         << (s.raEnabled        ? "true" : "false")   << "\n";
+    f << "ra_hardcore="        << (s.raHardcore       ? "true" : "false")   << "\n";
+    f << "ra_auto_screenshot=" << (s.raAutoScreenshot ? "true" : "false")   << "\n";
 
     std::cout << "[Settings] Saved to " << m_configPath << "\n";
     return true;

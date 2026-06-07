@@ -26,10 +26,11 @@ void PerGameSettingsScreen::open(const std::string& gameTitle,
         return stem;
     }() : serial;
 
-    m_overrides   = currentOverrides;
-    m_selectedRow = 0;
-    m_wantsClose  = false;
-    m_open        = true;
+    m_overrides         = currentOverrides;
+    m_selectedRow       = 0;
+    m_wantsClose        = false;
+    m_wantsConvertChd   = false;
+    m_open              = true;
     buildRows();
     std::cout << "[PerGameScreen] Opened for: " << gameTitle << "\n";
 }
@@ -131,7 +132,7 @@ void PerGameSettingsScreen::buildRows() {
         nullptr
     });
 
-    // ── Enhancements (future features — shown greyed out until v0.7) ───────────
+    // ── Enhancements ──────────────────────────────────────────────────────────
     m_rows.push_back({
         "Texture Replacement",
         "Enable HD texture packs for this game (v0.7+)",
@@ -150,11 +151,42 @@ void PerGameSettingsScreen::buildRows() {
         &m_overrides.audioReplacement
     });
 
+    // ── File management ────────────────────────────────────────────────────────
+
+    // Convert to CHD: available for BIN/CUE and ISO games only.
+    // CHD files are already optimal — nothing to convert.
+    // The enabled pointer is nullptr — this is a pure action row, like "Reset All".
+    {
+        // Determine if this game is already a CHD (or M3U pointing to CHDs)
+        std::string ext = m_gamePath;
+        auto dot = ext.rfind('.');
+        if (dot != std::string::npos) ext = ext.substr(dot);
+        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+
+        bool alreadyChd = (ext == ".chd");
+        bool isChdable  = (ext == ".cue" || ext == ".iso" || ext == ".bin");
+        // M3U games also support conversion (handled by app.cpp building the job list)
+        if (ext == ".m3u") isChdable = true;
+
+        Row convertRow;
+        convertRow.label       = alreadyChd ? "Already CHD" : "Convert to CHD";
+        convertRow.description = alreadyChd
+            ? "This game is already in CHD format — no conversion needed"
+            : "Convert to compressed CHD format (30-50% smaller, lossless). "
+              "Originals moved to _originals/";
+        convertRow.enabled     = nullptr;   // action row — no override checkbox
+        convertRow.value       = nullptr;
+        convertRow.boolValue   = nullptr;
+        convertRow.isAction    = !alreadyChd && isChdable;
+        m_rows.push_back(convertRow);
+    }
+
     // ── Reset all ──────────────────────────────────────────────────────────────
     m_rows.push_back({
         "Reset All Overrides",
         "Remove all per-game settings and use global defaults",
-        nullptr, nullptr, {}, nullptr
+        nullptr, nullptr, {}, nullptr,
+        false   // isAction = false (treated as reset, not convert)
     });
 }
 
@@ -186,7 +218,7 @@ void PerGameSettingsScreen::navigateAction(NavAction action) {
         case NavAction::RIGHT: {
             if (m_selectedRow >= numRows) break;
             Row& row = m_rows[m_selectedRow];
-            if (!row.enabled) break;
+            if (!row.enabled) break;  // action rows don't respond to left/right
 
             if (row.value != nullptr && !row.choices.empty()) {
                 if (!*row.enabled) { *row.enabled = true; }
@@ -209,11 +241,20 @@ void PerGameSettingsScreen::navigateAction(NavAction action) {
             Row& row = m_rows[m_selectedRow];
 
             if (!row.enabled) {
-                // "Reset All Overrides" action row
-                m_overrides = GameOverrides{};
-                buildRows();
-                m_nav->rumbleConfirm();
-                std::cout << "[PerGameScreen] All overrides cleared\n";
+                // Action row — "Convert to CHD" or "Reset All Overrides"
+                if (row.isAction) {
+                    // Convert to CHD — signal app.cpp
+                    m_wantsConvertChd = true;
+                    m_nav->rumbleConfirm();
+                    std::cout << "[PerGameScreen] Convert to CHD requested for: "
+                              << m_gamePath << "\n";
+                } else {
+                    // Reset All Overrides
+                    m_overrides = GameOverrides{};
+                    buildRows();
+                    m_nav->rumbleConfirm();
+                    std::cout << "[PerGameScreen] All overrides cleared\n";
+                }
                 break;
             }
 
@@ -246,18 +287,14 @@ void PerGameSettingsScreen::render() {
     SDL_RenderFillRect(m_renderer, &full);
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 
-    // Panel — grow height to fit all rows
+    // Panel
     int panelW  = std::min(PANEL_W, m_w - PANEL_X_MARGIN * 2);
     int numRows = (int)m_rows.size();
     int panelH  = 80 + numRows * ITEM_H + 60;
     int panelX  = (m_w - panelW) / 2;
     int panelY  = (m_h - panelH) / 2;
     panelY      = std::max(20, panelY);
-
-    // If the panel is taller than the screen, clamp and let rows scroll.
-    // For now with 12 rows at 64px each that's 848 + 140 = ~988px. On 1080p
-    // that fits fine. On 720p we'd need scrolling — add that in the polish pass.
-    panelH = std::min(panelH, m_h - 40);
+    panelH      = std::min(panelH, m_h - 40);
 
     SDL_Rect panel = { panelX, panelY, panelW, panelH };
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
@@ -281,7 +318,6 @@ void PerGameSettingsScreen::render() {
     int contentW = panelW - 32;
     int y = panelY + 78;
     for (int i = 0; i < numRows; i++) {
-        // Simple clipping — don't draw rows that fall outside the panel
         if (y + ITEM_H > panelY + panelH - 8) break;
         renderRow(m_rows[i], panelX + 16, y, contentW, i == m_selectedRow);
         y += ITEM_H;
@@ -306,11 +342,27 @@ void PerGameSettingsScreen::renderRow(const Row& row, int x, int y,
         m_theme->drawRect(ind, pal.accent);
     }
 
-    // Action row (Reset All)
+    // Action rows (Convert to CHD, Reset All) — no checkbox
     if (!row.enabled) {
-        SDL_Color col = selected ? pal.accent : pal.textSecond;
+        // Dim out the "Already CHD" row; highlight active action rows
+        SDL_Color col;
+        if (!row.isAction) {
+            // Reset All Overrides — always selectable, accent when selected
+            col = selected ? pal.accent : pal.textSecond;
+        } else {
+            // Convert to CHD — selectable action
+            col = selected ? pal.accent : pal.textSecond;
+        }
         m_theme->drawText(row.label, x + 8, y + 8, col, FontSize::BODY);
         m_theme->drawText(row.description, x + 8, y + 34, pal.textDisable, FontSize::TINY);
+
+        // Arrow indicator for actionable rows
+        if (row.isAction) {
+            int vw, vh;
+            m_theme->measureText(">", FontSize::TITLE, vw, vh);
+            m_theme->drawText(">", x + w - vw - 4, y + 8,
+                selected ? pal.accent : pal.textDisable, FontSize::TITLE);
+        }
         return;
     }
 

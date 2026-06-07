@@ -81,6 +81,15 @@ struct HaackSettings {
     bool audioReplacement   = true;
     bool audioReplacementLog= false;
 
+    // ── Ambient Music ─────────────────────────────────────────────────────────
+    // Background music player for the browser and hub screens.
+    // musicFolder: path to folder containing MP3, OGG, WAV, or FLAC files.
+    // musicVolume: 0–100 (mapped to SDL_mixer 0–128 internally).
+    // musicEnabled: master toggle — when off the strip hides and playback stops.
+    bool        musicEnabled = false;
+    int         musicVolume  = 50;
+    std::string musicFolder  = "music";   // Relative to HaackStation install dir
+
     // ── Textures ──────────────────────────────────────────────────────────────
     bool textureReplacement = true;
     bool aiUpscaling        = false;
@@ -120,13 +129,19 @@ public:
     void update(float deltaMs);
     void render();
 
-    bool wantsClose()   const { return m_wantsClose; }
-    bool wantsScrape()  const { return m_wantsScrape; }
-    bool wantsRemap()   const { return m_wantsRemap; }
-    bool wantsRaLogin() const { return m_wantsRaLogin; }
-    void clearScrape()        { m_wantsScrape  = false; }
-    void clearRemap()         { m_wantsRemap   = false; }
-    void clearRaLogin()       { m_wantsRaLogin = false; }
+    bool wantsClose()          const { return m_wantsClose; }
+    bool wantsScrape()         const { return m_wantsScrape; }
+    bool wantsRemap()          const { return m_wantsRemap; }
+    bool wantsRaLogin()        const { return m_wantsRaLogin; }
+    bool wantsConvertAll()     const { return m_wantsConvertAll; }
+    bool wantsDownloadTools()  const { return m_wantsDownloadTools; }
+
+    void clearScrape()              { m_wantsScrape        = false; }
+    void clearRemap()               { m_wantsRemap         = false; }
+    void clearRaLogin()             { m_wantsRaLogin       = false; }
+    void clearConvertAll()          { m_wantsConvertAll    = false; }
+    void clearDownloadTools()       { m_wantsDownloadTools = false; }
+
     // Called by app.cpp after the async RA login callback fires.
     // success=true  → show "Logged in as: X"
     // success=false → show "Login failed" and restore "Not logged in" label
@@ -164,13 +179,15 @@ private:
     int  m_activeTab    = 0;
     int  m_activeItem   = 0;
     int  m_scrollOffset = 0;
-    bool m_wantsClose   = false;
-    bool m_wantsQuit    = false;
-    bool m_wantsScrape  = false;
-    bool m_wantsRemap   = false;
-    bool m_wantsRaLogin  = false;   // set by Login action; cleared by app after re-init
-    bool m_raLoginPending = false;  // true while waiting for async login callback
-    bool m_editingChoice = false;  // true while LEFT/RIGHT adjusts a CHOICE/SLIDER
+    bool m_wantsClose           = false;
+    bool m_wantsQuit            = false;
+    bool m_wantsScrape          = false;
+    bool m_wantsRemap           = false;
+    bool m_wantsRaLogin         = false;
+    bool m_wantsConvertAll      = false;   // NEW: batch CHD conversion requested
+    bool m_wantsDownloadTools   = false;   // NEW: navigate to Download Tools screen
+    bool m_raLoginPending       = false;
+    bool m_editingChoice        = false;
 	int  m_windowW      = 1280;
     int  m_windowH      = 720;
 

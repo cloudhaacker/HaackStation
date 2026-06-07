@@ -22,9 +22,11 @@
 #include "trophy_room.h"
 #include "trophy_hub.h"
 #include "omnisave_vault.h"
-#include "omnisave_card_shelf.h"    // ← NEW
+#include "omnisave_card_shelf.h"
 #include "memcard_manager.h"
 #include "ui/haack_hub.h"
+#include "ambient_music.h"       // ← NEW: ambient music player
+#include "chd_converter.h"       // ← NEW: CHD conversion wrapper
 #include <ctime>
 
 class GameBrowser;
@@ -45,8 +47,9 @@ enum class AppState {
     TROPHY_ROOM,
     TROPHY_HUB,
     OMNISAVE_VAULT,
-    OMNISAVE_CARD_SHELF,    // ← NEW: global save browser, launched from Hub
+    OMNISAVE_CARD_SHELF,
     SCRAPING,
+    CHD_CONVERT,       // ← NEW: batch CHD conversion progress screen
     SHUTDOWN
 };
 
@@ -87,6 +90,12 @@ private:
     void renderScreenshotNotification();
     void renderMemcardToast();
     void renderTrophyShotToast();
+    void renderAmbientMusicStrip();   // ← NEW
+    void renderChdConvertScreen();    // ← NEW
+
+    // CHD helpers
+    void beginBatchChdConvert();      // ← NEW: build job list, space check, start
+    void beginSingleChdConvert();     // ← NEW: convert current per-game selection
 
     static std::string stripRomRegion(const std::string& stem);
     static std::vector<std::string> parseM3uDiscs(const std::string& path);
@@ -120,8 +129,26 @@ private:
     std::unique_ptr<TrophyHub>        m_trophyHub;
     std::unique_ptr<HaackHub>         m_haackHub;
     std::unique_ptr<OmniSaveVault>    m_omniSave;
-    std::unique_ptr<OmniSaveCardShelf> m_cardShelf;   // ← NEW
+    std::unique_ptr<OmniSaveCardShelf> m_cardShelf;
     std::unique_ptr<MemCardManager>   m_memCards;
+
+    // ── Ambient Music ─────────────────────────────────────────────────────────
+    std::unique_ptr<AmbientMusicPlayer> m_music;   // ← NEW
+
+    // ── CHD Converter ─────────────────────────────────────────────────────────
+    std::unique_ptr<ChdConverter>       m_chdConverter;    // ← NEW
+
+    // CHD conversion UI state
+    int         m_chdJobIndex     = 0;     // current job (0-based)
+    int         m_chdTotalJobs    = 0;     // total jobs in batch
+    int         m_chdJobPct       = 0;     // current job progress 0-100
+    std::string m_chdCurrentTitle;         // display name of current job
+    bool        m_chdShowSpaceWarn = false;// pre-flight space warning pending
+    std::string m_chdSpaceNeedStr;
+    std::string m_chdSpaceAvailStr;
+    std::vector<ConversionResult> m_chdResults; // filled when batch completes
+    bool        m_chdBatchDone    = false; // true when batch finished
+
     std::string m_currentGameTitle;
     std::string m_currentGameSerial;
     InputMap                           m_inputMap;

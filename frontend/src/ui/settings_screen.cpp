@@ -112,9 +112,6 @@ void SettingsScreen::buildTabs() {
     }
 
     // ── Emulation ─────────────────────────────────────────────────────────────
-    // Fast Boot and Fast Forward live here. These are the settings most likely
-    // to be overridden per-game, which is why they're grouped separately from
-    // general display/audio options.
     {
         SettingTab tab;
         tab.label = "Emulation";
@@ -145,11 +142,6 @@ void SettingsScreen::buildTabs() {
     }
 
     // ── Services ──────────────────────────────────────────────────────────────
-    // External services HaackStation can connect to.
-    // ScreenScraper: artwork and metadata scraping.
-    // RetroAchievements: achievement tracking and leaderboards.
-    // More services (cloud sync, etc.) will be added here in future versions.
-    // Note: "Accounts" is reserved for Eden local user profiles (v0.8).
     {
         SettingTab tab;
         tab.label = "Services";
@@ -206,7 +198,7 @@ void SettingsScreen::buildTabs() {
 
         // ── RetroAchievements ─────────────────────────────────────────────────
         tab.items.push_back(makeLabel("ra_header", "RetroAchievements",
-            m_raLoginPending        ? "Connecting..." :
+            m_raLoginPending           ? "Connecting..." :
             m_settings->raUser.empty() ? "Not logged in"
                                        : ("Logged in as: " + m_settings->raUser)));
 
@@ -260,13 +252,13 @@ void SettingsScreen::buildTabs() {
                 m_raUsernameStaging.clear();
                 m_raPasswordStaging.clear();
                 m_raLoginPending = false;
-                m_wantsRaLogin = true;  // signals app.cpp to shut down RA session
+                m_wantsRaLogin = true;
                 buildTabs();
             }));
 
         tab.items.push_back(makeSep());
 
-        // ── RetroAchievements options ─────────────────────────────────────────
+        // ── RA options ────────────────────────────────────────────────────────
         tab.items.push_back(makeLabel("ra_opts_header", "RA Options", ""));
 
         tab.items.push_back(makeToggle("ra_enabled", "Enable RetroAchievements",
@@ -285,9 +277,6 @@ void SettingsScreen::buildTabs() {
     }
 
     // ── Controls ──────────────────────────────────────────────────────────────
-    // Button remapping lives on its own full-screen UI (RemapScreen).
-    // This tab is the entry point, plus read-only hotkey reference labels
-    // so the user knows the fixed combos without having to guess.
     {
         SettingTab tab;
         tab.label = "Controls";
@@ -333,12 +322,38 @@ void SettingsScreen::buildTabs() {
     {
         SettingTab tab;
         tab.label = "Audio";
+
+        // ── Game audio ────────────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("game_audio_header", "Game Audio", ""));
         tab.items.push_back(makeSlider("volume", "Master Volume",
-            "Overall audio volume", &m_settings->audioVolume, 0, 100));
-        tab.items.push_back(makeSep());
+            "Overall game audio volume", &m_settings->audioVolume, 0, 100));
         tab.items.push_back(makeToggle("audio_replace", "Audio Replacement",
-            "Replace SPU audio with high-quality tracks",
+            "Replace SPU audio with high-quality tracks (HaackAudio — v0.8.5)",
             &m_settings->audioReplacement));
+
+        tab.items.push_back(makeSep());
+
+        // ── Ambient music ─────────────────────────────────────────────────────
+        // Background music that plays in the browser and hub screens.
+        // Pauses automatically when overlays open; fades out on game launch.
+        tab.items.push_back(makeLabel("music_header", "Ambient Music",
+            "Background music for menus and browser"));
+
+        tab.items.push_back(makeToggle("music_enabled", "Enable Ambient Music",
+            "Play background music in the browser and HaackStation Hub",
+            &m_settings->musicEnabled));
+
+        tab.items.push_back(makeSlider("music_volume", "Music Volume",
+            "Volume for ambient music — independent from game audio",
+            &m_settings->musicVolume, 0, 100));
+
+        tab.items.push_back(makeLabel("music_folder_label", "Music Folder",
+            m_settings->musicFolder.empty() ? "music/"
+                                             : m_settings->musicFolder));
+
+        tab.items.push_back(makeLabel("music_formats", "Supported Formats",
+            "MP3, OGG, WAV, FLAC — drop files in the music/ folder"));
+
         m_tabs.push_back(tab);
     }
 
@@ -356,6 +371,60 @@ void SettingsScreen::buildTabs() {
         tab.items.push_back(makeChoice("ai_scale", "AI Upscale Factor",
             "How much to upscale textures", { "2x", "4x" },
             &m_settings->aiUpscaleScale));
+        m_tabs.push_back(tab);
+    }
+
+    // ── Tools ─────────────────────────────────────────────────────────────────
+    // Library management and external tool integration.
+    // chdman download and CHD batch conversion live here.
+    {
+        SettingTab tab;
+        tab.label = "Tools";
+
+        // ── Library tools ─────────────────────────────────────────────────────
+        tab.items.push_back(makeLabel("library_header", "Library", ""));
+
+        tab.items.push_back(makeAction("rescan_tools", "Rescan Library",
+            "Re-scan ROMs folder for new or changed games",
+            []() { std::cout << "[Tools] Rescan triggered\n"; }));
+
+        tab.items.push_back(makeSep());
+
+        // ── CHD Conversion ────────────────────────────────────────────────────
+        // CHD (Compressed Hunks of Data) is the recommended format for PS1 games.
+        // It reduces file sizes by 30–50% with no quality loss.
+        // Originals are moved to _originals/ so you can verify before deleting.
+        tab.items.push_back(makeLabel("chd_header", "CHD Conversion",
+            "Convert BIN/CUE and ISO files to compressed CHD format"));
+
+        tab.items.push_back(makeLabel("chd_info", "What is CHD?",
+            "Smaller files, same quality — 30-50% size reduction, lossless"));
+
+        tab.items.push_back(makeLabel("chd_originals_note",
+            "After converting",
+            "Originals move to _originals/ — delete them after verifying CHDs work"));
+
+        tab.items.push_back(makeAction("chd_convert_all", "Convert All Games to CHD",
+            "Convert every BIN/CUE and ISO in your library — sequential, can cancel",
+            [this]() {
+                m_wantsConvertAll = true;
+                std::cout << "[Tools] Convert All to CHD requested\n";
+            }));
+
+        tab.items.push_back(makeSep());
+
+        // ── Download Tools ────────────────────────────────────────────────────
+        // chdman is required for CHD conversion. It ships with MAME tools.
+        // HaackStation downloads it to tools/chdman/ automatically.
+        tab.items.push_back(makeLabel("download_header", "External Tools", ""));
+
+        tab.items.push_back(makeAction("download_tools", "Download Tools",
+            "Download chdman (required for CHD conversion)",
+            [this]() {
+                m_wantsDownloadTools = true;
+                std::cout << "[Tools] Download Tools requested\n";
+            }));
+
         m_tabs.push_back(tab);
     }
 
@@ -389,15 +458,12 @@ void SettingsScreen::buildTabs() {
 }
 
 void SettingsScreen::handleEvent(const SDL_Event& e) {
-    // While OSK is open, it consumes all input
     if (m_osk->isOpen()) {
         m_osk->handleEvent(e);
         return;
     }
     NavAction action = m_nav->processEvent(e);
     if (action == NavAction::NONE) return;
-    // SDL fires repeated SDL_KEYDOWN events while a key is held (e.key.repeat > 0).
-    // Treat those as repeats so boundary cancelHeld() applies to them.
     bool isRepeat = (e.type == SDL_KEYDOWN && e.key.repeat > 0);
     navigateAction(action, isRepeat);
 }
@@ -407,12 +473,11 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
     int   numTabs = (int)m_tabs.size();
     int   numItems= (int)tab.items.size();
 
-    // Helper: skip separators going in a direction, return new index or -1 if stuck
     auto skipSeps = [&](int start, int dir) -> int {
         int next = start;
         for (int i = 0; i < numItems; i++) {
             next = next + dir;
-            if (next < 0 || next >= numItems) return -1; // hit an edge
+            if (next < 0 || next >= numItems) return -1;
             if (tab.items[next].type != SettingType::SEPARATOR) return next;
         }
         return -1;
@@ -421,11 +486,9 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
     switch (action) {
         case NavAction::LEFT:
             if (m_editingChoice) {
-                // Adjust selected choice / slider backwards
                 auto& item = tab.items[m_activeItem];
                 if (item.type == SettingType::CHOICE &&
                     item.choiceIndex && !item.choices.empty()) {
-                    int sz = (int)item.choices.size();
                     int next = *item.choiceIndex - 1;
                     if (next >= 0) { *item.choiceIndex = next; m_nav->rumbleConfirm(); }
                 } else if (item.type == SettingType::SLIDER && item.sliderValue) {
@@ -435,7 +498,6 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
                     }
                 }
             } else {
-                // Switch tab left (wrap only on fresh press)
                 if (!isRepeat || m_activeTab > 0) {
                     m_activeTab  = (m_activeTab - 1 + numTabs) % numTabs;
                     m_activeItem = 0; m_scrollOffset = 0;
@@ -445,11 +507,10 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
 
         case NavAction::RIGHT:
             if (m_editingChoice) {
-                // Adjust selected choice / slider forwards
                 auto& item = tab.items[m_activeItem];
                 if (item.type == SettingType::CHOICE &&
                     item.choiceIndex && !item.choices.empty()) {
-                    int sz = (int)item.choices.size();
+                    int sz   = (int)item.choices.size();
                     int next = *item.choiceIndex + 1;
                     if (next < sz) { *item.choiceIndex = next; m_nav->rumbleConfirm(); }
                 } else if (item.type == SettingType::SLIDER && item.sliderValue) {
@@ -459,7 +520,6 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
                     }
                 }
             } else {
-                // Switch tab right (wrap only on fresh press)
                 if (!isRepeat || m_activeTab < numTabs - 1) {
                     m_activeTab  = (m_activeTab + 1) % numTabs;
                     m_activeItem = 0; m_scrollOffset = 0;
@@ -468,37 +528,35 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
             break;
 
         case NavAction::UP: {
-            if (m_editingChoice) { m_editingChoice = false; break; } // exit edit mode
+            if (m_editingChoice) { m_editingChoice = false; break; }
             int next = skipSeps(m_activeItem, -1);
             if (next >= 0) {
                 m_activeItem = next;
             } else if (!isRepeat) {
-                // Fresh press at top: wrap to bottom
                 for (int i = numItems - 1; i >= 0; i--) {
                     if (tab.items[i].type != SettingType::SEPARATOR) {
                         m_activeItem = i; break;
                     }
                 }
             } else {
-                m_nav->cancelHeld(); // held at top — stop repeat flood
+                m_nav->cancelHeld();
             }
             break;
         }
 
         case NavAction::DOWN: {
-            if (m_editingChoice) { m_editingChoice = false; break; } // exit edit mode
+            if (m_editingChoice) { m_editingChoice = false; break; }
             int next = skipSeps(m_activeItem, +1);
             if (next >= 0) {
                 m_activeItem = next;
             } else if (!isRepeat) {
-                // Fresh press at bottom: wrap to top
                 for (int i = 0; i < numItems; i++) {
                     if (tab.items[i].type != SettingType::SEPARATOR) {
                         m_activeItem = i; break;
                     }
                 }
             } else {
-                m_nav->cancelHeld(); // held at bottom — stop repeat flood
+                m_nav->cancelHeld();
             }
             break;
         }
@@ -506,7 +564,6 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
         case NavAction::CONFIRM: {
             auto& item = tab.items[m_activeItem];
             if (item.type == SettingType::CHOICE || item.type == SettingType::SLIDER) {
-                // Toggle into/out of edit mode so LEFT/RIGHT adjusts the value
                 m_editingChoice = !m_editingChoice;
                 m_nav->rumbleConfirm();
             } else {
@@ -518,7 +575,7 @@ void SettingsScreen::navigateAction(NavAction action, bool isRepeat) {
 
         case NavAction::BACK:
             if (m_editingChoice) {
-                m_editingChoice = false; // exit edit mode first
+                m_editingChoice = false;
             } else {
                 m_wantsClose = true;
             }
@@ -562,7 +619,6 @@ void SettingsScreen::update(float deltaMs) {
         m_osk->update(deltaMs);
         return;
     }
-    // updateHeld fires every frame so d-pad hold works even between SDL events
     NavAction held = m_nav->updateHeld(SDL_GetTicks());
     if (held != NavAction::NONE) navigateAction(held, true);
 }
@@ -602,7 +658,6 @@ void SettingsScreen::render() {
     renderTab(m_tabs[m_activeTab]);
     m_theme->drawFooterHints(m_windowW, m_windowH, "Select / Toggle", "");
 
-    // OSK renders on top of everything when open
     if (m_osk->isOpen()) m_osk->render();
 }
 
